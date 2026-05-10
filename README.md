@@ -191,21 +191,26 @@ terminal:
 
 **Bash / Linux / macOS / Git Bash:**
 ```bash
-python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name).update(force=True)"
+python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name)"
 ```
 
 **PowerShell:**
 ```powershell
-python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name).update(force=True)"
+python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name)"
 ```
 
-You should see logs like:
+The constructor handles the first-time build automatically when the storage
+is empty. You should see logs like:
 
 ```
 [rag] Indexing codebase from C:\path\to\your\codebase...
 [rag] Found 1247 files
-[rag] Index updated successfully.
 ```
+
+> **Note:** to **rebuild** an existing index later (e.g. after changing the
+> embedding model), see [Config drift detection](#config-drift-detection)
+> and the troubleshooting section — those snippets append `.update(force=True)`
+> to actually re-do the work.
 
 Once `rag_storage/` exists and is populated, every subsequent server start
 is fast (a few seconds).

@@ -194,6 +194,10 @@ class CodebaseRAG:
 
         Source of truth is the ChromaDB collection: if it already contains
         documents we reuse the index instead of rebuilding it on every start.
+
+        On a true first-run build we also persist metadata immediately, so
+        subsequent code paths (drift detection, git-update detection) have a
+        valid baseline without needing an extra explicit update() call.
         """
         try:
             existing_count = self.vector_store._collection.count()
@@ -217,7 +221,12 @@ class CodebaseRAG:
             )
             return VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
 
-        return self._build_index()
+        # Genuine first run: build, then persist metadata in the same step
+        # so the next constructor call sees a complete state and so a
+        # follow-up update(force=True) does not redundantly rebuild.
+        index = self._build_index()
+        self._record_build_metadata()
+        return index
 
     def needs_update(self):
         """Return True if a new git commit has been made since the last indexing.
@@ -237,6 +246,27 @@ class CodebaseRAG:
             log(f"[rag] git check skipped: {e}")
         return False
 
+    def _record_build_metadata(self):
+        """Persist the post-build metadata: git head, timestamp, config snapshot.
+
+        Called from every code path that completes a fresh _build_index().
+        Centralized here so that '_load_or_build_index' (first-run case) and
+        'update()' (explicit rebuild case) cannot drift out of sync.
+        """
+        try:
+            from git import Repo
+            repo = Repo(self.codebase_path)
+            self.metadata["last_commit"] = repo.head.commit.hexsha
+        except Exception as e:
+            log(f"[rag] could not read git HEAD ({e}), saving last_commit='unknown'")
+            self.metadata["last_commit"] = "unknown"
+        self.metadata["last_update"] = datetime.now().isoformat()
+        # A full rebuild aligns the index with the current config; refresh
+        # the snapshot so subsequent drift checks compare against the right
+        # baseline.
+        self.metadata["config_snapshot"] = self._build_config_snapshot()
+        self._save_metadata()
+
     def update(self, force=False):
         """Rebuild the index if there are git changes (or if force=True)."""
         if not force and not self.needs_update():
@@ -245,22 +275,7 @@ class CodebaseRAG:
 
         log("[rag] Updating codebase index...")
         self.index = self._build_index()
-
-        try:
-            from git import Repo
-            repo = Repo(self.codebase_path)
-            self.metadata["last_commit"] = repo.head.commit.hexsha
-        except Exception as e:
-            log(f"[rag] could not read git HEAD ({e}), saving last_commit='unknown'")
-            self.metadata["last_commit"] = "unknown"
-
-        self.metadata["last_update"] = datetime.now().isoformat()
-        # A full rebuild aligns the index with the current config; refresh
-        # the snapshot so subsequent drift checks compare against the right
-        # baseline.
-        self.metadata["config_snapshot"] = self._build_config_snapshot()
-        self._save_metadata()
-
+        self._record_build_metadata()
         log("[rag] Index updated successfully.")
 
     def search(self, query: str, top_k=5):
