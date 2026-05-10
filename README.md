@@ -372,7 +372,7 @@ real index is left untouched. Expected ending:
 
 Once connected, the AI client sees three tools:
 
-### `search_codebase(query: str, top_k: int = 5)`
+### `search_codebase(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
 
 Semantic search. Returns the top-K most relevant code chunks, with file name
 and similarity score. **Use natural language**, not exact identifiers — that's
@@ -381,6 +381,28 @@ where semantic search beats grep:
 - ❌ `search_codebase("CalculateDistance")` — too lexical
 - ✅ `search_codebase("calculate distance between two points")` — semantic;
   also matches `ComputeSpacing`, `MeasureGap`, etc.
+
+**Optional filters** (all AND-ed together) let you scope the search to a
+subset of the codebase. Useful when the AI knows roughly where to look:
+
+| Filter | Type | Example | When to use |
+|---|---|---|---|
+| `file_glob` | `str` | `"**/Bullet*/**/*.cs"` | Most flexible: any Unix-shell glob pattern, matched against both basename and full path. |
+| `extensions` | `list[str]` | `[".py", ".js"]` | Quick "only these languages" scope. Leading dots are normalized. |
+| `path_contains` | `str` | `"BulletSystem"` | Plain substring required in the path. Easiest to spell when you know a folder name. |
+
+Filters run as **post-filters**: the underlying retriever over-fetches a
+wider pool (5× `top_k`) and the filters trim the result set. Very narrow
+filters on a large index may return fewer than `top_k` results — the
+formatted output mentions the active filters so you can tell.
+
+Example calls (the AI invokes these via MCP):
+
+```
+search_codebase("how damage is dispatched", extensions=[".cs"])
+search_codebase("test for serialization", file_glob="**/tests/**")
+search_codebase("damage", path_contains="BulletSystem")
+```
 
 ### `update_codebase_index(force: bool = False)`
 
@@ -561,6 +583,7 @@ currently only filters file-watcher events, not the indexing pipeline.
 | `test_watch.py` | End-to-end smoke test for the watcher. |
 | `test_drift.py` | End-to-end smoke test for config drift detection. |
 | `test_hybrid_vs_dense.py` | Side-by-side benchmark of dense vs hybrid retrieval. |
+| `test_filters.py` | Smoke test for the search-filter parameters. |
 | `requirements.txt` | Python dependencies. |
 | `rag_storage/` | Persistent ChromaDB collection. Created at first build. Gitignored. |
 
@@ -626,10 +649,10 @@ an issue first so we can discuss the approach.
 
 When contributing code:
 
-- Run `python -m py_compile mcp_server.py rag_manager.py config.py test_watch.py test_drift.py`
+- Run `python -m py_compile mcp_server.py rag_manager.py config.py test_watch.py test_drift.py test_filters.py test_hybrid_vs_dense.py`
   to catch syntax errors.
-- Run `python test_watch.py` and `python test_drift.py` to confirm both
-  smoke tests still pass.
+- Run `python test_watch.py`, `python test_drift.py`, and
+  `python test_filters.py` to confirm the smoke tests still pass.
 - Keep all comments, docstrings, and log messages in English.
 
 ---

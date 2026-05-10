@@ -179,28 +179,66 @@ def _get_rag():
 
 
 @mcp.tool()
-def search_codebase(query: str, top_k: int | None = None) -> str:
-    """Semantic search over the indexed codebase.
+def search_codebase(
+    query: str,
+    top_k: int | None = None,
+    file_glob: str | None = None,
+    extensions: list[str] | None = None,
+    path_contains: str | None = None,
+) -> str:
+    """Semantic search over the indexed codebase, with optional filters.
 
     Use this to find functions, classes, patterns, or architectural context.
     Prefer a natural-language description of what the code does over an
     exact identifier - that's where semantic search beats grep.
 
+    Filters (all optional, AND-ed together) let you scope the search to a
+    subset of the codebase. They are post-filters: the underlying retriever
+    over-fetches and the filters trim the result set, so very narrow filters
+    on a large index may return fewer than top_k results.
+
     Args:
-        query: Natural-language search query (e.g. "how damage is dispatched",
-               "factory pattern for spawners").
+        query: Natural-language search query (e.g. "how damage is dispatched
+               between entities", "factory pattern for spawners",
+               "IBlobSerializer implementations").
         top_k: Number of results to return. Defaults to search.default_top_k
                from config.json (typically 5).
+        file_glob: Optional Unix-shell glob matched against the file name and
+                   full path. Examples: "*.cs", "**/Bullet*/**/*.cs",
+                   "**/tests/**".
+        extensions: Optional list of file extensions to restrict results to.
+                    Leading dots are normalized. Examples: [".py"],
+                    ["ts", "tsx"]. Combine with `query` for "find X but only
+                    in TypeScript files".
+        path_contains: Optional substring required in the file path or name.
+                       Example: "BulletSystem" returns only chunks whose path
+                       contains "BulletSystem".
     """
     try:
         rag = _get_rag()
         effective_top_k = top_k if top_k is not None else CONFIG.search.default_top_k
-        results = rag.search(query, top_k=effective_top_k)
+        results = rag.search(
+            query,
+            top_k=effective_top_k,
+            file_glob=file_glob,
+            extensions=extensions,
+            path_contains=path_contains,
+        )
+
+        # Build a human-readable summary of any active filters.
+        active_filters = []
+        if file_glob:
+            active_filters.append(f"file_glob={file_glob!r}")
+        if extensions:
+            active_filters.append(f"extensions={list(extensions)!r}")
+        if path_contains:
+            active_filters.append(f"path_contains={path_contains!r}")
+        filter_suffix = f" (filters: {', '.join(active_filters)})" if active_filters else ""
 
         if not results:
-            return f"No results found for '{query}'."
+            return f"No results found for '{query}'{filter_suffix}."
 
-        formatted = f"Found {len(results)} results for '{query}':\n\n"
+        formatted = f"Found {len(results)} results for '{query}'{filter_suffix}:\n\n"
         for i, res in enumerate(results, 1):
             formatted += f"--- {i}. File: {res['file']} (Score: {res['score']:.2f}) ---\n"
             formatted += f"{res['content']}\n\n"

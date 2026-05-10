@@ -9,6 +9,7 @@ No data ever leaves the host. No calls to external services.
 - Telemetry: Disabled
 """
 
+import fnmatch
 import logging
 import os
 import sys
@@ -84,6 +85,51 @@ def _tokenize_code(text: str) -> list:
                 if piece_lower and piece_lower != lower_raw:
                     tokens.append(piece_lower)
     return tokens
+
+
+def _normalize_extension(ext: str) -> str:
+    """Make sure an extension has a leading dot and is lowercased."""
+    ext = ext.lower().strip()
+    return ext if ext.startswith(".") else f".{ext}"
+
+
+def _matches_filters(item: dict, file_glob, extensions, path_contains) -> bool:
+    """Apply optional post-retrieval filters to a single result dict.
+
+    All provided filters are AND-ed. None / empty filters are ignored.
+    Both `file` (basename) and `file_path` (full path) are checked, so a
+    glob like '*.cs' works regardless of which field carries the path.
+    """
+    file_name = item.get("file") or ""
+    file_path = item.get("file_path") or ""
+
+    if extensions:
+        norm_exts = {_normalize_extension(e) for e in extensions}
+        # Use file_name when available; fall back to file_path basename.
+        candidate = file_name or os.path.basename(file_path)
+        suffix = os.path.splitext(candidate)[1].lower()
+        if suffix not in norm_exts:
+            return False
+
+    if path_contains:
+        needle = path_contains
+        if needle not in file_path and needle not in file_name:
+            return False
+
+    if file_glob:
+        # fnmatch handles Unix-shell glob (*, ?, [seq]). Allow it to match
+        # against both the basename and the full path so users can write
+        # either '*.py' or '**/Bullet*/**'.
+        if not (
+            fnmatch.fnmatch(file_name, file_glob)
+            or fnmatch.fnmatch(file_path, file_glob)
+            # Path normalization: file_path uses OS separators; allow forward-
+            # slash globs to still match by trying a normalized variant.
+            or fnmatch.fnmatch(file_path.replace(os.sep, "/"), file_glob)
+        ):
+            return False
+
+    return True
 
 
 # Severity levels for config drift detection. See _build_config_snapshot
@@ -336,24 +382,54 @@ class CodebaseRAG:
         self._record_build_metadata()
         log("[rag] Index updated successfully.")
 
-    def search(self, query: str, top_k=5):
+    def search(
+        self,
+        query: str,
+        top_k=5,
+        *,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+    ):
         """Hybrid (default) / dense / sparse search over the codebase.
 
         Mode is set at construction time via `search_mode`. In hybrid mode we
         fetch `candidate_pool_size` candidates from each retriever (dense and
         BM25) then fuse rankings via Reciprocal Rank Fusion.
+
+        Optional filters (all AND-ed together) narrow the result set:
+          - file_glob: fnmatch pattern matched against basename and full path.
+          - extensions: iterable of extensions ('.py' or 'py'), case-insensitive.
+          - path_contains: substring required in file path or filename.
+
+        When any filter is present the underlying retrieval over-fetches a
+        wider pool (5x top_k) so post-filtering still leaves enough results.
         """
         # No auto-update here: the watcher keeps the index live and any
         # git-based catch-up is handled on demand by update_codebase_index.
+
+        has_filters = bool(file_glob or extensions or path_contains)
+        # Over-fetch when filtering: filtered-out candidates leave a smaller
+        # pool, so we need extras to still produce top_k matches.
+        fetch_n = top_k * 5 if has_filters else top_k
+
         if self.search_mode == "dense":
-            return self._dense_lookup(query, top_k)
-        if self.search_mode == "sparse":
-            return self._bm25_lookup(query, top_k)
-        # hybrid
-        pool = max(top_k, self.candidate_pool_size)
-        dense_hits = self._dense_lookup(query, pool)
-        sparse_hits = self._bm25_lookup(query, pool)
-        return self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=top_k)
+            results = self._dense_lookup(query, fetch_n)
+        elif self.search_mode == "sparse":
+            results = self._bm25_lookup(query, fetch_n)
+        else:  # hybrid
+            pool = max(fetch_n, self.candidate_pool_size)
+            dense_hits = self._dense_lookup(query, pool)
+            sparse_hits = self._bm25_lookup(query, pool)
+            results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
+
+        if has_filters:
+            results = [
+                r for r in results
+                if _matches_filters(r, file_glob, extensions, path_contains)
+            ]
+
+        return results[:top_k]
 
     # ------------------------------------------------------------------
     # Retrieval primitives: dense (vectors), sparse (BM25), fusion (RRF)
@@ -367,6 +443,7 @@ class CodebaseRAG:
             {
                 "id": getattr(getattr(r, "node", None), "id_", None) or r.metadata.get("file_path", ""),
                 "file": r.metadata.get("file_name", "unknown"),
+                "file_path": r.metadata.get("file_path", ""),
                 "content": r.get_content(),
                 "score": r.score,
             }
@@ -396,6 +473,7 @@ class CodebaseRAG:
             self._bm25_docs[cid] = tokens
             self._bm25_meta[cid] = {
                 "file": (meta or {}).get("file_name", "unknown"),
+                "file_path": (meta or {}).get("file_path", ""),
                 "content": content or "",
             }
         self._bm25_doc_ids = list(self._bm25_docs.keys())
@@ -431,6 +509,7 @@ class CodebaseRAG:
             out.append({
                 "id": cid,
                 "file": meta.get("file", "unknown"),
+                "file_path": meta.get("file_path", ""),
                 "content": meta.get("content", ""),
                 "score": float(scores[i]),
             })
