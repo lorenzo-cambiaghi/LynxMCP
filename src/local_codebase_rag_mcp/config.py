@@ -1,12 +1,17 @@
 """
 Configuration loader for the local-codebase-rag-mcp server.
 
-Reads `config.json` (next to this file by default) and exposes a typed
-`Config` dataclass used by `mcp_server.py` and `rag_manager.py`.
+Reads `config.json` and exposes a typed `Config` dataclass used by
+`server.py` and `rag_manager.py`.
 
-The path to the config file can be overridden via the `RAG_CONFIG_PATH`
-environment variable. This is useful when the server is launched by an MCP
-client whose working directory is unpredictable.
+Resolution order (first match wins):
+  1. Explicit `config_path` argument to `load_config()`.
+  2. `RAG_CONFIG_PATH` environment variable.
+  3. `./config.json` in the current working directory.
+
+The CLI's `--config` flag plumbs straight to (1). The env var is the
+recommended escape hatch when an MCP client launches the server from an
+unpredictable working directory.
 """
 
 from __future__ import annotations
@@ -58,7 +63,13 @@ class Config:
 
 
 def _default_config_path() -> Path:
-    return Path(__file__).resolve().parent / "config.json"
+    """Default config location: ./config.json in the current working dir.
+
+    Anchored to CWD (not the package directory) because, when installed via
+    pip, the package lives under site-packages/ and the user's actual config
+    is in their project directory.
+    """
+    return Path.cwd() / "config.json"
 
 
 def _normalize_ignored_fragments(fragments: List[str]) -> tuple:
@@ -90,7 +101,7 @@ def load_config(config_path: Path | None = None) -> Config:
     Resolution order:
       1. explicit `config_path` argument
       2. `RAG_CONFIG_PATH` environment variable
-      3. `config.json` next to this script
+      3. `./config.json` in the current working directory
 
     Exits with a clear error message if the config is missing or malformed.
     """
@@ -100,6 +111,9 @@ def load_config(config_path: Path | None = None) -> Config:
             config_path = Path(env_override)
         else:
             config_path = _default_config_path()
+    else:
+        # Accept str / os.PathLike from callers (CLI, tests).
+        config_path = Path(config_path)
 
     if not config_path.is_file():
         print(

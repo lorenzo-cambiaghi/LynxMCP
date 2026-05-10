@@ -26,14 +26,15 @@ leave your machine. No API keys, no cloud dependencies, no recurring costs.
    - [Google Antigravity](#google-antigravity)
    - [Cursor](#cursor)
    - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-9. [Verify the integration works](#verify-the-integration-works)
-10. [The MCP tools you get](#the-mcp-tools-you-get)
-11. [Keeping the index up to date](#keeping-the-index-up-to-date)
-12. [Hybrid retrieval](#hybrid-retrieval)
-13. [Config drift detection](#config-drift-detection)
-14. [Architecture](#architecture)
-15. [Troubleshooting](#troubleshooting)
-16. [Contributing](#contributing)
+9. [Command-line interface](#command-line-interface)
+10. [Verify the integration works](#verify-the-integration-works)
+11. [The MCP tools you get](#the-mcp-tools-you-get)
+12. [Keeping the index up to date](#keeping-the-index-up-to-date)
+13. [Hybrid retrieval](#hybrid-retrieval)
+14. [Config drift detection](#config-drift-detection)
+15. [Architecture](#architecture)
+16. [Troubleshooting](#troubleshooting)
+17. [Contributing](#contributing)
 
 ---
 
@@ -112,17 +113,22 @@ A file watcher keeps the index in sync as you edit (~2s after each save).
 
 ## Installation
 
-Clone the repository and install dependencies:
+The project is a standard Python package. Install it from a local clone in
+editable mode (recommended while it is pre-PyPI):
 
 ```bash
 git clone https://github.com/<your-username>/local-codebase-rag-mcp.git
 cd local-codebase-rag-mcp
-pip install -r requirements.txt
+pip install -e .
 ```
+
+This installs the package and exposes a `local-codebase-rag-mcp` console
+command. (When PyPI publication lands, the install becomes a single
+`pip install local-codebase-rag-mcp`.)
 
 > On Python 3.14+ you may also need: `pip install "mcp[cli]"`
 
-Dependencies installed:
+Dependencies installed automatically:
 
 | Package | Why |
 |---|---|
@@ -134,6 +140,41 @@ Dependencies installed:
 | `gitpython` | Optional: detect new commits for the rebuild fallback |
 | `watchdog` | Cross-platform file system events for live updates |
 | `rank-bm25` | Lexical (BM25) retrieval used by the hybrid search mode |
+
+**Verify the install:**
+
+```bash
+local-codebase-rag-mcp --version
+local-codebase-rag-mcp --help
+```
+
+> ### ⚠️ Two equivalent ways to invoke (read this once)
+>
+> Throughout this README every example uses the short form
+> `local-codebase-rag-mcp ...`. The fully equivalent long form is
+> `python -m local_codebase_rag_mcp ...`. Pick whichever works for you:
+>
+> | Use the short form... | Use `python -m ...` instead when... |
+> |---|---|
+> | The `local-codebase-rag-mcp` command is on your `PATH`. | The console script is missing or not on `PATH` (common on Windows: pip prints a warning at install time when `Scripts/` is not in `PATH`). |
+> | You want shorter snippets in IDE config files. | You want a guaranteed-working invocation regardless of `PATH`. Recommended for IDE configs that you'll share or commit to dotfiles. |
+>
+> Side-by-side, all of these are interchangeable:
+>
+> ```bash
+> local-codebase-rag-mcp --help
+> python -m local_codebase_rag_mcp --help
+>
+> local-codebase-rag-mcp build --config /path/to/config.json
+> python -m local_codebase_rag_mcp build --config /path/to/config.json
+>
+> local-codebase-rag-mcp serve --config /path/to/config.json
+> python -m local_codebase_rag_mcp serve --config /path/to/config.json
+> ```
+>
+> If you're on Windows and the short form fails with "command not found",
+> just prefix with `python -m ` and substitute hyphens with underscores in
+> the package name. That's the only difference.
 
 ---
 
@@ -181,9 +222,14 @@ Open `config.json` and at minimum set `codebase_path`:
 
 > `config.json` is **gitignored** — your local config is never committed.
 
-**Want a different config location?** Set the environment variable
-`RAG_CONFIG_PATH` to an absolute path. This is useful when your IDE launches
-the server from an unexpected working directory.
+**Want a different config location?** Three options, in priority order:
+
+1. Pass `--config /absolute/path/to/config.json` to any CLI subcommand.
+2. Set the environment variable `RAG_CONFIG_PATH` to an absolute path.
+3. Default: `./config.json` in the current working directory.
+
+For MCP IDE integration, option (1) is the recommended approach — see the
+[Connect it to your AI client](#connect-it-to-your-ai-client) snippets.
 
 ---
 
@@ -194,28 +240,37 @@ The first index build can take a few minutes on a large codebase
 AI client wait the first time it connects, pre-build the index from a
 terminal:
 
-**Bash / Linux / macOS / Git Bash:**
+From the directory containing your `config.json`, run:
+
 ```bash
-python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name)"
+local-codebase-rag-mcp build
 ```
 
-**PowerShell:**
-```powershell
-python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name)"
-```
+> If you get `command not found`, use the equivalent `python -m` form:
+> `python -m local_codebase_rag_mcp build`. See
+> [Two equivalent ways to invoke](#installation) for why.
 
-The constructor handles the first-time build automatically when the storage
-is empty. You should see logs like:
+You should see logs like:
 
 ```
 [rag] Indexing codebase from C:\path\to\your\codebase...
 [rag] Found 1247 files
+[rag] Index updated successfully.
 ```
 
-> **Note:** to **rebuild** an existing index later (e.g. after changing the
-> embedding model), see [Config drift detection](#config-drift-detection)
-> and the troubleshooting section — those snippets append `.update(force=True)`
-> to actually re-do the work.
+If your `config.json` lives elsewhere, use `--config`:
+
+```bash
+local-codebase-rag-mcp build --config /path/to/config.json
+```
+
+The same `build` command also handles **rebuilding** later (e.g. after
+changing the embedding model) — it always does a full force rebuild, which
+is the right thing for a CLI invocation.
+
+> Note: starting the server with `local-codebase-rag-mcp serve` on a fresh
+> install will also trigger an initial build implicitly. Pre-building is just
+> a courtesy so the first MCP client doesn't have to wait minutes.
 
 Once `rag_storage/` exists and is populated, every subsequent server start
 is fast (a few seconds).
@@ -234,12 +289,35 @@ absolute path where you cloned this repo.
 > Tip on Windows: in JSON, you can use either forward slashes (`C:/Users/...`)
 > or escaped backslashes (`C:\\Users\\...`). Forward slashes are simpler.
 
+All snippets below assume the package is installed (`pip install -e .` from
+the repo, or eventually `pip install local-codebase-rag-mcp`) and that you
+have a `config.json` somewhere on disk.
+
+> **Tip — passing the config:** since an MCP client launches the server
+> from an unpredictable working directory, always pass `--config` with an
+> absolute path. Replace `C:/path/to/config.json` in every snippet with
+> your actual path.
+
+> **Tip — if the short command isn't on your `PATH`:** every snippet below
+> uses `"command": "local-codebase-rag-mcp"`. If pip installed the console
+> script outside your `PATH` (common on Windows — pip prints a warning at
+> install time), swap the entry for the equivalent `python -m` form:
+>
+> ```json
+> "command": "python",
+> "args": ["-m", "local_codebase_rag_mcp", "serve", "--config", "C:/path/to/config.json"]
+> ```
+>
+> The two are functionally identical. The `python -m` form is also a
+> safer default for shared / committed config files, since it does not
+> depend on the user's `PATH`.
+
 ### Claude Code (CLI)
 
 Add the server with one command:
 
 ```bash
-claude mcp add codebase-rag --scope user -- python C:/path/to/local-codebase-rag-mcp/mcp_server.py
+claude mcp add codebase-rag --scope user -- local-codebase-rag-mcp serve --config C:/path/to/config.json
 ```
 
 Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
@@ -248,8 +326,8 @@ Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "python",
-      "args": ["C:/path/to/local-codebase-rag-mcp/mcp_server.py"]
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
 }
@@ -270,8 +348,8 @@ workspace root:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "python",
-      "args": ["C:/path/to/local-codebase-rag-mcp/mcp_server.py"]
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
 }
@@ -293,8 +371,8 @@ Add an entry under `mcpServers`:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "python",
-      "args": ["C:/path/to/local-codebase-rag-mcp/mcp_server.py"],
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/path/to/config.json"],
       "type": "stdio"
     }
   }
@@ -311,8 +389,8 @@ Cursor reads `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "python",
-      "args": ["C:/path/to/local-codebase-rag-mcp/mcp_server.py"]
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
 }
@@ -324,11 +402,107 @@ Restart Cursor. Settings → MCP should now list the server.
 
 Any MCP client takes the same three pieces of information:
 
-- **Command:** `python`
-- **Args:** `["C:/path/to/local-codebase-rag-mcp/mcp_server.py"]`
+- **Command:** `local-codebase-rag-mcp`
+- **Args:** `["serve", "--config", "C:/path/to/config.json"]`
 - **Transport:** `stdio`
 
 Consult your client's documentation for where to put it.
+
+### Multiple codebases (one server per repo)
+
+The simplest way to index N codebases is N config files + N MCP server
+entries:
+
+```json
+{
+  "mcpServers": {
+    "codebase-rag-frontend": {
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/configs/frontend.json"]
+    },
+    "codebase-rag-backend": {
+      "command": "local-codebase-rag-mcp",
+      "args": ["serve", "--config", "C:/configs/backend.json"]
+    }
+  }
+}
+```
+
+Each appears as a separate MCP server in the IDE with its own three tools.
+A single `pip install` covers all of them.
+
+---
+
+## Command-line interface
+
+The same `local-codebase-rag-mcp` command exposes four subcommands. Useful
+for debugging the index, scripting, or just querying the codebase without
+opening an AI assistant.
+
+```text
+local-codebase-rag-mcp [--version] [-h] COMMAND ...
+
+  serve   Run the MCP server (default if no command is given)
+  build   Force a full rebuild of the index
+  search  Run an ad-hoc search query (no MCP client needed)
+  status  Show RAG status: git state, last update, config drift
+```
+
+> Every example in this section can be invoked equivalently as
+> `python -m local_codebase_rag_mcp <subcommand> ...` if the short
+> `local-codebase-rag-mcp` script is not on your `PATH`. See
+> [Two equivalent ways to invoke](#installation) at the end of the
+> Installation section.
+
+Every subcommand accepts `--config PATH` (or honors `RAG_CONFIG_PATH`, or
+falls back to `./config.json` in the current directory).
+
+### `serve`
+
+Runs the MCP server over stdio. This is what your IDE invokes:
+
+```bash
+local-codebase-rag-mcp serve --config /path/to/config.json
+```
+
+### `build`
+
+Forces a full rebuild of the index. Use this for the first-time build,
+after changing the embedding model, or whenever you want a known-clean
+rebuild:
+
+```bash
+local-codebase-rag-mcp build --config /path/to/config.json
+```
+
+### `search`
+
+Runs an ad-hoc search and prints the top results to your terminal. Useful
+for "is the index actually finding this file?" debugging or for piping
+into other commands.
+
+```bash
+local-codebase-rag-mcp search "how damage is dispatched" --top-k 3
+local-codebase-rag-mcp search "IDamageable" --mode dense --ext .cs
+local-codebase-rag-mcp search "auth" --glob "**/middleware/**" -k 5
+```
+
+Supported flags: `--top-k / -k`, `--mode {hybrid,dense,sparse}`, `--ext`
+(repeatable, e.g. `--ext .py --ext .pyi`), `--glob`, `--path-contains`.
+
+### `status`
+
+Reports git state, last update time, and any config drift detected since
+the last full rebuild:
+
+```bash
+$ local-codebase-rag-mcp status
+Status:       Up to date
+Last commit:  0edb21f9e07c5d64ba0e632606ae4ccb64b5c16a
+Last update:  2026-05-10T13:45:27.492806
+
+No config drift detected.
+```
 
 ---
 
@@ -344,8 +518,8 @@ You should see it invoke `search_codebase` and return relevant snippets.
 To verify directly without an AI client, run either smoke test:
 
 ```bash
-python test_watch.py    # end-to-end test for the file watcher
-python test_drift.py    # end-to-end test for config drift detection
+python tests/test_watch.py    # end-to-end test for the file watcher
+python tests/test_drift.py    # end-to-end test for config drift detection
 ```
 
 `test_watch.py` launches the server as a subprocess, creates / modifies /
@@ -434,12 +608,11 @@ keeps the index in sync at every commit. Add this to
 
 ```bash
 #!/bin/bash
-python C:/path/to/local-codebase-rag-mcp/build_index.py >/dev/null 2>&1 &
+local-codebase-rag-mcp build --config /path/to/config.json >/dev/null 2>&1 &
 ```
 
-Where `build_index.py` is a one-liner you create with the pre-build snippet
-from the [Build the index for the first time](#build-the-index-for-the-first-time)
-section.
+Replace `/path/to/config.json` with your absolute config path. The `&`
+backgrounds the rebuild so the commit returns immediately.
 
 ---
 
@@ -515,19 +688,10 @@ The server **does not refuse to serve searches** when drift is detected. The
 choice is yours: maybe you know the drift is intentional and you'll rebuild
 later, or maybe you want to inspect the impact first.
 
-To clear a drift warning, run a full rebuild:
+To clear a drift warning, run a full rebuild via the CLI:
 
-```python
-from config import load_config
-from rag_manager import CodebaseRAG
-c = load_config()
-CodebaseRAG(
-    codebase_path=str(c.codebase_path),
-    rag_storage_path=str(c.storage_path),
-    supported_extensions=c.supported_extensions,
-    embedding_model_name=c.embedding.model_name,
-    collection_name=c.collection_name,
-).update(force=True)
+```bash
+local-codebase-rag-mcp build --config /path/to/config.json
 ```
 
 Or, while the server is running, ask the AI client to call
@@ -573,19 +737,31 @@ currently only filters file-watcher events, not the indexing pipeline.
 +------------------------------------------------------------+
 ```
 
-| File | Role |
-|---|---|
-| `mcp_server.py` | Entry point. Boots FastMCP, runs the file watcher, loads the RAG in a background thread. |
-| `rag_manager.py` | `CodebaseRAG` class: build / load index, semantic search, incremental per-file updates. |
-| `config.py` | Typed loader for `config.json` with environment-variable override. |
-| `config.example.json` | Template configuration (commit this). |
-| `config.json` | Your local config (gitignored). |
-| `test_watch.py` | End-to-end smoke test for the watcher. |
-| `test_drift.py` | End-to-end smoke test for config drift detection. |
-| `test_hybrid_vs_dense.py` | Side-by-side benchmark of dense vs hybrid retrieval. |
-| `test_filters.py` | Smoke test for the search-filter parameters. |
-| `requirements.txt` | Python dependencies. |
-| `rag_storage/` | Persistent ChromaDB collection. Created at first build. Gitignored. |
+Repository layout:
+
+```
+local-codebase-rag-mcp/
+├── pyproject.toml           Package metadata + dependencies
+├── README.md                You are here
+├── LICENSE                  MIT
+├── config.example.json      Template config (commit this)
+├── config.json              Your local config (gitignored)
+├── src/
+│   └── local_codebase_rag_mcp/
+│       ├── __init__.py      Package version
+│       ├── __main__.py      Enables `python -m local_codebase_rag_mcp`
+│       ├── cli.py           argparse-based CLI dispatcher
+│       ├── server.py        FastMCP server + tool definitions + watcher
+│       ├── rag_manager.py   CodebaseRAG: indexing, search, drift, BM25
+│       └── config.py        Typed config loader
+├── tests/
+│   ├── conftest.py          pytest path shim for src/ layout
+│   ├── test_watch.py        End-to-end smoke test for the watcher
+│   ├── test_drift.py        End-to-end smoke test for drift detection
+│   ├── test_filters.py      Smoke test for search-filter parameters
+│   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
+└── rag_storage/             ChromaDB collection (gitignored, auto-created)
+```
 
 ### Key design decisions
 
@@ -629,15 +805,30 @@ Either copy `config.example.json` to `config.json`, or set the
 **The server exits as soon as I run it from a terminal.**
 Expected: in MCP stdio mode the server reads JSON-RPC from stdin; closing
 stdin (Ctrl+D / EOF) terminates the process. To exercise the server
-manually, use `python test_watch.py` instead.
+manually, use `python tests/test_watch.py` instead, or use the CLI:
+`local-codebase-rag-mcp search "..."` runs a query without keeping a
+server alive.
+
+**The `local-codebase-rag-mcp` command is not on my PATH.**
+On Windows, pip may install console scripts into a directory that is not
+on `PATH` by default (it prints a warning at install time when this
+happens). Two options:
+
+- **Recommended:** use the equivalent
+  `python -m local_codebase_rag_mcp ...` form everywhere. It does not
+  depend on `PATH` and is interchangeable with the short command. Full
+  details in [Two equivalent ways to invoke](#installation).
+- Or add the printed install directory to `PATH` (typically something
+  like `%USERPROFILE%\AppData\Local\Python\...\Scripts` on Windows).
 
 **I want to change the embedding model.**
 Set `embedding.model_name` in `config.json` to any HuggingFace
-sentence-transformer model. Then force a full rebuild — different models
-produce non-comparable vectors:
+sentence-transformer model, then force a full rebuild — different models
+produce non-comparable vectors. The next start will also flag a CRITICAL
+drift if you forget:
 
 ```bash
-python -c "from config import load_config; from rag_manager import CodebaseRAG; c = load_config(); CodebaseRAG(str(c.codebase_path), str(c.storage_path), c.supported_extensions, c.embedding.model_name, c.collection_name).update(force=True)"
+local-codebase-rag-mcp build --config /path/to/config.json
 ```
 
 ---
@@ -649,10 +840,17 @@ an issue first so we can discuss the approach.
 
 When contributing code:
 
-- Run `python -m py_compile mcp_server.py rag_manager.py config.py test_watch.py test_drift.py test_filters.py test_hybrid_vs_dense.py`
+- After a clone, install in editable mode so the package and the
+  `local-codebase-rag-mcp` command resolve:
+  ```bash
+  pip install -e .
+  ```
+- Run `python -m py_compile src/local_codebase_rag_mcp/*.py tests/*.py`
   to catch syntax errors.
-- Run `python test_watch.py`, `python test_drift.py`, and
-  `python test_filters.py` to confirm the smoke tests still pass.
+- Run `python tests/test_watch.py`, `python tests/test_drift.py`, and
+  `python tests/test_filters.py` to confirm the smoke tests still pass.
+  (`tests/test_hybrid_vs_dense.py` is a side-by-side benchmark, not a
+  pass/fail test.)
 - Keep all comments, docstrings, and log messages in English.
 
 ---

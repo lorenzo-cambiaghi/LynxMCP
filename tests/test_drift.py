@@ -17,8 +17,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from config import load_config
-from rag_manager import CodebaseRAG, DRIFT_CRITICAL, DRIFT_WARNING
+from local_codebase_rag_mcp.config import load_config
+from local_codebase_rag_mcp.rag_manager import CodebaseRAG, DRIFT_CRITICAL, DRIFT_WARNING
 
 
 def main() -> int:

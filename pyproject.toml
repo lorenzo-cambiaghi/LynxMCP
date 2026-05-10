@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-codebase-rag-mcp"
+version = "0.1.0"
+description = "Self-hosted MCP server with semantic + lexical search over your local codebase. 100% local, no data egress."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Lorenzo Cambiaghi" },
+]
+requires-python = ">=3.10"
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "rag",
+    "codebase",
+    "semantic-search",
+    "bm25",
+    "local",
+    "claude",
+    "antigravity",
+    "cursor",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "mcp",
+    "llama-index",
+    "llama-index-vector-stores-chroma",
+    "llama-index-embeddings-huggingface",
+    "chromadb",
+    "gitpython",
+    "watchdog",
+    "rank-bm25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+local-codebase-rag-mcp = "local_codebase_rag_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/loren/local-codebase-rag-mcp"
+Repository = "https://github.com/loren/local-codebase-rag-mcp"
+Issues = "https://github.com/loren/local-codebase-rag-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

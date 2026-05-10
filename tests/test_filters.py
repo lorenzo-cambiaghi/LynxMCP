@@ -17,8 +17,8 @@ import os
 import sys
 from pathlib import Path
 
-from config import load_config
-from rag_manager import CodebaseRAG, _matches_filters, _normalize_extension
+from local_codebase_rag_mcp.config import load_config
+from local_codebase_rag_mcp.rag_manager import CodebaseRAG, _matches_filters, _normalize_extension
 
 
 QUERY = "serialization"

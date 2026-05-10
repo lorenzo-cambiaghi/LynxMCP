@@ -14,11 +14,12 @@ import sys
 import time
 from pathlib import Path
 
-from config import load_config
+from local_codebase_rag_mcp.config import load_config
 
 HERE = Path(__file__).parent
-SERVER = HERE / "mcp_server.py"
-CONFIG = load_config()
+REPO_ROOT = HERE.parent
+CONFIG_FILE = REPO_ROOT / "config.json"
+CONFIG = load_config(CONFIG_FILE)
 CODEBASE = CONFIG.codebase_path
 TEST_FILE = CODEBASE / "__rag_watch_smoketest.md"
 
@@ -46,14 +47,18 @@ def main() -> int:
     if log_path.exists():
         log_path.unlink()
 
-    print(f"[test] Launching server, stderr -> {log_path.name}")
+    print(f"[test] Launching server (python -m local_codebase_rag_mcp serve), "
+          f"stderr -> {log_path.name}")
     log_handle = log_path.open("wb")
     proc = subprocess.Popen(
-        [sys.executable, "-u", str(SERVER)],
+        [
+            sys.executable, "-u", "-m", "local_codebase_rag_mcp",
+            "serve", "--config", str(CONFIG_FILE),
+        ],
         stdin=subprocess.PIPE,  # keep mcp.run() alive (otherwise EOF -> exit)
         stdout=subprocess.DEVNULL,
         stderr=log_handle,
-        cwd=str(HERE),
+        cwd=str(REPO_ROOT),
     )
 
     try:

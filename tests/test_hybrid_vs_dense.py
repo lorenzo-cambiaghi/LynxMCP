@@ -11,8 +11,8 @@ it only reports.
 
 import sys
 
-from config import load_config
-from rag_manager import CodebaseRAG
+from local_codebase_rag_mcp.config import load_config
+from local_codebase_rag_mcp.rag_manager import CodebaseRAG
 
 
 # (label, query) tuples covering different retrieval regimes.
