@@ -1,0 +1,7 @@
+mcp
+llama-index
+llama-index-vector-stores-chroma
+llama-index-embeddings-huggingface
+chromadb
+gitpython
+watchdog
