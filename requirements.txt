@@ -5,3 +5,4 @@ llama-index-embeddings-huggingface
 chromadb
 gitpython
 watchdog
+rank-bm25

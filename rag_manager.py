@@ -41,14 +41,49 @@ def log(msg):
     print(msg, file=sys.stderr)
 
 
+import re
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 from llama_index.core import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from rank_bm25 import BM25Okapi
 from pathlib import Path
 import json
 from datetime import datetime
+
+
+# ----------------------------------------------------------------------------
+# Code-aware tokenizer for BM25.
+# ----------------------------------------------------------------------------
+# Goal: make queries like "IDamageable", "AStarPathFinder", "calculateSpacing"
+# match identifiers in the code even when the casing differs slightly.
+#
+# Strategy: keep the FULL identifier as a token AND its constituent parts
+# (CamelCase / snake_case / dot.notation split). Lowercase everything.
+# This roughly doubles index size but dramatically improves recall on
+# identifier-heavy queries.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_NON_WORD = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _tokenize_code(text: str) -> list:
+    """Split text into BM25 tokens, preserving both whole identifiers and parts."""
+    if not text:
+        return []
+    tokens = []
+    for raw in _NON_WORD.split(text):
+        if not raw:
+            continue
+        lower_raw = raw.lower()
+        tokens.append(lower_raw)
+        # Add CamelCase / Pascal pieces as separate tokens for partial matching.
+        if any(c.isupper() for c in raw):
+            for piece in _CAMEL_BOUNDARY.split(raw):
+                piece_lower = piece.lower()
+                if piece_lower and piece_lower != lower_raw:
+                    tokens.append(piece_lower)
+    return tokens
 
 
 # Severity levels for config drift detection. See _build_config_snapshot
@@ -98,6 +133,9 @@ class CodebaseRAG:
         supported_extensions,
         embedding_model_name: str,
         collection_name: str,
+        search_mode: str = "hybrid",
+        rrf_k: int = 60,
+        candidate_pool_size: int = 30,
     ):
         self.codebase_path = Path(codebase_path)
         self.storage_path = Path(rag_storage_path)
@@ -112,6 +150,23 @@ class CodebaseRAG:
         # used for drift detection.
         self.embedding_model_name = embedding_model_name
         self.collection_name = collection_name
+
+        # Search behavior: dense / sparse / hybrid (RRF-fused).
+        if search_mode not in ("hybrid", "dense", "sparse"):
+            raise ValueError(
+                f"search_mode must be one of 'hybrid' | 'dense' | 'sparse', got {search_mode!r}"
+            )
+        self.search_mode = search_mode
+        self.rrf_k = int(rrf_k)
+        self.candidate_pool_size = int(candidate_pool_size)
+
+        # BM25 sparse index, lazily built from chunks living in ChromaDB.
+        # _bm25_docs maps chunk_id -> tokenized content; the BM25Okapi object
+        # is rebuilt on demand from this dict whenever it goes stale.
+        self._bm25_docs: dict = {}
+        self._bm25_meta: dict = {}  # chunk_id -> {"file": ..., "content": ...}
+        self._bm25_okapi = None
+        self._bm25_doc_ids: list = []
 
         # Serialize index mutations between the watcher, explicit updates,
         # and the search path.
@@ -187,6 +242,9 @@ class CodebaseRAG:
             storage_context=self.storage_context,
         )
 
+        # Collection contents changed wholesale: drop the BM25 cache so the
+        # next search rebuilds it from the new ChromaDB state.
+        self._invalidate_bm25()
         return index
 
     def _load_or_build_index(self):
@@ -279,21 +337,127 @@ class CodebaseRAG:
         log("[rag] Index updated successfully.")
 
     def search(self, query: str, top_k=5):
-        """Semantic search over the codebase. Fully local, no external calls."""
+        """Hybrid (default) / dense / sparse search over the codebase.
+
+        Mode is set at construction time via `search_mode`. In hybrid mode we
+        fetch `candidate_pool_size` candidates from each retriever (dense and
+        BM25) then fuse rankings via Reciprocal Rank Fusion.
+        """
         # No auto-update here: the watcher keeps the index live and any
         # git-based catch-up is handled on demand by update_codebase_index.
-        # Avoids costly rebuilds during a search.
-        retriever = self.index.as_retriever(similarity_top_k=top_k)
-        results = retriever.retrieve(query)
+        if self.search_mode == "dense":
+            return self._dense_lookup(query, top_k)
+        if self.search_mode == "sparse":
+            return self._bm25_lookup(query, top_k)
+        # hybrid
+        pool = max(top_k, self.candidate_pool_size)
+        dense_hits = self._dense_lookup(query, pool)
+        sparse_hits = self._bm25_lookup(query, pool)
+        return self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=top_k)
 
+    # ------------------------------------------------------------------
+    # Retrieval primitives: dense (vectors), sparse (BM25), fusion (RRF)
+    # ------------------------------------------------------------------
+
+    def _dense_lookup(self, query: str, top_n: int) -> list:
+        """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline."""
+        retriever = self.index.as_retriever(similarity_top_k=top_n)
+        results = retriever.retrieve(query)
         return [
             {
-                "file": result.metadata.get("file_name", "unknown"),
-                "content": result.get_content(),
-                "score": result.score,
+                "id": getattr(getattr(r, "node", None), "id_", None) or r.metadata.get("file_path", ""),
+                "file": r.metadata.get("file_name", "unknown"),
+                "content": r.get_content(),
+                "score": r.score,
             }
-            for result in results
+            for r in results
         ]
+
+    def _ensure_bm25(self):
+        """Build (or rebuild) the BM25 index from the current ChromaDB content."""
+        if self._bm25_okapi is not None:
+            return
+        # Pull every chunk currently in ChromaDB. Cheap for typical codebases
+        # (a few thousand chunks); rare operation thanks to the lazy cache.
+        try:
+            data = self.vector_store._collection.get(include=["documents", "metadatas"])
+        except Exception as e:
+            log(f"[bm25] could not read ChromaDB collection: {e}")
+            self._bm25_okapi = None
+            return
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+
+        self._bm25_docs = {}
+        self._bm25_meta = {}
+        for cid, content, meta in zip(ids, docs, metas):
+            tokens = _tokenize_code(content or "")
+            self._bm25_docs[cid] = tokens
+            self._bm25_meta[cid] = {
+                "file": (meta or {}).get("file_name", "unknown"),
+                "content": content or "",
+            }
+        self._bm25_doc_ids = list(self._bm25_docs.keys())
+        if self._bm25_doc_ids:
+            corpus = [self._bm25_docs[cid] for cid in self._bm25_doc_ids]
+            self._bm25_okapi = BM25Okapi(corpus)
+        else:
+            self._bm25_okapi = None
+
+    def _invalidate_bm25(self):
+        """Mark the BM25 cache stale so the next search rebuilds it."""
+        self._bm25_okapi = None
+
+    def _bm25_lookup(self, query: str, top_n: int) -> list:
+        """BM25 sparse retrieval over the in-memory tokenized corpus."""
+        self._ensure_bm25()
+        if self._bm25_okapi is None or not self._bm25_doc_ids:
+            return []
+        query_tokens = _tokenize_code(query)
+        if not query_tokens:
+            return []
+        scores = self._bm25_okapi.get_scores(query_tokens)
+        # Pair scores with doc ids, sort desc, take top_n.
+        ranked_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
+        out = []
+        for i in ranked_idx:
+            if scores[i] <= 0:
+                # rank-bm25 returns 0 for documents without any matching token.
+                # Skip them to keep the candidate list meaningful.
+                continue
+            cid = self._bm25_doc_ids[i]
+            meta = self._bm25_meta.get(cid, {})
+            out.append({
+                "id": cid,
+                "file": meta.get("file", "unknown"),
+                "content": meta.get("content", ""),
+                "score": float(scores[i]),
+            })
+        return out
+
+    def _rrf_fuse(self, rankings: list, k: int, top_k: int) -> list:
+        """Reciprocal Rank Fusion: combine multiple rankings into one.
+
+        Each document gets score = sum over rankings of 1 / (k + rank+1).
+        """
+        fused_scores: dict = {}
+        item_by_id: dict = {}
+        for ranking in rankings:
+            for rank, item in enumerate(ranking):
+                cid = item.get("id")
+                if not cid:
+                    continue
+                fused_scores[cid] = fused_scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+                # Keep the first metadata seen for this id; sources agree on file/content.
+                item_by_id.setdefault(cid, item)
+        sorted_ids = sorted(fused_scores, key=fused_scores.get, reverse=True)[:top_k]
+        out = []
+        for cid in sorted_ids:
+            item = dict(item_by_id[cid])
+            item["score"] = fused_scores[cid]  # fused score replaces raw per-source score
+            out.append(item)
+        return out
 
     # ------------------------------------------------------------------
     # Incremental, per-file update (driven by the file watcher)
@@ -354,6 +518,9 @@ class CodebaseRAG:
                     log(f"[rag] insert failed for {abs_path}: {e}")
                     return False
 
+            # Chunks changed: invalidate BM25 cache (rebuilt lazily on next search).
+            self._invalidate_bm25()
+
         log(f"[rag] Re-indexed {Path(abs_path).name} ({removed} old chunks dropped)")
         return True
 
@@ -364,6 +531,8 @@ class CodebaseRAG:
             return False
         with self._write_lock:
             removed = self._delete_file_chunks(abs_path)
+            if removed:
+                self._invalidate_bm25()
         if removed:
             log(f"[rag] Removed {removed} chunks for {Path(abs_path).name}")
         return removed > 0

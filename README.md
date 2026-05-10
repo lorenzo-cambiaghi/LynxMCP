@@ -29,10 +29,11 @@ leave your machine. No API keys, no cloud dependencies, no recurring costs.
 9. [Verify the integration works](#verify-the-integration-works)
 10. [The MCP tools you get](#the-mcp-tools-you-get)
 11. [Keeping the index up to date](#keeping-the-index-up-to-date)
-12. [Config drift detection](#config-drift-detection)
-13. [Architecture](#architecture)
-14. [Troubleshooting](#troubleshooting)
-15. [Contributing](#contributing)
+12. [Hybrid retrieval](#hybrid-retrieval)
+13. [Config drift detection](#config-drift-detection)
+14. [Architecture](#architecture)
+15. [Troubleshooting](#troubleshooting)
+16. [Contributing](#contributing)
 
 ---
 
@@ -132,6 +133,7 @@ Dependencies installed:
 | `chromadb` | Persistent vector database (sqlite-backed) |
 | `gitpython` | Optional: detect new commits for the rebuild fallback |
 | `watchdog` | Cross-platform file system events for live updates |
+| `rank-bm25` | Lexical (BM25) retrieval used by the hybrid search mode |
 
 ---
 
@@ -173,6 +175,9 @@ Open `config.json` and at minimum set `codebase_path`:
 | `embedding.model_name` | Any HuggingFace sentence-transformer model. The default is small and CPU-friendly. **Changing this invalidates all existing vectors** — see [Config drift detection](#config-drift-detection). |
 | `git_integration.enabled` | When `true`, `get_rag_status` reports the last indexed git commit. Optional. |
 | `search.default_top_k` | Default number of chunks `search_codebase` returns when the caller does not pass `top_k`. |
+| `search.mode` | `"hybrid"` (default), `"dense"`, or `"sparse"`. See [Hybrid retrieval](#hybrid-retrieval). |
+| `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`, the value from the original RRF paper). Only used in hybrid mode. |
+| `search.candidate_pool_size` | How many candidates each retriever returns before fusion (default `30`). Larger = slower but more thorough. |
 
 > `config.json` is **gitignored** — your local config is never committed.
 
@@ -416,6 +421,49 @@ section.
 
 ---
 
+## Hybrid retrieval
+
+By default, `search_codebase` runs in **hybrid mode**: it combines a dense
+(semantic) retriever with a sparse (BM25, lexical) retriever and fuses the
+two rankings using **Reciprocal Rank Fusion** (RRF, `k=60`).
+
+The motivation is that dense and sparse retrieval have complementary
+failure modes:
+
+- **Dense semantic search** is excellent at "natural-language" queries
+  ("how is damage dispatched between entities?") but can be weak on short
+  identifier queries ("`AStarPathFinder`") because there is little context
+  to embed.
+- **BM25 lexical search** excels at exact identifier and CamelCase matches
+  but cannot bridge synonyms ("calculate distance" vs `MeasureGap`).
+
+A code-aware tokenizer keeps full identifiers AND splits CamelCase /
+snake_case into parts, so `IDamageable` is indexed as `idamageable`, `i`,
+and `damageable`. This gives BM25 a fair shot at partial-name queries.
+
+Switch modes via `config.json` (`search.mode`):
+
+- `"hybrid"` (default) — RRF over dense + BM25
+- `"dense"` — semantic only (lower latency, weaker on identifiers)
+- `"sparse"` — BM25 only (no semantic understanding, useful as a baseline)
+
+To compare modes empirically on your codebase, run:
+
+```bash
+python test_hybrid_vs_dense.py
+```
+
+This is a **benchmark, not a regression test**: it prints two columns of
+rankings (dense | hybrid) for a handful of canned queries so you can see
+whether hybrid is helping or hurting on your specific corpus.
+
+The BM25 index lives entirely in memory and is rebuilt lazily from the
+ChromaDB collection on first query (and after any incremental update). For
+a few thousand chunks the build takes about a second; query latency adds
+~5-15 ms compared to dense alone.
+
+---
+
 ## Config drift detection
 
 Some `config.json` changes silently invalidate an existing index. The most
@@ -512,6 +560,7 @@ currently only filters file-watcher events, not the indexing pipeline.
 | `config.json` | Your local config (gitignored). |
 | `test_watch.py` | End-to-end smoke test for the watcher. |
 | `test_drift.py` | End-to-end smoke test for config drift detection. |
+| `test_hybrid_vs_dense.py` | Side-by-side benchmark of dense vs hybrid retrieval. |
 | `requirements.txt` | Python dependencies. |
 | `rag_storage/` | Persistent ChromaDB collection. Created at first build. Gitignored. |
 

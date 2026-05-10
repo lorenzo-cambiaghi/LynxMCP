@@ -58,6 +58,9 @@ def _load_rag_background():
             supported_extensions=CONFIG.supported_extensions,
             embedding_model_name=CONFIG.embedding.model_name,
             collection_name=CONFIG.collection_name,
+            search_mode=CONFIG.search.mode,
+            rrf_k=CONFIG.search.rrf_k,
+            candidate_pool_size=CONFIG.search.candidate_pool_size,
         )
     except Exception as e:
         _rag_error = str(e)

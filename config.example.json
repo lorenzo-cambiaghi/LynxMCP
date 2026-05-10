@@ -47,6 +47,9 @@
     "enabled": true
   },
   "search": {
-    "default_top_k": 5
+    "default_top_k": 5,
+    "mode": "hybrid",
+    "rrf_k": 60,
+    "candidate_pool_size": 30
   }
 }

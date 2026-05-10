@@ -38,6 +38,9 @@ class GitIntegrationConfig:
 @dataclass(frozen=True)
 class SearchConfig:
     default_top_k: int = 5
+    mode: str = "hybrid"            # "hybrid" | "dense" | "sparse"
+    rrf_k: int = 60                 # standard RRF constant
+    candidate_pool_size: int = 30   # how many candidates to fetch from each retriever before fusion
 
 
 @dataclass(frozen=True)
@@ -154,7 +157,20 @@ def load_config(config_path: Path | None = None) -> Config:
     git = GitIntegrationConfig(enabled=bool(git_raw.get("enabled", True)))
 
     search_raw = raw.get("search") or {}
-    search = SearchConfig(default_top_k=int(search_raw.get("default_top_k", 5)))
+    mode = str(search_raw.get("mode", "hybrid")).lower()
+    if mode not in ("hybrid", "dense", "sparse"):
+        print(
+            f"\n[config] ERROR: search.mode must be one of "
+            f"'hybrid' | 'dense' | 'sparse', got '{mode}'\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    search = SearchConfig(
+        default_top_k=int(search_raw.get("default_top_k", 5)),
+        mode=mode,
+        rrf_k=int(search_raw.get("rrf_k", 60)),
+        candidate_pool_size=int(search_raw.get("candidate_pool_size", 30)),
+    )
 
     return Config(
         codebase_path=codebase_path,
