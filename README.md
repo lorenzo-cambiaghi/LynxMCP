@@ -29,12 +29,13 @@ leave your machine. No API keys, no cloud dependencies, no recurring costs.
 9. [Command-line interface](#command-line-interface)
 10. [Verify the integration works](#verify-the-integration-works)
 11. [The MCP tools you get](#the-mcp-tools-you-get)
-12. [Keeping the index up to date](#keeping-the-index-up-to-date)
-13. [Hybrid retrieval](#hybrid-retrieval)
-14. [Config drift detection](#config-drift-detection)
-15. [Architecture](#architecture)
-16. [Troubleshooting](#troubleshooting)
-17. [Contributing](#contributing)
+12. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+13. [Keeping the index up to date](#keeping-the-index-up-to-date)
+14. [Hybrid retrieval](#hybrid-retrieval)
+15. [Config drift detection](#config-drift-detection)
+16. [Architecture](#architecture)
+17. [Troubleshooting](#troubleshooting)
+18. [Contributing](#contributing)
 
 ---
 
@@ -588,6 +589,128 @@ suspect drift.
 
 Reports current state of the index, including the last indexed git commit
 (if `git_integration.enabled` is `true`).
+
+---
+
+## Get the most out of it: AI integration rules
+
+Installing the server and registering the MCP tools makes them *available*
+to your AI assistant. It does not, on its own, make the assistant use them
+strategically. By default most AI clients will only invoke
+`search_codebase` when the query is obviously "find X" — they will not,
+unprompted, search the codebase before implementing a new utility, a new
+interface, or a new architectural pattern.
+
+That habit (search before implement) is the single highest-value workflow
+this tool unlocks. It is also the workflow your AI client will skip
+unless you ask for it explicitly. The standard way to ask is a project
+rules file the assistant reads at the start of every session.
+
+### Drop-in template
+
+Below is a generic template suitable for any codebase. Copy it into
+whichever convention file your AI client uses (see the table further
+down), then adjust the categories and threshold to your taste.
+
+```markdown
+# Codebase Reuse & Anti-Duplication
+
+This project ships with a local MCP server (`codebase-rag`) that
+semantically indexes the codebase. Use it to discover existing
+implementations **before** writing new code.
+
+## When to search first
+
+Before implementing any of the following, query the codebase via
+`search_codebase`:
+
+- **Utility functions** — math, geometry, IO, parsing, formatting,
+  helpers, extension methods.
+- **Generic interfaces or components** — persistence, lifecycle,
+  eventing, pooling, caching, registration, validation.
+- **Architectural patterns** — factory, registry, observer, strategy,
+  command, mediator.
+
+For one-off code that lives in a single feature (gameplay scripting,
+a single API endpoint, a one-shot script), normal judgement is fine.
+
+## How to search
+
+- **Semantic, not lexical.** Describe what the code *does*, not the
+  name you would give it. The whole point of semantic retrieval is
+  finding code with different names but the same meaning.
+  - Bad: `search_codebase("AngleBetween")`
+  - Good: `search_codebase("calculate angle between two vectors in degrees")`
+- **Top-K**: 5 to 10 for discovery queries. Use `top_k=3` for "find the
+  one canonical place".
+- **Threshold for triage**: results with `score > 0.65` deserve a
+  closer look. Below ~0.5 the match is usually only superficial.
+- **Filters**: when you already know the rough area, narrow with
+  `extensions=[...]`, `path_contains="..."`, or `file_glob="..."`.
+  Filtered queries reduce noise and let you use a smaller top_k.
+
+## How to report back
+
+For each candidate above the threshold, present:
+
+- File path and a one-line summary of what the chunk does.
+- Verdict for the current task: **reusable as-is**, **extendable**,
+  or **only superficially similar**.
+
+Only after the user confirms that nothing existing fits, implement
+from scratch.
+```
+
+### Where to put the rules file
+
+| AI client | Convention file | Notes |
+|---|---|---|
+| Claude Code (CLI + VS Code extension) | `CLAUDE.md` (project root) or `.clauderules` | Both are auto-loaded. `CLAUDE.md` is the newer, cross-tool-friendly form. |
+| Google Antigravity | `AGENTS.md` (project root) or files under `.agents/rules/` | `.agents/rules/` lets you split rules into multiple themed files. Antigravity ≥ v1.20.3 also reads `AGENTS.md`. |
+| Cursor | Files under `.cursor/rules/` | Per-rule scoping with globs is supported. |
+| Aider, Continue.dev, others | `AGENTS.md` (cross-tool standard) | Most modern agents support this convention. |
+
+If you want the rule to apply across multiple AI clients in the same
+project, the safest bet is `AGENTS.md` in the project root — it is
+read by the largest set of agents.
+
+### Tuning the strictness
+
+The template above is a sensible default. Two knobs to consider:
+
+**How aggressive to be about the "search first" requirement.**
+The strict version says "MUST search before implementing X". A softer
+version says "consider searching before implementing X". For shared
+codebases with 5+ developers and a history of duplicated utilities, the
+strict version pays for itself within a week. For solo projects or
+prototypes the softer version avoids friction. Pick what matches your
+duplication pain.
+
+**When to suggest a forced rebuild.**
+The file watcher keeps the index live for normal saves and refactors,
+so day-to-day the AI never needs to think about freshness. A line in
+your rules like:
+
+> If `get_rag_status` reports `Needs update` or any drift warning,
+> tell the user once at the start of the session — do not silently
+> work against a stale index.
+
+…is enough to surface the rare cases where a forced rebuild is needed
+(complex merges, large bulk renames, embedding model changes) without
+making every session noisy.
+
+### A note on what to *avoid* in your rules
+
+- Don't tell the AI to call `update_codebase_index(force=True)`
+  routinely. A force rebuild on a large codebase takes minutes and
+  re-embeds everything; it should be a deliberate user action, not a
+  reflex. The `Needs update` line above is the right surface.
+- Don't ask the AI to call `search_codebase` for queries it can answer
+  by reading a single known file. The tool's job is discovery; once you
+  know what file to read, just read it.
+- Don't ask for "search the entire codebase exhaustively" — `top_k=10`
+  is enough for almost any discovery query, and the tool's filters
+  exist precisely to avoid this.
 
 ---
 
