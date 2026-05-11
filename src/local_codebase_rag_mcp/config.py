@@ -41,11 +41,31 @@ class GitIntegrationConfig:
 
 
 @dataclass(frozen=True)
+class DeepSearchConfig:
+    """Tunables for the `deep_search_codebase` fallback tool.
+
+    The thresholds below define what counts as a "weak" result set, used by
+    deep_search to decide whether to try the next query variant. They are
+    mode-specific because dense / hybrid / sparse scores live on different
+    scales (dense cosine ~0.3-0.7, hybrid RRF ~0.01-0.03, BM25 unbounded).
+    """
+    min_results: int = 2
+    # Score below which the top result is considered "weak". Keys must be
+    # exactly the three retrieval modes.
+    score_thresholds: dict = field(default_factory=lambda: {
+        "dense": 0.45,
+        "hybrid": 0.012,
+        "sparse": 3.0,
+    })
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     default_top_k: int = 5
     mode: str = "hybrid"            # "hybrid" | "dense" | "sparse"
     rrf_k: int = 60                 # standard RRF constant
     candidate_pool_size: int = 30   # how many candidates to fetch from each retriever before fusion
+    deep: DeepSearchConfig = field(default_factory=DeepSearchConfig)
 
 
 @dataclass(frozen=True)
@@ -179,11 +199,24 @@ def load_config(config_path: Path | None = None) -> Config:
             file=sys.stderr,
         )
         sys.exit(1)
+    deep_raw = search_raw.get("deep") or {}
+    deep_thresholds_raw = deep_raw.get("score_thresholds") or {}
+    deep_thresholds = {
+        "dense": float(deep_thresholds_raw.get("dense", 0.45)),
+        "hybrid": float(deep_thresholds_raw.get("hybrid", 0.012)),
+        "sparse": float(deep_thresholds_raw.get("sparse", 3.0)),
+    }
+    deep = DeepSearchConfig(
+        min_results=int(deep_raw.get("min_results", 2)),
+        score_thresholds=deep_thresholds,
+    )
+
     search = SearchConfig(
         default_top_k=int(search_raw.get("default_top_k", 5)),
         mode=mode,
         rrf_k=int(search_raw.get("rrf_k", 60)),
         candidate_pool_size=int(search_raw.get("candidate_pool_size", 30)),
+        deep=deep,
     )
 
     return Config(

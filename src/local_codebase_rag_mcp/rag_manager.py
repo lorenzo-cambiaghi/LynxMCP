@@ -407,21 +407,48 @@ class CodebaseRAG:
         """
         # No auto-update here: the watcher keeps the index live and any
         # git-based catch-up is handled on demand by update_codebase_index.
+        return self._search_once(
+            query,
+            top_k=top_k,
+            mode=self.search_mode,
+            file_glob=file_glob,
+            extensions=extensions,
+            path_contains=path_contains,
+        )
 
+    def _search_once(
+        self,
+        query: str,
+        top_k: int,
+        mode: str,
+        *,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+    ):
+        """Single-pass retrieval helper shared by search() and deep_search().
+
+        `mode` is explicit (rather than reading self.search_mode) so deep_search
+        can override it per call without mutating instance state.
+        """
         has_filters = bool(file_glob or extensions or path_contains)
         # Over-fetch when filtering: filtered-out candidates leave a smaller
         # pool, so we need extras to still produce top_k matches.
         fetch_n = top_k * 5 if has_filters else top_k
 
-        if self.search_mode == "dense":
+        if mode == "dense":
             results = self._dense_lookup(query, fetch_n)
-        elif self.search_mode == "sparse":
+        elif mode == "sparse":
             results = self._bm25_lookup(query, fetch_n)
-        else:  # hybrid
+        elif mode == "hybrid":
             pool = max(fetch_n, self.candidate_pool_size)
             dense_hits = self._dense_lookup(query, pool)
             sparse_hits = self._bm25_lookup(query, pool)
             results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
+        else:
+            raise ValueError(
+                f"mode must be one of 'hybrid' | 'dense' | 'sparse', got {mode!r}"
+            )
 
         if has_filters:
             results = [
@@ -430,6 +457,135 @@ class CodebaseRAG:
             ]
 
         return results[:top_k]
+
+    def deep_search(
+        self,
+        queries,
+        top_k: int = 5,
+        *,
+        mode=None,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+        min_score=None,
+        min_results=None,
+        return_all_variants: bool = False,
+        score_thresholds=None,
+    ):
+        """Multi-query fallback search.
+
+        Tries each query in `queries` in order. The first variant whose result
+        set passes the weakness threshold wins and is returned. If all variants
+        fail the threshold, returns the *strongest weak set* with a marker so
+        the caller can decide what to do.
+
+        Args:
+            queries: list[str] of query variants in priority order.
+            top_k: results to return.
+            mode: per-call override of retrieval mode ("dense"/"sparse"/"hybrid").
+                  None = use self.search_mode.
+            file_glob, extensions, path_contains: same semantics as search().
+                  Applied to every variant.
+            min_score: per-call override of the score threshold. None = use the
+                  mode-specific default from score_thresholds.
+            min_results: per-call override of the min-results threshold.
+                  None = 2.
+            return_all_variants: when True, the response dict includes the
+                  per-variant result lists for debugging.
+            score_thresholds: dict {mode: threshold} from config. Optional;
+                  callers without config can omit it and rely on min_score.
+
+        Returns:
+            dict with shape:
+              {
+                "results": [...],          # the final ranked results
+                "winning_variant_index": int or None,  # 1-based, None if all weak
+                "variants_tried": int,
+                "all_weak": bool,          # True if no variant crossed threshold
+                "per_variant": [...],      # only when return_all_variants
+              }
+        """
+        if not isinstance(queries, (list, tuple)):
+            raise TypeError(f"queries must be a list of strings, got {type(queries).__name__}")
+        if len(queries) == 0:
+            raise ValueError("queries must contain at least one string")
+        if not all(isinstance(q, str) and q.strip() for q in queries):
+            raise ValueError("every query must be a non-empty string")
+
+        effective_mode = mode or self.search_mode
+        if effective_mode not in ("hybrid", "dense", "sparse"):
+            raise ValueError(
+                f"mode must be one of 'hybrid' | 'dense' | 'sparse', got {effective_mode!r}"
+            )
+
+        # Resolve the threshold for this call. Precedence:
+        #   1. explicit min_score arg
+        #   2. score_thresholds dict from config (mode-specific entry)
+        #   3. built-in fallback defaults
+        builtin_defaults = {"dense": 0.45, "hybrid": 0.012, "sparse": 3.0}
+        if min_score is not None:
+            threshold = float(min_score)
+        elif score_thresholds and effective_mode in score_thresholds:
+            threshold = float(score_thresholds[effective_mode])
+        else:
+            threshold = builtin_defaults[effective_mode]
+
+        effective_min_results = int(min_results) if min_results is not None else 2
+
+        per_variant = []
+        best_results = []
+        best_top_score = float("-inf")
+        winning_idx = None
+
+        for idx, variant in enumerate(queries):
+            results = self._search_once(
+                variant,
+                top_k=top_k,
+                mode=effective_mode,
+                file_glob=file_glob,
+                extensions=extensions,
+                path_contains=path_contains,
+            )
+            top_score = results[0]["score"] if results else float("-inf")
+            passes = (
+                len(results) >= effective_min_results
+                and top_score >= threshold
+            )
+
+            if return_all_variants:
+                per_variant.append({
+                    "query": variant,
+                    "results": list(results),
+                    "top_score": top_score if results else None,
+                    "passed_threshold": passes,
+                })
+
+            # Track the strongest weak set in case all variants fail.
+            if top_score > best_top_score:
+                best_top_score = top_score
+                best_results = results
+
+            if passes:
+                response = {
+                    "results": results,
+                    "winning_variant_index": idx + 1,
+                    "variants_tried": idx + 1,
+                    "all_weak": False,
+                }
+                if return_all_variants:
+                    response["per_variant"] = per_variant
+                return response
+
+        # All variants failed the threshold.
+        response = {
+            "results": best_results,
+            "winning_variant_index": None,
+            "variants_tried": len(queries),
+            "all_weak": True,
+        }
+        if return_all_variants:
+            response["per_variant"] = per_variant
+        return response
 
     # ------------------------------------------------------------------
     # Retrieval primitives: dense (vectors), sparse (BM25), fusion (RRF)

@@ -250,6 +250,136 @@ def run_server(config_path=None):
             return f"Error during search: {str(e)}"
 
     @mcp.tool()
+    def deep_search_codebase(
+        queries: list[str],
+        top_k: int | None = None,
+        mode: str | None = None,
+        file_glob: str | None = None,
+        extensions: list[str] | None = None,
+        path_contains: str | None = None,
+        min_score: float | None = None,
+        min_results: int | None = None,
+        return_all_variants: bool = False,
+    ) -> str:
+        """Deeper, fallback semantic search. Use ONLY when `search_codebase`
+        returned weak or empty results, or when the user explicitly asks for a
+        more thorough search.
+
+        Tries each query in `queries` in order and stops at the first variant
+        whose results pass a quality threshold (configurable). If all variants
+        fail the threshold, returns the strongest weak set with an explicit
+        warning so the AI can decide what to tell the user.
+
+        This is slower than `search_codebase`: when all variants fail, it makes
+        N retrievals instead of 1. Use sparingly. Default to `search_codebase`
+        and escalate here only when needed.
+
+        Prepare 2-3 *genuinely different* query variants - paraphrases of the
+        same wording add little. Good variants attack the question from
+        different angles:
+          - Variant A: literal terms ("IDamageable interface")
+          - Variant B: semantic intent ("damage system contract")
+          - Variant C: usage angle ("where damage is dispatched")
+
+        Args:
+            queries: Ordered list of query variants. First entry is tried first;
+                later entries are fallbacks. Must contain at least one string.
+            top_k: Number of results to return. Defaults to search.default_top_k
+                from config.json.
+            mode: Per-call retrieval mode override: "dense", "sparse", or
+                "hybrid". None = use the server's configured default. Use
+                "dense" if the previous hybrid result was diluted by lexical
+                noise; use "sparse" when chasing an exact identifier or string.
+            file_glob: Optional Unix-shell glob matched against file name and
+                full path. Applied to every variant.
+            extensions: Optional list of file extensions to restrict results to
+                (e.g. [".py", ".pyi"]). Applied to every variant.
+            path_contains: Optional substring required in the file path or
+                name. Applied to every variant.
+            min_score: Per-call override of the "weak" threshold for the top
+                result. None = use mode-specific default from
+                search.deep.score_thresholds in config.json.
+            min_results: Per-call override of the minimum result count for
+                "strong enough". None = use search.deep.min_results
+                (default 2).
+            return_all_variants: When True, include the per-variant results
+                in the response. Useful for debugging "why are results bad".
+        """
+        try:
+            rag = _get_rag()
+            effective_top_k = top_k if top_k is not None else config.search.default_top_k
+
+            response = rag.deep_search(
+                queries=queries,
+                top_k=effective_top_k,
+                mode=mode,
+                file_glob=file_glob,
+                extensions=extensions,
+                path_contains=path_contains,
+                min_score=min_score,
+                min_results=min_results,
+                return_all_variants=return_all_variants,
+                score_thresholds=config.search.deep.score_thresholds,
+            )
+
+            # Build a human-readable summary of active filters / overrides.
+            active_meta = []
+            if mode:
+                active_meta.append(f"mode={mode!r}")
+            if file_glob:
+                active_meta.append(f"file_glob={file_glob!r}")
+            if extensions:
+                active_meta.append(f"extensions={list(extensions)!r}")
+            if path_contains:
+                active_meta.append(f"path_contains={path_contains!r}")
+            meta_suffix = f" ({', '.join(active_meta)})" if active_meta else ""
+
+            results = response["results"]
+            tried = response["variants_tried"]
+            total = len(queries)
+            winning = response["winning_variant_index"]
+            all_weak = response["all_weak"]
+
+            if all_weak:
+                if not results:
+                    return (
+                        f"No results found across {tried} query variant(s){meta_suffix}. "
+                        f"Consider relaxing filters or rephrasing the question."
+                    )
+                header = (
+                    f"WARNING: all {tried} query variants returned WEAK results "
+                    f"(no variant crossed the threshold). Showing the strongest "
+                    f"weak set below{meta_suffix}.\n\n"
+                )
+            else:
+                header = (
+                    f"Found {len(results)} results (variant {winning}/{total} won"
+                    f"{meta_suffix}):\n\n"
+                )
+
+            formatted = header
+            for i, res in enumerate(results, 1):
+                formatted += f"--- {i}. File: {res['file']} (Score: {res['score']:.4f}) ---\n"
+                formatted += f"{res['content']}\n\n"
+
+            if return_all_variants and "per_variant" in response:
+                formatted += "\n--- Per-variant summary ---\n"
+                for i, v in enumerate(response["per_variant"], 1):
+                    status_label = "PASSED" if v["passed_threshold"] else "weak"
+                    n = len(v["results"])
+                    ts = v["top_score"]
+                    ts_str = f"{ts:.4f}" if isinstance(ts, (int, float)) else "n/a"
+                    formatted += (
+                        f"  variant {i}/{total} ({status_label}): "
+                        f"{n} result(s), top_score={ts_str}, "
+                        f"query={v['query']!r}\n"
+                    )
+
+            return formatted
+        except Exception as e:
+            return f"Error during deep search: {str(e)}"
+
+    @mcp.tool()
     def update_codebase_index(force: bool = False) -> str:
         """Force a full rebuild of the codebase index.
 

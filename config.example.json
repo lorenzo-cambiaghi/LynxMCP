@@ -50,6 +50,14 @@
     "default_top_k": 5,
     "mode": "hybrid",
     "rrf_k": 60,
-    "candidate_pool_size": 30
+    "candidate_pool_size": 30,
+    "deep": {
+      "min_results": 2,
+      "score_thresholds": {
+        "dense": 0.45,
+        "hybrid": 0.012,
+        "sparse": 3.0
+      }
+    }
   }
 }

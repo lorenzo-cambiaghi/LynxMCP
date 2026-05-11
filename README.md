@@ -46,11 +46,12 @@ context window, it has two options: read files almost at random hoping to find
 what it needs, or ask you. Neither is great.
 
 This server fixes that. It indexes your codebase into a local vector database
-and exposes three MCP tools the assistant can call:
+and exposes four MCP tools the assistant can call:
 
 | Tool | What it does |
 |---|---|
-| `search_codebase(query, top_k)` | Semantic search. Returns the chunks most relevant to a natural-language query. |
+| `search_codebase(query, top_k, ...)` | **Default** semantic search. One query, hybrid retrieval, fast. |
+| `deep_search_codebase(queries, ...)` | **Fallback** semantic search. Tries multiple query variants in order and stops at the first strong result. Use when `search_codebase` returned weak or empty results. |
 | `update_codebase_index(force)` | Force a full rebuild of the index. |
 | `get_rag_status()` | Report current state of the index. |
 
@@ -220,6 +221,8 @@ Open `config.json` and at minimum set `codebase_path`:
 | `search.mode` | `"hybrid"` (default), `"dense"`, or `"sparse"`. See [Hybrid retrieval](#hybrid-retrieval). |
 | `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`, the value from the original RRF paper). Only used in hybrid mode. |
 | `search.candidate_pool_size` | How many candidates each retriever returns before fusion (default `30`). Larger = slower but more thorough. |
+| `search.deep.min_results` | For `deep_search_codebase`: minimum number of results required for a variant to be considered "strong" (default `2`). |
+| `search.deep.score_thresholds` | For `deep_search_codebase`: per-mode score floor below which a variant is considered "weak" and the next is tried. Defaults: `dense=0.45`, `hybrid=0.012`, `sparse=3.0`. |
 
 > `config.json` is **gitignored** — your local config is never committed.
 
@@ -579,6 +582,79 @@ search_codebase("test for serialization", file_glob="**/tests/**")
 search_codebase("damage", path_contains="BulletSystem")
 ```
 
+### `deep_search_codebase(queries, top_k=None, mode=None, file_glob=None, extensions=None, path_contains=None, min_score=None, min_results=None, return_all_variants=False)`
+
+**Fallback** semantic search. Use this **only** when `search_codebase` returned
+weak or empty results, or when the user explicitly asks for a more thorough
+search. It is slower than `search_codebase` — when all variants fail it makes
+N retrievals instead of 1.
+
+The tool accepts an **ordered list of query variants**. Each variant is tried
+in turn and the first one that crosses a quality threshold wins. If none
+crosses, the strongest weak set is returned with an explicit warning so the AI
+can decide what to tell the user. Crucially:
+
+- 1 string in the list ⇒ behaves like a single-query `search_codebase`.
+- N strings ⇒ the server stops at the first strong result. Variants 2..N are
+  only run when earlier variants were weak. **No cost when the first works.**
+
+| Parameter | Type | Purpose |
+|---|---|---|
+| `queries` | `list[str]` | Required, ordered. Variant 1 is your best guess, variants 2+ are fallbacks. Use *genuinely different* phrasings, not paraphrases. |
+| `top_k` | `int` | Results to return. Defaults to `search.default_top_k`. |
+| `mode` | `"dense" \| "sparse" \| "hybrid" \| None` | Per-call override of retrieval mode. Useful: `"dense"` if hybrid noise hurts, `"sparse"` for exact identifier hunting. |
+| `file_glob`, `extensions`, `path_contains` | same as `search_codebase` | Applied to every variant. |
+| `min_score` | `float \| None` | Per-call threshold override. `None` = use mode-specific default from `search.deep.score_thresholds`. |
+| `min_results` | `int \| None` | Per-call min-results override. `None` = `search.deep.min_results` (default 2). |
+| `return_all_variants` | `bool` | When `True`, response includes a per-variant summary. Useful for diagnosing "why are results bad". |
+
+The output includes a header that tells the AI **which variant won**:
+
+```
+Found 5 results (variant 2/3 won (mode='dense')):
+--- 1. File: IDamageable.cs (Score: 0.6234) ---
+...
+```
+
+or, when all variants are weak:
+
+```
+WARNING: all 3 query variants returned WEAK results (no variant crossed the
+threshold). Showing the strongest weak set below.
+--- 1. File: ...
+```
+
+**Good query-variant design.** Bad variants are paraphrases of the same
+phrasing; good variants approach the question from genuinely different angles:
+
+- Variant A — literal terms the user used: `"IDamageable interface"`
+- Variant B — semantic intent: `"damage system contract"`
+- Variant C — usage angle: `"where damage is dispatched between entities"`
+
+A common-but-wrong pattern is *"`IDamageable`, `IDamageable interface`,
+`the IDamageable interface`"*. Those are three rephrasings of the same dense
+vector — they will all succeed or all fail together.
+
+**Tuning thresholds.** The "weakness" thresholds are mode-aware because
+scores live on different scales (dense cosine ~0.3–0.7, hybrid RRF ~0.01–0.03,
+BM25 unbounded). Defaults live in `config.json`:
+
+```json
+"search": {
+  "deep": {
+    "min_results": 2,
+    "score_thresholds": {
+      "dense": 0.45,
+      "hybrid": 0.012,
+      "sparse": 3.0
+    }
+  }
+}
+```
+
+Override per-call with `min_score` / `min_results` when you need different
+behavior for one specific search without editing the config.
+
 ### `update_codebase_index(force: bool = False)`
 
 Force a full rebuild. The watcher keeps things in sync incrementally, so
@@ -648,6 +724,38 @@ a single API endpoint, a one-shot script), normal judgement is fine.
 - **Filters**: when you already know the rough area, narrow with
   `extensions=[...]`, `path_contains="..."`, or `file_glob="..."`.
   Filtered queries reduce noise and let you use a smaller top_k.
+
+## When to escalate to `deep_search_codebase`
+
+`search_codebase` is your default — fast, one query, hybrid retrieval.
+Use it 90% of the time.
+
+Escalate to `deep_search_codebase` ONLY when:
+
+1. `search_codebase` returned no results or all scores looked weak
+   (below ~0.5 in dense scores).
+2. The user rejected the previous results ("non è quello che cercavo",
+   "search more thoroughly", "look harder").
+3. The user explicitly asks for an exhaustive search.
+
+When you escalate, prepare 2–3 **genuinely different** query variants —
+not paraphrases. Bad: `["IDamageable", "IDamageable interface", "the
+IDamageable interface"]`. Good:
+
+```
+deep_search_codebase([
+  "IDamageable interface",                              # literal terms
+  "damage system contract",                             # semantic intent
+  "where damage is dispatched between entities",        # usage angle
+])
+```
+
+You can also override `mode` per-call:
+- `mode="dense"` if previous hybrid result was diluted by lexical noise.
+- `mode="sparse"` to chase an exact identifier or string.
+
+Anti-pattern: do NOT default to `deep_search_codebase` "just in case".
+If `search_codebase` already gave you what you need, you're done.
 
 ## How to report back
 
@@ -882,6 +990,7 @@ local-codebase-rag-mcp/
 │   ├── test_watch.py        End-to-end smoke test for the watcher
 │   ├── test_drift.py        End-to-end smoke test for drift detection
 │   ├── test_filters.py      Smoke test for search-filter parameters
+│   ├── test_deep_search.py  Smoke test for the deep_search_codebase fallback
 │   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
 └── rag_storage/             ChromaDB collection (gitignored, auto-created)
 ```
@@ -970,8 +1079,9 @@ When contributing code:
   ```
 - Run `python -m py_compile src/local_codebase_rag_mcp/*.py tests/*.py`
   to catch syntax errors.
-- Run `python tests/test_watch.py`, `python tests/test_drift.py`, and
-  `python tests/test_filters.py` to confirm the smoke tests still pass.
+- Run `python tests/test_watch.py`, `python tests/test_drift.py`,
+  `python tests/test_filters.py`, and `python tests/test_deep_search.py`
+  to confirm the smoke tests still pass.
   (`tests/test_hybrid_vs_dense.py` is a side-by-side benchmark, not a
   pass/fail test.)
 - Keep all comments, docstrings, and log messages in English.
