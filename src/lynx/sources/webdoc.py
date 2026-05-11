@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import ssl
 import sys
 import time
 from datetime import datetime
@@ -35,6 +36,20 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from .base import SourceBackend
+
+
+# TLS verification: use the operating system's certificate store when
+# possible (truststore). Reason: on Windows, certifi's Mozilla bundle is
+# often missing intermediate CAs that corporate / antivirus TLS chains
+# rely on — without truststore the crawler fails with
+# `CERTIFICATE_VERIFY_FAILED` on legitimate sites like docs.unity3d.com.
+# truststore wraps the OS store directly. Available on Python 3.10+
+# (our minimum) for Windows/macOS/Linux.
+try:
+    import truststore
+    _SSL_CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+except Exception:  # pragma: no cover — pure fallback path
+    _SSL_CONTEXT = True  # httpx default (certifi-based)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +145,7 @@ def _crawl(
             timeout=_REQUEST_TIMEOUT_SECONDS,
             headers={"User-Agent": user_agent},
             follow_redirects=True,
+            verify=_SSL_CONTEXT,
         )
 
     start_url = _normalize_url(start_url)
@@ -178,9 +194,13 @@ def _crawl(
                 error_count += 1
                 continue
 
-            content_type = response.headers.get("content-type", "").split(";")[0].strip()
-            if content_type not in ("text/html", "application/xhtml+xml"):
-                # PDFs, images, JSON, etc. — skip; webdoc only handles HTML.
+            # content-type can be quirky in the wild: some servers emit duplicate
+            # entries like "text/html,text/html; charset=utf-8" (observed on
+            # docs.unity3d.com), or unusual capitalization. A simple "starts
+            # with" / "contains" check is more robust than exact match and
+            # still excludes obviously non-HTML responses (PDFs, JSON, etc.).
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
                 continue
 
             if len(response.content) > _MAX_RESPONSE_BYTES:

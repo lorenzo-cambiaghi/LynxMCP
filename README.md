@@ -521,6 +521,14 @@ library version bump.
 | Auth-gated docs | ❌ | The crawler sends a plain UA, no cookie / token support. PRs welcome if you need it. |
 | PDFs / images | ❌ | The crawler skips any URL whose content-type isn't HTML. PDF support is planned as a separate `type: "pdf"` source. |
 | robots.txt | ⚠️ Not consulted | Crawl is rate-limited and identifies itself, but currently doesn't parse robots.txt. Use `request_delay_seconds` to stay polite. |
+| Partial / JS-rendered TOCs | ⚠️ Partial | If the site's index page lists its sub-pages via JavaScript (Unity 6 ScriptReference is one example), the crawler sees the static HTML only — no link discovery happens past the seed. Workaround: point at a non-index page, or use a sitemap URL as the seed. |
+
+> **Windows TLS note.** Lynx ships with `truststore` as a dependency so the
+> crawler reads the OS certificate store (Windows / macOS keychain / Linux
+> ca-certificates) instead of certifi's Mozilla bundle. Without this, on a
+> Windows machine inside a corporate / antivirus TLS proxy, the crawler
+> would fail every fetch with `CERTIFICATE_VERIFY_FAILED`. If you've added
+> custom trust to your Windows store, the crawler will respect it.
 
 ### Multi-source example: code + library docs together
 

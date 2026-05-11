@@ -64,6 +64,10 @@ dependencies = [
     "httpx>=0.27",          # HTTP client used by the crawler
     "beautifulsoup4>=4.12", # link discovery (a[href] extraction)
     "trafilatura>=1.10",    # main-content extraction → markdown
+    "truststore>=0.10",     # use the OS certificate store for TLS — needed on
+                            # Windows where corporate/antivirus chains aren't
+                            # in certifi's Mozilla bundle. Pure-stdlib wrapper,
+                            # ~10KB. Falls back to certifi if unavailable.
 ]
 
 [project.optional-dependencies]

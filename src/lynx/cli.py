@@ -254,23 +254,23 @@ def _cmd_serve(args) -> int:
 
 
 def _cmd_build(args) -> int:
-    """Rebuild a specific source's index.
+    """Build or refresh a specific source.
 
-    On a fresh install the backend's __init__ already builds the index, so
-    calling update(force=True) afterwards would re-do the same work. We
-    probe metadata.json BEFORE construction and skip the explicit rebuild
-    in the first-build case.
+    Always calls update(force=True). The pre-M2 behavior probed for an
+    existing metadata.json and skipped update() on first install to avoid
+    double-indexing, but that's now redundant: the SHA-256 cache (M2)
+    makes the second update a fast no-op when nothing on disk has changed.
+
+    Keeping it unconditional ALSO fixes a subtle bug for webdoc sources:
+    their __init__ builds an empty index (no auto-fetch), so the "skip on
+    first build" path would never trigger the actual crawl. Calling
+    update(force=True) is the only entry point that fetches new doc pages.
     """
     config_path = getattr(args, "config", None)
     config = _load_config_or_exit(config_path)
     source_name = _resolve_source(args, config)
-
-    storage_dir = Path(config.storage_path) / source_name
-    metadata_existed = (storage_dir / "metadata.json").is_file()
-
     _, manager = _build_manager(config_path)
-    if metadata_existed:
-        manager.update(source_name, force=True)
+    manager.update(source_name, force=True)
     print(f"Source {source_name!r} ready.")
     return 0
 
