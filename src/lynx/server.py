@@ -54,16 +54,42 @@ def _restore_real_stdout():
 # ----------------------------------------------------------------------
 
 
+def _format_one_result(i, res):
+    """Render one result block: header with symbol/line context + content body.
+
+    The header surfaces the AST chunker metadata so the AI can cite the
+    result precisely (e.g. "see MyClass.handleClick in foo.cs L42-58")
+    instead of just naming the file.
+    """
+    score = res.get("score", 0.0)
+    fname = res.get("file", "unknown")
+    sym = res.get("symbol_name") or ""
+    start = res.get("start_line") or 0
+    end = res.get("end_line") or 0
+
+    # Build a concise location string: "foo.cs:42-58  MyClass.handleClick"
+    loc_parts = [fname]
+    if start and end and start != end:
+        loc_parts.append(f"L{start}-{end}")
+    elif start:
+        loc_parts.append(f"L{start}")
+    loc = " ".join(loc_parts)
+    sym_suffix = f"  {sym}" if sym and sym not in ("<header>", "<chunk1>") and not sym.startswith("<chunk") else ""
+
+    header = f"--- {i}. {loc}{sym_suffix} (Score: {score:.4f}) ---\n"
+    body = ""
+    if "source" in res:
+        body += f"    source: {res['source']}\n"
+    body += f"{res.get('content', '')}\n\n"
+    return header + body
+
+
 def _format_search_results(query, results, source_label, filter_suffix):
     if not results:
         return f"No results found for '{query}' in {source_label}{filter_suffix}."
     out = f"Found {len(results)} results for '{query}' in {source_label}{filter_suffix}:\n\n"
     for i, res in enumerate(results, 1):
-        score = res.get("score", 0.0)
-        out += f"--- {i}. File: {res.get('file', 'unknown')} (Score: {score:.4f}) ---\n"
-        if "source" in res:
-            out += f"    source: {res['source']}\n"
-        out += f"{res.get('content', '')}\n\n"
+        out += _format_one_result(i, res)
     return out
 
 
@@ -94,11 +120,7 @@ def _format_deep_response(response, queries, source_label, meta_suffix):
 
     out = header
     for i, res in enumerate(results, 1):
-        score = res.get("score", 0.0)
-        out += f"--- {i}. File: {res.get('file', 'unknown')} (Score: {score:.4f}) ---\n"
-        if "source" in res:
-            out += f"    source: {res['source']}\n"
-        out += f"{res.get('content', '')}\n\n"
+        out += _format_one_result(i, res)
 
     if "per_variant" in response:
         out += "\n--- Per-variant summary ---\n"

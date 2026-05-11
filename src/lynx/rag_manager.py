@@ -44,7 +44,8 @@ def log(msg):
 
 
 import re
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex
+from llama_index.core import VectorStoreIndex
+from llama_index.core.schema import TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 from llama_index.core import Settings
@@ -53,6 +54,8 @@ from rank_bm25 import BM25Okapi
 from pathlib import Path
 import json
 from datetime import datetime
+
+from .chunking import chunk_file, CHUNKER_VERSION
 
 
 # ----------------------------------------------------------------------------
@@ -153,6 +156,7 @@ _HASH_READ_CHUNK_BYTES = 1 << 20
 _DRIFT_SEVERITY = {
     "embedding_model_name": DRIFT_CRITICAL,  # vectors become incomparable
     "codebase_path": DRIFT_CRITICAL,         # entirely different code indexed
+    "chunker_version": DRIFT_CRITICAL,       # chunk boundaries / metadata change
     "supported_extensions": DRIFT_WARNING,   # missing files / orphan vectors
     "collection_name": DRIFT_WARNING,        # points at a different collection
 }
@@ -302,11 +306,17 @@ class CodebaseRAG:
         Mirrors `_build_config_snapshot` BUT excludes `codebase_path`: the
         hashes are keyed by absolute path, so a path change naturally
         invalidates them (files at the new path simply aren't in the cache).
+
+        `chunker_version` is included so any change to the chunking logic
+        (tree-sitter rules, fallback behavior, metadata shape) discards the
+        cache and triggers a full rebuild — old chunks no longer align with
+        new ones, and skipping unchanged files would leave stale boundaries.
         """
         return {
             "embedding_model_name": self.embedding_model_name,
             "collection_name": self.collection_name,
             "supported_extensions": sorted(self.supported_extensions),
+            "chunker_version": CHUNKER_VERSION,
         }
 
     def _load_file_hashes(self) -> dict:
@@ -371,6 +381,48 @@ class CodebaseRAG:
     def _forget_file_hash(self, abs_path: str):
         """Drop one entry. No-op if absent."""
         self._file_hashes.pop(abs_path, None)
+
+    # ------------------------------------------------------------------
+    # AST-aware chunking pipeline (M3)
+    # ------------------------------------------------------------------
+
+    def _build_nodes_for_file(self, abs_path: str) -> list:
+        """Read `abs_path`, run it through the chunker, return TextNode list.
+
+        Returns [] on any read/decode error (the file is logged and skipped —
+        a single unreadable file shouldn't abort a build of thousands).
+
+        Every node carries the metadata fields that downstream code expects:
+          - file_path        (used by _delete_file_chunks for the where-clause)
+          - file_name        (used by search-result formatters and BM25 cache)
+          - symbol_name      (AST chunker only; "<chunk1>" for fallback)
+          - symbol_kind      ("method_declaration", ..., "text_window")
+          - language         ("c_sharp", "python", ..., "text")
+          - chunker          ("tree_sitter" | "sentence_splitter")
+          - start_line, end_line  (1-based inclusive)
+        """
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError as e:
+            log(f"[rag] read failed for {abs_path}: {e}")
+            return []
+
+        chunks = chunk_file(abs_path, content)
+        nodes = []
+        for c in chunks:
+            metadata = {
+                "file_path": c["file_path"],
+                "file_name": c["file_name"],
+                "symbol_name": c.get("symbol_name", ""),
+                "symbol_kind": c.get("symbol_kind", ""),
+                "language": c.get("language", "text"),
+                "chunker": c.get("chunker", "sentence_splitter"),
+                "start_line": c.get("start_line", 1),
+                "end_line": c.get("end_line", 1),
+            }
+            nodes.append(TextNode(text=c["text"], metadata=metadata))
+        return nodes
 
     def _reset_collection(self):
         """Drop the ChromaDB collection so a rebuild does not duplicate data."""
@@ -483,21 +535,23 @@ class CodebaseRAG:
             self._delete_file_chunks(abs_path)
             self._forget_file_hash(abs_path)
 
-        # Index added + changed.
+        # Index added + changed via the AST-aware chunker (chunking.chunk_file).
+        # The chunker yields TextNode objects with full metadata; we pass them
+        # to insert_nodes() so LlamaIndex does NOT re-run its own SentenceSplitter
+        # on top of our chunks.
         files_to_index = sorted(changed | added)
         index = VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
         if files_to_index:
-            try:
-                documents = SimpleDirectoryReader(input_files=files_to_index).load_data()
-            except Exception as e:
-                log(f"[rag] file read failed during build: {e}")
-                documents = []
-
-            for doc in documents:
+            total_nodes = 0
+            for abs_path in files_to_index:
+                nodes = self._build_nodes_for_file(abs_path)
+                if not nodes:
+                    continue
                 try:
-                    index.insert(doc)
+                    index.insert_nodes(nodes)
+                    total_nodes += len(nodes)
                 except Exception as e:
-                    log(f"[rag] insert failed: {e}")
+                    log(f"[rag] insert failed for {abs_path}: {e}")
 
             # Record SHAs for the files we just (re-)indexed. Compute fresh —
             # _partition_files already computed them for 'changed' but not for
@@ -507,7 +561,7 @@ class CodebaseRAG:
                 if sha:
                     self._record_file_hash(abs_path, sha)
 
-            log(f"[rag] Indexed {len(files_to_index)} file(s).")
+            log(f"[rag] Indexed {len(files_to_index)} file(s) -> {total_nodes} chunk(s).")
 
         self._save_file_hashes()
         # Collection contents changed: drop the BM25 cache so the next search
@@ -814,7 +868,12 @@ class CodebaseRAG:
     # ------------------------------------------------------------------
 
     def _dense_lookup(self, query: str, top_n: int) -> list:
-        """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline."""
+        """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline.
+
+        Propagates the AST-aware chunker metadata (symbol_name, symbol_kind,
+        language, start_line, end_line) so the formatter can cite results
+        precisely (e.g. "MyClass.handleClick at L42-58").
+        """
         retriever = self.index.as_retriever(similarity_top_k=top_n)
         results = retriever.retrieve(query)
         return [
@@ -822,6 +881,11 @@ class CodebaseRAG:
                 "id": getattr(getattr(r, "node", None), "id_", None) or r.metadata.get("file_path", ""),
                 "file": r.metadata.get("file_name", "unknown"),
                 "file_path": r.metadata.get("file_path", ""),
+                "symbol_name": r.metadata.get("symbol_name", ""),
+                "symbol_kind": r.metadata.get("symbol_kind", ""),
+                "language": r.metadata.get("language", ""),
+                "start_line": r.metadata.get("start_line", 0),
+                "end_line": r.metadata.get("end_line", 0),
                 "content": r.get_content(),
                 "score": r.score,
             }
@@ -852,6 +916,11 @@ class CodebaseRAG:
             self._bm25_meta[cid] = {
                 "file": (meta or {}).get("file_name", "unknown"),
                 "file_path": (meta or {}).get("file_path", ""),
+                "symbol_name": (meta or {}).get("symbol_name", ""),
+                "symbol_kind": (meta or {}).get("symbol_kind", ""),
+                "language": (meta or {}).get("language", ""),
+                "start_line": (meta or {}).get("start_line", 0),
+                "end_line": (meta or {}).get("end_line", 0),
                 "content": content or "",
             }
         self._bm25_doc_ids = list(self._bm25_docs.keys())
@@ -888,6 +957,11 @@ class CodebaseRAG:
                 "id": cid,
                 "file": meta.get("file", "unknown"),
                 "file_path": meta.get("file_path", ""),
+                "symbol_name": meta.get("symbol_name", ""),
+                "symbol_kind": meta.get("symbol_kind", ""),
+                "language": meta.get("language", ""),
+                "start_line": meta.get("start_line", 0),
+                "end_line": meta.get("end_line", 0),
                 "content": meta.get("content", ""),
                 "score": float(scores[i]),
             })
@@ -972,22 +1046,16 @@ class CodebaseRAG:
 
         with self._write_lock:
             removed = self._delete_file_chunks(abs_path)
+            nodes = self._build_nodes_for_file(abs_path)
+            if not nodes:
+                log(f"[rag] no chunks produced from {abs_path}")
+                return False
+
             try:
-                docs = SimpleDirectoryReader(input_files=[abs_path]).load_data()
+                self.index.insert_nodes(nodes)
             except Exception as e:
-                log(f"[rag] read failed for {abs_path}: {e}")
+                log(f"[rag] insert failed for {abs_path}: {e}")
                 return False
-
-            if not docs:
-                log(f"[rag] no document extracted from {abs_path}")
-                return False
-
-            for doc in docs:
-                try:
-                    self.index.insert(doc)
-                except Exception as e:
-                    log(f"[rag] insert failed for {abs_path}: {e}")
-                    return False
 
             # Chunks changed: invalidate BM25 cache (rebuilt lazily on next search).
             self._invalidate_bm25()
@@ -998,7 +1066,7 @@ class CodebaseRAG:
                 self._record_file_hash(abs_path, new_sha)
                 self._save_file_hashes()
 
-        log(f"[rag] Re-indexed {Path(abs_path).name} ({removed} old chunks dropped)")
+        log(f"[rag] Re-indexed {Path(abs_path).name} ({removed} old chunks dropped, {len(nodes)} new)")
         return True
 
     def remove_file(self, filepath) -> bool:
@@ -1041,6 +1109,7 @@ class CodebaseRAG:
             "supported_extensions": sorted(self.supported_extensions),
             "embedding_model_name": self.embedding_model_name,
             "collection_name": self.collection_name,
+            "chunker_version": CHUNKER_VERSION,
         }
 
     def check_config_drift(self):

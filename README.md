@@ -54,11 +54,12 @@ dependencies, no recurring costs.
 13. [The MCP tools you get](#the-mcp-tools-you-get)
 14. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
 15. [Keeping the index up to date](#keeping-the-index-up-to-date)
-16. [Hybrid retrieval](#hybrid-retrieval)
-17. [Config drift detection](#config-drift-detection)
-18. [Architecture](#architecture)
-19. [Troubleshooting](#troubleshooting)
-20. [Contributing](#contributing)
+16. [AST-aware chunking](#ast-aware-chunking)
+17. [Hybrid retrieval](#hybrid-retrieval)
+18. [Config drift detection](#config-drift-detection)
+19. [Architecture](#architecture)
+20. [Troubleshooting](#troubleshooting)
+21. [Contributing](#contributing)
 
 ---
 
@@ -967,7 +968,12 @@ If `search_<source>` already gave you what you need, you're done.
 
 For each candidate above the threshold, present:
 
-- File path and a one-line summary of what the chunk does.
+- **Precise location**: file + line range (e.g. `Container.cs:L555-580`)
+  plus the qualified symbol name from the result header (e.g.
+  `MyProject.DI.Container.TryInjectInterfaceReference`). Both come for
+  free from the AST chunker — surface them so the user can jump straight
+  to the code instead of grepping.
+- One-line summary of what the chunk does.
 - Verdict for the current task: **reusable as-is**, **extendable**,
   or **only superficially similar**.
 
@@ -1054,6 +1060,58 @@ lynx build --config /path/to/config.json >/dev/null 2>&1 &
 
 Replace `/path/to/config.json` with your absolute config path. The `&`
 backgrounds the rebuild so the commit returns immediately.
+
+---
+
+## AST-aware chunking
+
+Lynx chunks code at **syntactic boundaries** (one chunk per function /
+method / class) instead of arbitrary token windows that cut across function
+signatures. The result: embeddings represent meaningful units, BM25
+identifier statistics aren't diluted by neighboring code, and search hits
+come back as complete functions the AI can immediately reason about.
+
+The chunker uses **tree-sitter** with per-language grammars bundled in
+their own pip packages — no runtime downloads, no network calls (the
+"100% local" guarantee holds). Supported languages out of the box:
+
+| Extension | Language | Chunked on |
+|---|---|---|
+| `.cs` | C# | methods, constructors, properties, indexers, operators, delegates, events, enums (qualified by namespace + class) |
+| `.py` | Python | functions, methods, decorated definitions (qualified by class) |
+| `.ts`, `.tsx` | TypeScript | functions, methods, interfaces, type aliases, enums |
+| `.js`, `.jsx`, `.mjs` | JavaScript | functions, methods, generators |
+| `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx` | C++ | functions, templates (inside namespace / class / struct) |
+| `.c`, `.h` | C | functions, structs, enums, typedefs |
+| `.go` | Go | functions, methods, type declarations |
+| `.rs` | Rust | functions, structs, enums, typedefs (inside impl / mod / trait) |
+| `.java` | Java | methods, constructors (inside class / interface / enum) |
+
+For anything else (`.md`, `.txt`, `.json`, `.yaml`, `.hlsl`, `.shader`,
+`.compute`, `.cginc`, …) Lynx falls back to a sentence-window splitter —
+same behavior as v0.2.
+
+**Chunk metadata** every retrieval result carries the AST context, so
+the AI can cite precisely:
+
+| Metadata field | Example | Notes |
+|---|---|---|
+| `symbol_name` | `MyFramework.Damage.HealthSystem.ApplyDamage` | Fully qualified; namespace + class + method |
+| `symbol_kind` | `method_declaration` | The AST node type (or `text_window` for fallback) |
+| `start_line`, `end_line` | `42`, `58` | 1-based inclusive |
+| `language` | `c_sharp` | One of the supported keys above, or `text` for fallback |
+| `chunker` | `tree_sitter` \| `sentence_splitter` | Which path produced this chunk |
+
+**Oversized chunks** (e.g. a single 2000-line auto-generated method) get
+split with the sentence-window splitter so no chunk exceeds ~8000
+characters. Split pieces inherit the parent's symbol name with a `#partN`
+suffix.
+
+**`chunker_version` is in the drift snapshot.** Bumping the chunker logic
+in a way that changes boundaries or metadata triggers a CRITICAL drift on
+next start. The drift message lists `chunker_version: N -> M`; running
+`lynx build --source <name>` clears it. Upgrading from v0.2 to v0.3 will
+flag this automatically.
 
 ---
 

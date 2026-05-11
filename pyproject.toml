@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lynx"
-version = "0.2.0"
-description = "Linx — a self-hosted MCP server with semantic + lexical search over your local code and documentation. Multi-source, 100% local, no data egress. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
+version = "0.3.0"
+description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code and documentation. AST-aware chunking via tree-sitter, multi-source, 100% local, no data egress. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -46,6 +46,19 @@ dependencies = [
     "gitpython",
     "watchdog",
     "rank-bm25",
+    # AST-aware chunking via tree-sitter. Per-language packages bundle the
+    # compiled parser in the wheel — no runtime download (preserves the
+    # "100% local, no data egress" guarantee). Each pkg is small (~200KB).
+    "tree-sitter>=0.25",
+    "tree-sitter-c-sharp",
+    "tree-sitter-python",
+    "tree-sitter-typescript",
+    "tree-sitter-javascript",
+    "tree-sitter-cpp",
+    "tree-sitter-c",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+    "tree-sitter-java",
 ]
 
 [project.optional-dependencies]
