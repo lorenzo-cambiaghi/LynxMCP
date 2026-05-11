@@ -43,23 +43,24 @@ dependencies, no recurring costs.
 7. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
 8. [Build the index for the first time](#build-the-index-for-the-first-time)
 9. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
-10. [Connect it to your AI client](#connect-it-to-your-ai-client)
+10. [Webdoc sources](#webdoc-sources)
+11. [Connect it to your AI client](#connect-it-to-your-ai-client)
     - [Claude Code (CLI)](#claude-code-cli)
     - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
     - [Google Antigravity](#google-antigravity)
     - [Cursor](#cursor)
     - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-11. [Command-line interface](#command-line-interface)
-12. [Verify the integration works](#verify-the-integration-works)
-13. [The MCP tools you get](#the-mcp-tools-you-get)
-14. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
-15. [Keeping the index up to date](#keeping-the-index-up-to-date)
-16. [AST-aware chunking](#ast-aware-chunking)
-17. [Hybrid retrieval](#hybrid-retrieval)
-18. [Config drift detection](#config-drift-detection)
-19. [Architecture](#architecture)
-20. [Troubleshooting](#troubleshooting)
-21. [Contributing](#contributing)
+12. [Command-line interface](#command-line-interface)
+13. [Verify the integration works](#verify-the-integration-works)
+14. [The MCP tools you get](#the-mcp-tools-you-get)
+15. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+16. [Keeping the index up to date](#keeping-the-index-up-to-date)
+17. [AST-aware chunking](#ast-aware-chunking)
+18. [Hybrid retrieval](#hybrid-retrieval)
+19. [Config drift detection](#config-drift-detection)
+20. [Architecture](#architecture)
+21. [Troubleshooting](#troubleshooting)
+22. [Contributing](#contributing)
 
 ---
 
@@ -280,7 +281,7 @@ client will see clearly in its tool list (e.g. `myproject`, `unityDoc`,
 
 | Field (codebase type) | What it does |
 |---|---|
-| `type` | **Required.** `"codebase"` is the only type in M1. Future: `"webdoc"`, `"pdf"`. |
+| `type` | **Required.** `"codebase"` for a local directory of files. Other supported types: `"webdoc"` (see [Webdoc sources](#webdoc-sources)). Future: `"pdf"`. |
 | `path` | **Required.** Absolute path of the directory to index. |
 | `supported_extensions` | File extensions to include (e.g. `[".py", ".md"]`). Anything else is ignored. |
 | `ignored_path_fragments` | Substrings: any path containing one is skipped by the watcher (forward slashes are auto-normalized). |
@@ -439,12 +440,115 @@ so the AI client picks the right tool without you having to tell it. Pair
 this with an AI integration rules file (see the [section below](#get-the-most-out-of-it-ai-integration-rules))
 to bias the AI toward `search_unityDoc` for Unity API questions, etc.
 
-> **Documentation source types are coming.** Today every source is
-> `type: "codebase"` — fine for any folder of text files (markdown
-> documentation included). Native `type: "webdoc"` (crawl + index a docs
-> site) and `type: "pdf"` (extract + index PDF manuals) land in upcoming
-> milestones. The architecture is already in place; only the new ingestors
-> need adding.
+> **`type: "webdoc"` is now available** (since v0.4): fetch a public docs
+> site on demand, dump the extracted main content to a local folder,
+> and index it through the same hybrid pipeline as code. See the
+> [Webdoc sources](#webdoc-sources) section for the config schema and
+> the refresh model. `type: "pdf"` is on the roadmap.
+
+---
+
+## Webdoc sources
+
+Indexes a public documentation site by crawling it from a starting URL.
+For libraries that update faster than the model's training cutoff
+(Unity, AvaloniaUI, AWS SDKs, any framework with a quarterly release
+cadence) this is the difference between the AI suggesting deprecated
+APIs and the AI knowing what's there today.
+
+### Configuration
+
+```json
+"sources": {
+  "unityDoc": {
+    "type": "webdoc",
+    "url": "https://docs.unity3d.com/Manual/index.html",
+    "max_depth": 3,
+    "max_pages": 1000,
+    "same_origin_only": true,
+    "include_url_patterns": ["/Manual/"],
+    "exclude_url_patterns": ["/Manual/Obsolete"],
+    "request_delay_seconds": 0.5,
+    "user_agent": "Lynx-DocFetcher/0.4"
+  }
+}
+```
+
+| Field | What it does |
+|---|---|
+| `type` | **Required.** `"webdoc"`. |
+| `url` | **Required.** Starting URL of the crawl. Must be `http://` or `https://`. |
+| `max_depth` | BFS depth limit from the starting URL. Default `3`. |
+| `max_pages` | Hard cap on the number of pages fetched. Default `500`. |
+| `same_origin_only` | If `true` (default), the crawler stays on the seed URL's hostname. |
+| `include_url_patterns` | List of substrings; a URL must contain **at least one** to be saved. The seed URL is always visited (so its links can be discovered) but only added to the dump if it matches. |
+| `exclude_url_patterns` | List of substrings; any URL containing one is skipped entirely. |
+| `request_delay_seconds` | Polite delay between requests. Default `0.5` (= 2 req/sec). |
+| `user_agent` | Optional override. Default identifies as `Lynx-DocFetcher/<version>`. |
+
+### Fetch and refresh
+
+A webdoc source is **never auto-refreshed**: detecting "the upstream
+site changed" without re-downloading is unreliable (ETag / Last-Modified
+support varies wildly). Refresh is always explicit:
+
+```bash
+lynx build --source unityDoc
+```
+
+This:
+1. Crawls the configured URL (respecting depth, origin, filters)
+2. Extracts main content from each HTML page using `trafilatura`
+   (drops nav / footer / sidebars)
+3. Writes one `.md` file per crawled URL to `storage_path/<source>/_dump/`,
+   with a YAML frontmatter block containing the original URL and
+   fetched-at timestamp
+4. Wipes any old dump first so URLs no longer present upstream don't
+   leave stale chunks
+5. Triggers a full reindex through the same chunker + embedding pipeline
+   used by codebase sources
+
+Run it again any time you want a fresh snapshot — typically after a
+library version bump.
+
+### What gets supported, what doesn't
+
+| | Supported | Notes |
+|---|---|---|
+| Static HTML | ✅ | Sphinx, mkdocs, docusaurus, hand-written sites |
+| Server-rendered SSR | ✅ | Anything that ships HTML directly |
+| JS-rendered SPAs | ❌ | Would require a headless browser (~200 MB Chromium dep) — explicitly out of scope. ~10% of doc sites; for the 90% mainstream this isn't a problem. |
+| Auth-gated docs | ❌ | The crawler sends a plain UA, no cookie / token support. PRs welcome if you need it. |
+| PDFs / images | ❌ | The crawler skips any URL whose content-type isn't HTML. PDF support is planned as a separate `type: "pdf"` source. |
+| robots.txt | ⚠️ Not consulted | Crawl is rate-limited and identifies itself, but currently doesn't parse robots.txt. Use `request_delay_seconds` to stay polite. |
+
+### Multi-source example: code + library docs together
+
+```json
+"sources": {
+  "myproject": {
+    "type": "codebase",
+    "path": "C:/projects/mygame/Assets/Scripts",
+    "supported_extensions": [".cs", ".md"]
+  },
+  "unityDoc": {
+    "type": "webdoc",
+    "url": "https://docs.unity3d.com/Manual/",
+    "include_url_patterns": ["/Manual/"],
+    "max_pages": 1500
+  },
+  "avalonia": {
+    "type": "webdoc",
+    "url": "https://docs.avaloniaui.net/",
+    "max_pages": 800
+  }
+}
+```
+
+Boots the server with `search_myproject`, `search_unityDoc`,
+`search_avalonia` (plus the corresponding `deep_search_*`), each with a
+docstring that names the source's type — your AI client picks based on
+the question.
 
 ---
 
@@ -1225,32 +1329,45 @@ currently only filters file-watcher events, not the indexing pipeline.
 | source_manager.py  (SourceManager)                                 |
 |   - per-source dispatch (KeyError on unknown source)               |
 |   - cross-source RRF fusion for *_all_sources                      |
-+----------+------------------------------------+--------------------+
-           |                                    |
-+----------v-----------+                +-------v-------------------+
-| sources/codebase.py  | ... per type ..| sources/<future>.py       |
-| CodebaseBackend      |                | WebdocBackend, PdfBackend |
-|   wraps CodebaseRAG  |                |   (M2 / M3)               |
-|   runs file watcher  |                +---------------------------+
-+----------+-----------+
-           |
-+----------v---------------------------------------------------------+
-| rag_manager.py (CodebaseRAG)                                       |
-|   - SimpleDirectoryReader  (LlamaIndex)                            |
-|   - HuggingFaceEmbedding   (BAAI/bge-small-en-v1.5, CPU)           |
++----------+----------------------------+----------------------------+
+           |                            |
++----------v------------+      +--------v-----------------------+
+| sources/codebase.py   |      | sources/webdoc.py              |
+| CodebaseBackend       |      | WebdocBackend                  |
+|   - file watcher      |      |   - httpx crawler (BFS, polite)|
+|     (incremental)     |      |   - trafilatura extraction     |
+|   - delegates to      |      |   - writes .md dump on fetch   |
+|     CodebaseRAG       |      |   - delegates to CodebaseRAG   |
++----------+------------+      +--------+-----------------------+
+           |  reads from path           |  reads from _dump/
+           |                            |
+           +-------------+--------------+
+                         |
++------------------------v-------------------------------------------+
+| rag_manager.py  (CodebaseRAG)                                      |
+|   - chunking.chunk_file: tree-sitter for 9 langs + fallback        |
+|     (one chunk per function/method/class, with qualified           |
+|      symbol_name + 1-based line ranges as metadata)                |
+|   - HuggingFaceEmbedding (BAAI/bge-small-en-v1.5, CPU, offline)    |
 |   - dense + BM25 + RRF fusion (hybrid retrieval)                   |
-|   - drift detection + deep_search variant ladder                   |
-|   - update_file / remove_file (incremental)                        |
-+----------+---------------------------------------------------------+
-           |
-+----------v---------------------------------------------------------+
-| ChromaDB — one collection per source, in its own subdir            |
-|   rag_storage/<source_name>/chroma.sqlite3                         |
-+----------+---------------------------------------------------------+
-           ^
-           | scanned + watched (codebase sources only)
-+----------+---------------------------------------------------------+
-| Your sources (one path or URL per entry in config.sources)         |
+|   - per-file SHA-256 cache for incremental rebuilds                |
+|   - drift detection (with chunker_version) + deep_search ladder    |
+|   - update_file / remove_file (called by codebase watcher)         |
++------------------------+-------------------------------------------+
+                         |
++------------------------v-------------------------------------------+
+| Per-source ChromaDB collection + metadata                          |
+|   rag_storage/<source_name>/                                       |
+|     chroma.sqlite3        vectors                                  |
+|     metadata.json         drift snapshot                           |
+|     file_hashes.json      SHA-256 per file                         |
+|     _dump/                (webdoc only) one .md per crawled URL    |
+|     _fetch_state.json     (webdoc only) url -> fetched_at          |
++------------------------+-------------------------------------------+
+                         ^
+                         | scanned + watched (codebase) OR fetched (webdoc)
++------------------------+-------------------------------------------+
+| Your sources: local directory tree, or public docs site URL        |
 +--------------------------------------------------------------------+
 ```
 
@@ -1278,7 +1395,8 @@ lynx/
 │       └── sources/           Per-type source backends
 │           ├── __init__.py    SOURCE_BACKENDS registry
 │           ├── base.py        SourceBackend abstract base class
-│           └── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher)
+│           ├── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher)
+│           └── webdoc.py      WebdocBackend (crawl + extract + dump + reuse CodebaseRAG)
 ├── tests/
 │   ├── conftest.py            pytest path shim + per-source RAG helper
 │   ├── test_watch.py          End-to-end smoke test for the watcher
@@ -1288,13 +1406,16 @@ lynx/
 │   ├── test_multi_source.py   Smoke test for multi-source dispatch + isolation
 │   ├── test_sha_incremental.py  Smoke test for the per-file SHA rebuild cache
 │   ├── test_tree_sitter.py    Unit tests for the AST chunker (per-language)
+│   ├── test_webdoc.py         Webdoc backend (crawl + extract) with mocked HTTP
 │   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
 └── rag_storage/               ChromaDB collections, one subdir per source (gitignored)
-    ├── myproject/
+    ├── myproject/             (codebase source)
     │   ├── chroma.sqlite3     Vector store
     │   ├── metadata.json      Drift snapshot (config_snapshot + last_update)
     │   └── file_hashes.json   Per-file SHA-256 cache for incremental rebuilds
-    └── unityDoc/
+    └── unityDoc/              (webdoc source — same files as above PLUS:)
+        ├── _dump/             One .md per crawled URL (YAML frontmatter)
+        └── _fetch_state.json  {url: {fetched_at, dump_file}}
 ```
 
 ### Key design decisions
@@ -1311,7 +1432,31 @@ lynx/
   there's no need to spend time on a git check at every query.
 - **Offline enforcement.** `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`
   prevent any HuggingFace network call after the first model download.
-  `OPENAI_API_KEY` is removed from the environment.
+  `OPENAI_API_KEY` is removed from the environment. The only network step
+  is the explicit `webdoc` fetch, which the user triggers themselves —
+  there is no implicit egress for `codebase` sources.
+- **AST chunking, not token windows.** Code is split at function / method /
+  class boundaries via tree-sitter (9 languages supported); other text falls
+  back to the legacy sentence-window splitter. Each chunk carries a
+  qualified `symbol_name` and a 1-based `start_line`/`end_line` range so the
+  AI can cite precisely (`Container.cs:L555-580`). Bumping `CHUNKER_VERSION`
+  invalidates all stored chunks via drift detection.
+- **Webdoc refresh is always explicit.** A `type: "webdoc"` source never
+  auto-re-fetches. Detecting "the upstream site changed" without
+  re-downloading is unreliable across servers (ETag / Last-Modified support
+  varies), so we don't try — the user runs `lynx build --source X` when
+  they want a fresh snapshot. The fetch always wipes the dump first so
+  removed pages don't leave stale chunks.
+- **WebdocBackend reuses CodebaseRAG.** The only webdoc-specific code is the
+  crawl + extract step; everything downstream (chunking, embedding, BM25,
+  drift detection, SHA cache, hybrid search, deep_search) is exactly the
+  pipeline that drives codebase sources, just pointed at the local dump
+  folder. Adding `type: "pdf"` later follows the same pattern.
+- **Per-file SHA-256 cache.** Each source's `file_hashes.json` stores the
+  hash of every indexed file. On a force rebuild, unchanged files are
+  skipped (no re-read, no re-embed); typical no-op rebuild is ~30× faster
+  than a cold one. Snapshot mismatch (embedding model swap, chunker bump,
+  extension list change) invalidates the cache and forces a full rebuild.
 
 ---
 
@@ -1389,6 +1534,7 @@ When contributing code:
   python tests/test_deep_search.py       # deep_search fallback ladder
   python tests/test_multi_source.py      # multi-source dispatch + isolation
   python tests/test_sha_incremental.py   # per-file SHA rebuild cache
+  python tests/test_webdoc.py            # webdoc crawler+extractor (mocked HTTP)
   python tests/test_watch.py             # watcher (subprocess; slowest)
   ```
   (`tests/test_hybrid_vs_dense.py` is a side-by-side benchmark, not a

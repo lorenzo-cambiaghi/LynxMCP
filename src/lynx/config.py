@@ -43,10 +43,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 
 CURRENT_CONFIG_VERSION = 2
-SUPPORTED_SOURCE_TYPES = ("codebase",)  # extended in M2/M3
+SUPPORTED_SOURCE_TYPES = ("codebase", "webdoc")  # "pdf" coming later
 
 # MCP tool names get the source name verbatim as a suffix. Restrict to a
 # conservative subset so the generated names like `search_<name>` are always
@@ -173,10 +174,64 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
     }
 
 
+def _validate_webdoc_source(name: str, raw: dict, base_dir: Path) -> dict:
+    """Validate and normalize a `type=webdoc` source entry.
+
+    Required: `url` (the crawl starting point).
+    Everything else has a sensible default; see WebdocBackend.__init__ for
+    the runtime semantics. We validate ranges here so misconfiguration
+    surfaces at config-load time, not at fetch time.
+    """
+    url = raw.get("url")
+    if not url or not isinstance(url, str):
+        _config_error(f"source {name!r}: 'url' is required for type=webdoc")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        _config_error(
+            f"source {name!r}: url must be http or https, got scheme {parsed.scheme!r}"
+        )
+    if not parsed.netloc:
+        _config_error(f"source {name!r}: url is missing a host component: {url!r}")
+
+    def _opt_int(key, default, min_val=0, max_val=None):
+        val = int(raw.get(key, default))
+        if val < min_val:
+            _config_error(f"source {name!r}: {key} must be >= {min_val}, got {val}")
+        if max_val is not None and val > max_val:
+            _config_error(f"source {name!r}: {key} must be <= {max_val}, got {val}")
+        return val
+
+    max_depth = _opt_int("max_depth", 3, min_val=0, max_val=20)
+    max_pages = _opt_int("max_pages", 500, min_val=1, max_val=50_000)
+
+    delay = float(raw.get("request_delay_seconds", 0.5))
+    if delay < 0:
+        _config_error(f"source {name!r}: request_delay_seconds cannot be negative")
+
+    include_patterns = list(raw.get("include_url_patterns") or [])
+    exclude_patterns = list(raw.get("exclude_url_patterns") or [])
+    if not all(isinstance(p, str) for p in include_patterns + exclude_patterns):
+        _config_error(
+            f"source {name!r}: include/exclude_url_patterns must be lists of strings"
+        )
+
+    return {
+        "type": "webdoc",
+        "url": url,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "same_origin_only": bool(raw.get("same_origin_only", True)),
+        "include_url_patterns": include_patterns,
+        "exclude_url_patterns": exclude_patterns,
+        "request_delay_seconds": delay,
+        "user_agent": raw.get("user_agent"),  # None → backend uses default
+    }
+
+
 _TYPE_VALIDATORS = {
     "codebase": _validate_codebase_source,
-    # "webdoc": _validate_webdoc_source,   # M2
-    # "pdf":    _validate_pdf_source,       # M3
+    "webdoc": _validate_webdoc_source,
+    # "pdf": _validate_pdf_source,   # future
 }
 
 

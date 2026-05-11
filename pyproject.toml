@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lynx"
-version = "0.3.0"
-description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code and documentation. AST-aware chunking via tree-sitter, multi-source, 100% local, no data egress. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
+version = "0.4.0"
+description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code AND library documentation (fetched from the web on demand). AST-aware chunking via tree-sitter, multi-source, 100% local except the explicit doc-fetch step. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -59,6 +59,11 @@ dependencies = [
     "tree-sitter-go",
     "tree-sitter-rust",
     "tree-sitter-java",
+    # M4 webdoc source: fetch + extract + index public docs sites on demand.
+    # All three are well-maintained, pure-Python, no compilation needed.
+    "httpx>=0.27",          # HTTP client used by the crawler
+    "beautifulsoup4>=4.12", # link discovery (a[href] extraction)
+    "trafilatura>=1.10",    # main-content extraction → markdown
 ]
 
 [project.optional-dependencies]

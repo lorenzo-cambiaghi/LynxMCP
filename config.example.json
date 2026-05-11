@@ -63,6 +63,17 @@
       "git_integration": {
         "enabled": true
       }
+    },
+    "exampleDocs_remove_or_replace": {
+      "_comment": "Webdoc example — uncomment and adapt the URL to crawl a public docs site. Run `lynx build --source <name>` to fetch + index, again whenever you want a refresh (never automatic).",
+      "type": "webdoc",
+      "url": "https://example.com/docs/",
+      "max_depth": 3,
+      "max_pages": 500,
+      "same_origin_only": true,
+      "include_url_patterns": ["/docs/"],
+      "exclude_url_patterns": ["/docs/legacy/"],
+      "request_delay_seconds": 0.5
     }
   }
 }
