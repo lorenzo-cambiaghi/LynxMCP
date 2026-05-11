@@ -17,8 +17,8 @@ import os
 import sys
 from pathlib import Path
 
-from local_codebase_rag_mcp.config import load_config
 from local_codebase_rag_mcp.rag_manager import CodebaseRAG, _matches_filters, _normalize_extension
+from conftest import build_rag_from_first_source
 
 
 QUERY = "serialization"
@@ -26,17 +26,8 @@ TOP_K = 10
 
 
 def _build() -> CodebaseRAG:
-    cfg = load_config()
-    return CodebaseRAG(
-        codebase_path=str(cfg.codebase_path),
-        rag_storage_path=str(cfg.storage_path),
-        supported_extensions=cfg.supported_extensions,
-        embedding_model_name=cfg.embedding.model_name,
-        collection_name=cfg.collection_name,
-        search_mode=cfg.search.mode,
-        rrf_k=cfg.search.rrf_k,
-        candidate_pool_size=cfg.search.candidate_pool_size,
-    )
+    _, _, rag = build_rag_from_first_source(None)
+    return rag
 
 
 def _all(results, predicate, label):

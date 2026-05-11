@@ -1,53 +1,12 @@
 {
-  "codebase_path": "C:/path/to/your/codebase",
+  "config_version": 2,
   "storage_path": "./rag_storage",
-  "collection_name": "codebase",
   "loading_timeout_seconds": 600,
-  "supported_extensions": [
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".java",
-    ".cs",
-    ".cpp",
-    ".c",
-    ".h",
-    ".hpp",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".md",
-    ".txt",
-    ".json",
-    ".yaml",
-    ".yml"
-  ],
-  "ignored_path_fragments": [
-    "/.git/",
-    "/node_modules/",
-    "/dist/",
-    "/build/",
-    "/target/",
-    "/.venv/",
-    "/__pycache__/",
-    "/.idea/",
-    "/.vscode/"
-  ],
-  "watcher": {
-    "enabled": true,
-    "debounce_seconds": 2.0
-  },
   "embedding": {
     "model_name": "BAAI/bge-small-en-v1.5"
   },
-  "git_integration": {
-    "enabled": true
-  },
   "search": {
-    "default_top_k": 5,
+    "default_top_k": 8,
     "mode": "hybrid",
     "rrf_k": 60,
     "candidate_pool_size": 30,
@@ -57,6 +16,52 @@
         "dense": 0.45,
         "hybrid": 0.012,
         "sparse": 3.0
+      }
+    }
+  },
+  "sources": {
+    "myproject": {
+      "type": "codebase",
+      "path": "C:/path/to/your/codebase",
+      "supported_extensions": [
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".java",
+        ".cs",
+        ".cpp",
+        ".c",
+        ".h",
+        ".hpp",
+        ".go",
+        ".rs",
+        ".rb",
+        ".php",
+        ".md",
+        ".txt",
+        ".json",
+        ".yaml",
+        ".yml"
+      ],
+      "ignored_path_fragments": [
+        "/.git/",
+        "/node_modules/",
+        "/dist/",
+        "/build/",
+        "/target/",
+        "/.venv/",
+        "/__pycache__/",
+        "/.idea/",
+        "/.vscode/"
+      ],
+      "watcher": {
+        "enabled": true,
+        "debounce_seconds": 2.0
+      },
+      "git_integration": {
+        "enabled": true
       }
     }
   }

@@ -20,11 +20,16 @@ HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 CONFIG_FILE = REPO_ROOT / "config.json"
 CONFIG = load_config(CONFIG_FILE)
-CODEBASE = CONFIG.codebase_path
+# Bind to the FIRST codebase-type source. The smoke test exercises the
+# watcher wiring, which is the same for every codebase source.
+_FIRST_SOURCE_NAME = next(iter(CONFIG.sources))
+_FIRST_SOURCE = CONFIG.sources[_FIRST_SOURCE_NAME]
+CODEBASE = Path(_FIRST_SOURCE["path"])
+DEBOUNCE_SECONDS = _FIRST_SOURCE["watcher"]["debounce_seconds"]
 TEST_FILE = CODEBASE / "__rag_watch_smoketest.md"
 
 # Slack on top of the watcher's debounce so we don't race the timer.
-DEBOUNCE_WAIT = max(CONFIG.watcher.debounce_seconds + 1.5, 3.5)
+DEBOUNCE_WAIT = max(DEBOUNCE_SECONDS + 1.5, 3.5)
 
 
 def wait_for(stderr_path: Path, needle: str, timeout: float, since: int = 0) -> bool:

@@ -1,11 +1,13 @@
 """
-MCP server for the local-codebase-rag-mcp project.
+MCP server for the local-codebase-rag-mcp project (multi-source).
 
 The bulk of the work happens inside `run_server(config_path)`:
-  - load config
-  - construct CodebaseRAG in a background thread
-  - start the file watcher once the RAG is ready
-  - register MCP tools and call mcp.run() (blocking)
+  - load config (v2 schema, validates `sources` block)
+  - construct `SourceManager` in a background thread (heavy: loads embedding
+    model and builds backends)
+  - register MCP tools dynamically based on configured sources
+  - start per-source watchers once backends are ready
+  - call mcp.run() (blocking)
 
 The stdout-redirect dance at module top must run BEFORE any heavy import,
 so it is intentionally a side effect of importing this module — see the
@@ -47,210 +49,140 @@ def _restore_real_stdout():
     os.dup2(_REAL_STDOUT_FD, 1)
 
 
-def run_server(config_path=None):
-    """Boot the MCP server. Blocks on mcp.run() until the client disconnects.
+# ----------------------------------------------------------------------
+# Output formatting helpers (shared by per-source and global tools)
+# ----------------------------------------------------------------------
 
-    `config_path` (str | Path | None) is forwarded to load_config(); when
-    None, the standard resolution chain (env var, then ./config.json) is used.
-    """
-    config = load_config(config_path=config_path)
 
-    mcp = FastMCP("local-codebase-rag-mcp")
+def _format_search_results(query, results, source_label, filter_suffix):
+    if not results:
+        return f"No results found for '{query}' in {source_label}{filter_suffix}."
+    out = f"Found {len(results)} results for '{query}' in {source_label}{filter_suffix}:\n\n"
+    for i, res in enumerate(results, 1):
+        score = res.get("score", 0.0)
+        out += f"--- {i}. File: {res.get('file', 'unknown')} (Score: {score:.4f}) ---\n"
+        if "source" in res:
+            out += f"    source: {res['source']}\n"
+        out += f"{res.get('content', '')}\n\n"
+    return out
 
-    # ----- shared state (closed over by the loader thread, the watcher,
-    # and the @mcp.tool functions defined below) -----
-    state = {
-        "rag_instance": None,
-        "rag_loading": False,
-        "rag_error": None,
-        "rag_ready": threading.Event(),
-    }
 
-    def _is_ignored(path: str) -> bool:
-        return any(frag in path for frag in config.ignored_path_fragments)
+def _format_deep_response(response, queries, source_label, meta_suffix):
+    results = response["results"]
+    tried = response["variants_tried"]
+    total = len(queries)
+    winning = response["winning_variant_index"]
+    all_weak = response["all_weak"]
 
-    def _start_file_watcher(rag):
-        """Start a watchdog Observer that reacts to changes inside the codebase."""
-        from watchdog.events import FileSystemEventHandler
-        from watchdog.observers import Observer
-
-        debounce_seconds = config.watcher.debounce_seconds
-
-        class _DebouncedHandler(FileSystemEventHandler):
-            def __init__(self):
-                super().__init__()
-                self._pending: dict = {}
-                self._lock = threading.Lock()
-
-            def _flush(self, path: str, action: str):
-                try:
-                    if action == "delete":
-                        rag.remove_file(path)
-                    else:
-                        rag.update_file(path)
-                except Exception as e:
-                    print(f"[watcher] flush failed for {path}: {e}", file=sys.stderr)
-                finally:
-                    with self._lock:
-                        self._pending.pop(path, None)
-
-            def _schedule(self, path: str, action: str):
-                if not path or _is_ignored(path):
-                    return
-                # Let deletes through even if the file is gone; for updates
-                # we rely on rag.is_supported() to filter by extension.
-                if action != "delete" and not rag.is_supported(path):
-                    return
-                with self._lock:
-                    existing = self._pending.get(path)
-                    if existing is not None:
-                        existing.cancel()
-                    t = threading.Timer(
-                        debounce_seconds, self._flush, args=(path, action)
-                    )
-                    t.daemon = True
-                    self._pending[path] = t
-                    t.start()
-
-            def on_modified(self, event):
-                if not event.is_directory:
-                    self._schedule(event.src_path, "update")
-
-            def on_created(self, event):
-                if not event.is_directory:
-                    self._schedule(event.src_path, "update")
-
-            def on_deleted(self, event):
-                if not event.is_directory:
-                    self._schedule(event.src_path, "delete")
-
-            def on_moved(self, event):
-                if event.is_directory:
-                    return
-                self._schedule(event.src_path, "delete")
-                dest = getattr(event, "dest_path", None)
-                if dest:
-                    self._schedule(dest, "update")
-
-        observer = Observer()
-        observer.schedule(_DebouncedHandler(), str(config.codebase_path), recursive=True)
-        observer.daemon = True
-        observer.start()
-        print(f"[watcher] Watcher active on {config.codebase_path}", file=sys.stderr)
-
-    def _load_rag_background():
-        """Load the RAG in a separate thread so we don't block the MCP handshake."""
-        state["rag_loading"] = True
-        try:
-            from .rag_manager import CodebaseRAG
-            state["rag_instance"] = CodebaseRAG(
-                codebase_path=str(config.codebase_path),
-                rag_storage_path=str(config.storage_path),
-                supported_extensions=config.supported_extensions,
-                embedding_model_name=config.embedding.model_name,
-                collection_name=config.collection_name,
-                search_mode=config.search.mode,
-                rrf_k=config.search.rrf_k,
-                candidate_pool_size=config.search.candidate_pool_size,
+    if all_weak:
+        if not results:
+            return (
+                f"No results found across {tried} query variant(s) in "
+                f"{source_label}{meta_suffix}. Consider relaxing filters or "
+                f"rephrasing the question."
             )
-        except Exception as e:
-            state["rag_error"] = str(e)
-        finally:
-            state["rag_loading"] = False
-            # Start the watcher BEFORE releasing rag_ready so the
-            # "Watcher active" log is guaranteed to land on stderr before
-            # mcp.run() takes the process.
-            if state["rag_instance"] is not None and config.watcher.enabled:
-                try:
-                    _start_file_watcher(state["rag_instance"])
-                except Exception as e:
-                    print(f"[mcp] file watcher failed to start: {e}", file=sys.stderr)
-            state["rag_ready"].set()
+        header = (
+            f"WARNING: all {tried} query variants returned WEAK results "
+            f"in {source_label}{meta_suffix} (no variant crossed the threshold). "
+            f"Showing the strongest weak set below.\n\n"
+        )
+    else:
+        header = (
+            f"Found {len(results)} results in {source_label} "
+            f"(variant {winning}/{total} won{meta_suffix}):\n\n"
+        )
 
-    def _get_rag():
-        """Return the RAG manager once it's ready; otherwise wait up to the
-        configured loading_timeout_seconds."""
-        if state["rag_error"]:
-            raise RuntimeError(f"RAG failed to load: {state['rag_error']}")
-        if not state["rag_ready"].is_set():
-            loaded = state["rag_ready"].wait(timeout=config.loading_timeout_seconds)
-            if not loaded:
-                raise TimeoutError("The RAG is still loading. Try again in a moment.")
-        if state["rag_error"]:
-            raise RuntimeError(f"RAG failed to load: {state['rag_error']}")
-        return state["rag_instance"]
+    out = header
+    for i, res in enumerate(results, 1):
+        score = res.get("score", 0.0)
+        out += f"--- {i}. File: {res.get('file', 'unknown')} (Score: {score:.4f}) ---\n"
+        if "source" in res:
+            out += f"    source: {res['source']}\n"
+        out += f"{res.get('content', '')}\n\n"
 
-    # ----- MCP tools (close over `config` and `_get_rag`) -----
+    if "per_variant" in response:
+        out += "\n--- Per-variant summary ---\n"
+        for i, v in enumerate(response["per_variant"], 1):
+            status_label = "PASSED" if v["passed_threshold"] else "weak"
+            n = len(v["results"])
+            ts = v.get("top_score")
+            ts_str = f"{ts:.4f}" if isinstance(ts, (int, float)) else "n/a"
+            out += (
+                f"  variant {i}/{total} ({status_label}): "
+                f"{n} result(s), top_score={ts_str}, query={v['query']!r}\n"
+            )
+    return out
 
-    @mcp.tool()
-    def search_codebase(
+
+def _build_filter_suffix(file_glob, extensions, path_contains):
+    parts = []
+    if file_glob:
+        parts.append(f"file_glob={file_glob!r}")
+    if extensions:
+        parts.append(f"extensions={list(extensions)!r}")
+    if path_contains:
+        parts.append(f"path_contains={path_contains!r}")
+    return f" (filters: {', '.join(parts)})" if parts else ""
+
+
+# ----------------------------------------------------------------------
+# Tool registration: per-source pair + globals
+# ----------------------------------------------------------------------
+
+
+def _register_source_tools(mcp, manager, source_name: str, source_type: str, source_config: dict):
+    """Register `search_<name>` and `deep_search_<name>` for one source.
+
+    The tool docstrings include the source name and type so the AI client
+    has enough context to pick the right tool from its tool list.
+    """
+    # The fields we expose depend on the source type. M1 only has `codebase`,
+    # so we expose the codebase-specific filter parameters. When we add
+    # webdoc/pdf in M2/M3 we extend the dispatch here.
+    path_hint = source_config.get("path", "")
+
+    search_tool_name = f"search_{source_name}"
+    deep_tool_name = f"deep_search_{source_name}"
+
+    @mcp.tool(name=search_tool_name)
+    def _search(
         query: str,
         top_k: int | None = None,
         file_glob: str | None = None,
         extensions: list[str] | None = None,
         path_contains: str | None = None,
     ) -> str:
-        """Semantic search over the indexed codebase, with optional filters.
+        f"""Semantic search over the {source_name!r} source (type: {source_type}).
 
-        Use this to find functions, classes, patterns, or architectural context.
-        Prefer a natural-language description of what the code does over an
-        exact identifier - that's where semantic search beats grep.
+        Indexed location: {path_hint}
 
-        Filters (all optional, AND-ed together) let you scope the search to a
-        subset of the codebase. They are post-filters: the underlying retriever
-        over-fetches and the filters trim the result set, so very narrow filters
-        on a large index may return fewer than top_k results.
+        Use natural-language descriptions of what the code does, not exact
+        identifiers — that's where semantic search beats grep.
 
         Args:
-            query: Natural-language search query (e.g. "how damage is dispatched
-                   between entities", "factory pattern for spawners",
-                   "IBlobSerializer implementations").
-            top_k: Number of results to return. Defaults to search.default_top_k
-                   from config.json (typically 5).
-            file_glob: Optional Unix-shell glob matched against the file name
-                       and full path. Examples: "*.cs", "**/Bullet*/**/*.cs",
-                       "**/tests/**".
-            extensions: Optional list of file extensions to restrict results to.
-                        Leading dots are normalized. Examples: [".py"],
-                        ["ts", "tsx"]. Combine with `query` for "find X but
-                        only in TypeScript files".
-            path_contains: Optional substring required in the file path or name.
-                           Example: "BulletSystem" returns only chunks whose path
-                           contains "BulletSystem".
+            query: Natural-language search query.
+            top_k: Number of results to return. Defaults to search.default_top_k.
+            file_glob: Optional Unix-shell glob (e.g. "**/Bullet*/*.cs").
+            extensions: Optional list of file extensions (e.g. [".py", ".pyi"]).
+            path_contains: Optional substring required in the file path.
         """
         try:
-            rag = _get_rag()
-            effective_top_k = top_k if top_k is not None else config.search.default_top_k
-            results = rag.search(
+            effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
+            results = manager.search(
+                source_name,
                 query,
                 top_k=effective_top_k,
                 file_glob=file_glob,
                 extensions=extensions,
                 path_contains=path_contains,
             )
-
-            active_filters = []
-            if file_glob:
-                active_filters.append(f"file_glob={file_glob!r}")
-            if extensions:
-                active_filters.append(f"extensions={list(extensions)!r}")
-            if path_contains:
-                active_filters.append(f"path_contains={path_contains!r}")
-            filter_suffix = f" (filters: {', '.join(active_filters)})" if active_filters else ""
-
-            if not results:
-                return f"No results found for '{query}'{filter_suffix}."
-
-            formatted = f"Found {len(results)} results for '{query}'{filter_suffix}:\n\n"
-            for i, res in enumerate(results, 1):
-                formatted += f"--- {i}. File: {res['file']} (Score: {res['score']:.2f}) ---\n"
-                formatted += f"{res['content']}\n\n"
-            return formatted
+            filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
+            return _format_search_results(query, results, f"source {source_name!r}", filter_suffix)
         except Exception as e:
-            return f"Error during search: {str(e)}"
+            return f"Error during search in {source_name!r}: {str(e)}"
 
-    @mcp.tool()
-    def deep_search_codebase(
+    @mcp.tool(name=deep_tool_name)
+    def _deep_search(
         queries: list[str],
         top_k: int | None = None,
         mode: str | None = None,
@@ -261,55 +193,31 @@ def run_server(config_path=None):
         min_results: int | None = None,
         return_all_variants: bool = False,
     ) -> str:
-        """Deeper, fallback semantic search. Use ONLY when `search_codebase`
-        returned weak or empty results, or when the user explicitly asks for a
-        more thorough search.
+        f"""Deeper, fallback search over the {source_name!r} source
+        (type: {source_type}).
 
-        Tries each query in `queries` in order and stops at the first variant
-        whose results pass a quality threshold (configurable). If all variants
-        fail the threshold, returns the strongest weak set with an explicit
-        warning so the AI can decide what to tell the user.
+        Use ONLY when `{search_tool_name}` returned weak or empty results, or
+        when the user explicitly asks for a more thorough search.
 
-        This is slower than `search_codebase`: when all variants fail, it makes
-        N retrievals instead of 1. Use sparingly. Default to `search_codebase`
-        and escalate here only when needed.
-
-        Prepare 2-3 *genuinely different* query variants - paraphrases of the
-        same wording add little. Good variants attack the question from
-        different angles:
-          - Variant A: literal terms ("IDamageable interface")
-          - Variant B: semantic intent ("damage system contract")
-          - Variant C: usage angle ("where damage is dispatched")
+        Tries each query variant in order. Stops at the first variant whose
+        results pass the weakness threshold. If all variants fail, returns
+        the strongest weak set with a warning.
 
         Args:
-            queries: Ordered list of query variants. First entry is tried first;
-                later entries are fallbacks. Must contain at least one string.
-            top_k: Number of results to return. Defaults to search.default_top_k
-                from config.json.
-            mode: Per-call retrieval mode override: "dense", "sparse", or
-                "hybrid". None = use the server's configured default. Use
-                "dense" if the previous hybrid result was diluted by lexical
-                noise; use "sparse" when chasing an exact identifier or string.
-            file_glob: Optional Unix-shell glob matched against file name and
-                full path. Applied to every variant.
-            extensions: Optional list of file extensions to restrict results to
-                (e.g. [".py", ".pyi"]). Applied to every variant.
-            path_contains: Optional substring required in the file path or
-                name. Applied to every variant.
-            min_score: Per-call override of the "weak" threshold for the top
-                result. None = use mode-specific default from
-                search.deep.score_thresholds in config.json.
-            min_results: Per-call override of the minimum result count for
-                "strong enough". None = use search.deep.min_results
-                (default 2).
-            return_all_variants: When True, include the per-variant results
-                in the response. Useful for debugging "why are results bad".
+            queries: Ordered list of query variants. Use *genuinely different*
+                phrasings, not paraphrases.
+            top_k: Defaults to search.default_top_k.
+            mode: Per-call mode override: "dense" | "sparse" | "hybrid".
+            file_glob, extensions, path_contains: Same as the matching
+                `{search_tool_name}` params.
+            min_score: Per-call weakness threshold override.
+            min_results: Per-call min-results override.
+            return_all_variants: Include per-variant summary in the response.
         """
         try:
-            rag = _get_rag()
-            effective_top_k = top_k if top_k is not None else config.search.default_top_k
-
-            response = rag.deep_search(
+            effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
+            response = manager.deep_search(
+                source_name,
                 queries=queries,
                 top_k=effective_top_k,
                 mode=mode,
@@ -319,122 +227,224 @@ def run_server(config_path=None):
                 min_score=min_score,
                 min_results=min_results,
                 return_all_variants=return_all_variants,
-                score_thresholds=config.search.deep.score_thresholds,
             )
-
-            # Build a human-readable summary of active filters / overrides.
-            active_meta = []
+            meta_parts = []
             if mode:
-                active_meta.append(f"mode={mode!r}")
+                meta_parts.append(f"mode={mode!r}")
             if file_glob:
-                active_meta.append(f"file_glob={file_glob!r}")
+                meta_parts.append(f"file_glob={file_glob!r}")
             if extensions:
-                active_meta.append(f"extensions={list(extensions)!r}")
+                meta_parts.append(f"extensions={list(extensions)!r}")
             if path_contains:
-                active_meta.append(f"path_contains={path_contains!r}")
-            meta_suffix = f" ({', '.join(active_meta)})" if active_meta else ""
-
-            results = response["results"]
-            tried = response["variants_tried"]
-            total = len(queries)
-            winning = response["winning_variant_index"]
-            all_weak = response["all_weak"]
-
-            if all_weak:
-                if not results:
-                    return (
-                        f"No results found across {tried} query variant(s){meta_suffix}. "
-                        f"Consider relaxing filters or rephrasing the question."
-                    )
-                header = (
-                    f"WARNING: all {tried} query variants returned WEAK results "
-                    f"(no variant crossed the threshold). Showing the strongest "
-                    f"weak set below{meta_suffix}.\n\n"
-                )
-            else:
-                header = (
-                    f"Found {len(results)} results (variant {winning}/{total} won"
-                    f"{meta_suffix}):\n\n"
-                )
-
-            formatted = header
-            for i, res in enumerate(results, 1):
-                formatted += f"--- {i}. File: {res['file']} (Score: {res['score']:.4f}) ---\n"
-                formatted += f"{res['content']}\n\n"
-
-            if return_all_variants and "per_variant" in response:
-                formatted += "\n--- Per-variant summary ---\n"
-                for i, v in enumerate(response["per_variant"], 1):
-                    status_label = "PASSED" if v["passed_threshold"] else "weak"
-                    n = len(v["results"])
-                    ts = v["top_score"]
-                    ts_str = f"{ts:.4f}" if isinstance(ts, (int, float)) else "n/a"
-                    formatted += (
-                        f"  variant {i}/{total} ({status_label}): "
-                        f"{n} result(s), top_score={ts_str}, "
-                        f"query={v['query']!r}\n"
-                    )
-
-            return formatted
+                meta_parts.append(f"path_contains={path_contains!r}")
+            meta_suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
+            return _format_deep_response(response, queries, f"source {source_name!r}", meta_suffix)
         except Exception as e:
-            return f"Error during deep search: {str(e)}"
+            return f"Error during deep search in {source_name!r}: {str(e)}"
+
+
+def _register_global_tools(mcp, manager):
+    """Register cross-source / management tools that don't depend on a
+    specific source name."""
 
     @mcp.tool()
-    def update_codebase_index(force: bool = False) -> str:
-        """Force a full rebuild of the codebase index.
+    def list_sources() -> str:
+        """List all configured sources with their type, location, chunk
+        count, and drift status."""
+        lines = [f"Sources ({len(manager.backends)}):"]
+        for status in manager.list_sources():
+            line = (
+                f"  - {status['name']} (type: {status['type']}, "
+                f"chunks: {status.get('chunk_count', 'n/a')})"
+            )
+            if status.get("path"):
+                line += f"\n      path: {status['path']}"
+            if status.get("drift_severity"):
+                line += f"\n      drift: {status['drift_severity'].upper()}"
+            lines.append(line)
+        return "\n".join(lines)
 
-        Useful after a complex merge or when you suspect the live watcher has
-        drifted. Day-to-day this is rarely needed: the file watcher keeps the
-        index in sync incrementally.
+    @mcp.tool()
+    def search_all_sources(
+        query: str,
+        top_k: int | None = None,
+        file_glob: str | None = None,
+        extensions: list[str] | None = None,
+        path_contains: str | None = None,
+    ) -> str:
+        """Search every configured source in parallel and fuse rankings via RRF.
+
+        Useful when you don't know which source has the answer (e.g. "is X a
+        feature of my code or of a library I'm using?"). Each result is tagged
+        with its source. Slower than searching one source — runs N retrievals.
+        """
+        try:
+            effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
+            results = manager.search_all(
+                query,
+                top_k=effective_top_k,
+                file_glob=file_glob,
+                extensions=extensions,
+                path_contains=path_contains,
+            )
+            filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
+            return _format_search_results(query, results, "all sources", filter_suffix)
+        except Exception as e:
+            return f"Error during cross-source search: {str(e)}"
+
+    @mcp.tool()
+    def deep_search_all_sources(
+        queries: list[str],
+        top_k: int | None = None,
+        file_glob: str | None = None,
+        extensions: list[str] | None = None,
+        path_contains: str | None = None,
+        min_score: float | None = None,
+        min_results: int | None = None,
+    ) -> str:
+        """Multi-query fallback search across ALL sources.
+
+        Combines the deep_search variant-ladder with cross-source RRF fusion.
+        Each variant is run on every source; results fused; first variant
+        that passes the threshold wins. Use very sparingly — runs N*M
+        retrievals in the worst case (N variants x M sources).
+        """
+        try:
+            effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
+            response = manager.deep_search_all(
+                queries=queries,
+                top_k=effective_top_k,
+                file_glob=file_glob,
+                extensions=extensions,
+                path_contains=path_contains,
+                min_score=min_score,
+                min_results=min_results,
+            )
+            filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
+            return _format_deep_response(response, queries, "all sources", filter_suffix)
+        except Exception as e:
+            return f"Error during cross-source deep search: {str(e)}"
+
+    @mcp.tool()
+    def update_source_index(source: str, force: bool = False) -> str:
+        """Force a full rebuild of a specific source's index.
+
+        Day-to-day the watcher keeps the index in sync; use this after a
+        complex merge, a bulk rename, or when drift detection flags a
+        critical change (e.g. embedding model swap).
 
         Args:
+            source: Name of the source to rebuild. Use `list_sources` to
+                discover available names.
             force: If True, rebuild even when no new git commits are detected.
         """
         try:
-            rag = _get_rag()
-            rag.update(force=force)
-            return "Index update completed successfully."
+            manager.update(source, force=force)
+            return f"Source {source!r} rebuilt successfully."
+        except KeyError as e:
+            return f"Error: {e}"
         except Exception as e:
-            return f"Error during update: {str(e)}"
+            return f"Error rebuilding source {source!r}: {str(e)}"
 
     @mcp.tool()
-    def get_rag_status() -> str:
-        """Return the current state of the RAG index.
+    def get_rag_status(source: str | None = None) -> str:
+        """Report state of the RAG index for one source or all sources.
 
-        Reports git status (when git_integration is enabled), last update time,
-        and any config drift detected since the last full rebuild. A drift
-        means the live config no longer matches the config that built the
-        current index - the most important case is a changed embedding model,
-        which silently invalidates all stored vectors.
+        Args:
+            source: Specific source name to inspect. If None, returns the
+                status of every configured source.
         """
         try:
-            rag = _get_rag()
-            needs_update = rag.needs_update()
-            metadata = rag.metadata
-
-            status = "Needs update" if needs_update else "Up to date"
-            last_commit = metadata.get("last_commit", "None")
-            last_update = metadata.get("last_update", "Never")
-            drift_text = rag.drift_status_text()
-
-            return (
-                f"Status: {status}\n"
-                f"Last commit: {last_commit}\n"
-                f"Last update: {last_update}\n"
-                f"\n{drift_text}"
+            statuses = (
+                [manager.get(source).status()]
+                if source is not None
+                else [b.status() for b in manager.backends.values()]
             )
+            lines = []
+            for s in statuses:
+                name = s["name"]
+                drift_text = manager.get(name).drift_status_text()
+                needs = (
+                    manager.get(name).needs_update()
+                    if hasattr(manager.get(name), "needs_update")
+                    else False
+                )
+                lines.append(f"=== Source: {name} (type: {s['type']}) ===")
+                lines.append(f"Status:       {'Needs update' if needs else 'Up to date'}")
+                if s.get("path"):
+                    lines.append(f"Path:         {s['path']}")
+                lines.append(f"Chunks:       {s.get('chunk_count', 'n/a')}")
+                if s.get("last_commit"):
+                    lines.append(f"Last commit:  {s['last_commit']}")
+                lines.append(f"Last update:  {s.get('last_update', 'Never')}")
+                lines.append("")
+                lines.append(drift_text)
+                lines.append("")
+            return "\n".join(lines).rstrip()
+        except KeyError as e:
+            return f"Error: {e}"
         except Exception as e:
             return f"Error reading status: {str(e)}"
 
-    # ----- boot the loader, wait for ready, then hand off to mcp.run() -----
 
-    threading.Thread(target=_load_rag_background, daemon=True).start()
+# ----------------------------------------------------------------------
+# Main server entry point
+# ----------------------------------------------------------------------
 
-    # Wait for the RAG to load before opening the JSON-RPC transport.
-    # This guarantees that any spurious print() (e.g. llama_index's "MockLLM"
-    # warning, sentence_transformers logs) lands on stderr and not on the
-    # JSON-RPC channel that FastMCP will own a moment later.
-    state["rag_ready"].wait(timeout=config.loading_timeout_seconds)
+
+def run_server(config_path=None):
+    """Boot the MCP server. Blocks on mcp.run() until the client disconnects."""
+    config = load_config(config_path=config_path)
+    mcp = FastMCP("local-codebase-rag-mcp")
+
+    state = {
+        "manager": None,
+        "ready": threading.Event(),
+        "error": None,
+    }
+
+    def _load_background():
+        try:
+            from .source_manager import SourceManager
+            mgr = SourceManager(config)
+            state["manager"] = mgr
+        except Exception as e:
+            state["error"] = str(e)
+            state["ready"].set()
+            return
+
+        try:
+            mgr.start_watchers()
+        except Exception as e:
+            print(f"[server] failed to start watchers: {e}", file=sys.stderr)
+        state["ready"].set()
+
+    threading.Thread(target=_load_background, daemon=True).start()
+
+    # Wait for the manager to load before opening the JSON-RPC transport.
+    # Any spurious print() during model load (llama_index's MockLLM warning,
+    # sentence_transformers logs) lands on stderr because fd 1 is redirected.
+    state["ready"].wait(timeout=config.loading_timeout_seconds)
+
+    if state["error"] is not None:
+        print(f"[server] FATAL: source manager failed to load: {state['error']}", file=sys.stderr)
+        sys.exit(1)
+    if state["manager"] is None:
+        print(
+            "[server] FATAL: source manager did not load within "
+            f"{config.loading_timeout_seconds}s (loading_timeout_seconds in config).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    manager = state["manager"]
+
+    # Dynamically register tools — two per source plus the global ones.
+    for name, backend in manager.backends.items():
+        _register_source_tools(
+            mcp, manager, name, backend.type_name, backend.source_config
+        )
+    _register_global_tools(mcp, manager)
 
     # Loading phase done: restore fd 1 and start the transport.
     _restore_real_stdout()

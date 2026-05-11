@@ -17,19 +17,20 @@ import shutil
 import sys
 from pathlib import Path
 
-from local_codebase_rag_mcp.config import load_config
-from local_codebase_rag_mcp.rag_manager import CodebaseRAG, DRIFT_CRITICAL, DRIFT_WARNING
+from local_codebase_rag_mcp.rag_manager import DRIFT_CRITICAL, DRIFT_WARNING
+from conftest import build_rag_from_first_source
 
 
 def main() -> int:
-    cfg = load_config()
-    metadata_file = cfg.storage_path / "metadata.json"
+    cfg, source_name, rag = build_rag_from_first_source(None)
+    # Drift metadata now lives under the per-source storage subdirectory.
+    metadata_file = Path(cfg.storage_path) / source_name / "metadata.json"
 
     if not metadata_file.exists():
         print(
             f"[test] FAIL: {metadata_file} does not exist. "
-            "Run an indexing pass first (start the server once, or "
-            "invoke update_codebase_index)."
+            "Run an indexing pass first (e.g. "
+            "`local-codebase-rag-mcp build --source <name>`)."
         )
         return 1
 
@@ -38,14 +39,7 @@ def main() -> int:
     print(f"[test] Backed up {metadata_file.name} -> {backup_path.name}")
 
     try:
-        print("[test] Constructing CodebaseRAG (one embedding-model load)...")
-        rag = CodebaseRAG(
-            codebase_path=str(cfg.codebase_path),
-            rag_storage_path=str(cfg.storage_path),
-            supported_extensions=cfg.supported_extensions,
-            embedding_model_name=cfg.embedding.model_name,
-            collection_name=cfg.collection_name,
-        )
+        print(f"[test] Using CodebaseRAG bound to source {source_name!r}")
         current_snapshot = rag._build_config_snapshot()
 
         # ----- 1. baseline: snapshot matches live config, no drift -----

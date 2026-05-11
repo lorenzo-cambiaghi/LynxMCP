@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-codebase-rag-mcp"
-version = "0.1.0"
-description = "Self-hosted MCP server with semantic + lexical search over your local codebase. 100% local, no data egress."
+version = "0.2.0"
+description = "Self-hosted MCP server with semantic + lexical search over your local code and documentation. Multi-source, 100% local, no data egress."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [

@@ -20,8 +20,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from local_codebase_rag_mcp.config import load_config
-from local_codebase_rag_mcp.rag_manager import CodebaseRAG
+from conftest import build_rag_from_first_source
 
 
 HERE = Path(__file__).parent
@@ -36,24 +35,10 @@ NONSENSE_QUERY = "qwertyxyz_zzz_nonsense_token_unlikely_to_match_anything_42"
 NONSENSE_QUERY_2 = "absolutely_invented_marker_string_xyzzy_plugh"
 
 
-def _build() -> CodebaseRAG:
-    cfg = load_config(CONFIG_FILE)
-    return CodebaseRAG(
-        codebase_path=str(cfg.codebase_path),
-        rag_storage_path=str(cfg.storage_path),
-        supported_extensions=cfg.supported_extensions,
-        embedding_model_name=cfg.embedding.model_name,
-        collection_name=cfg.collection_name,
-        search_mode=cfg.search.mode,
-        rrf_k=cfg.search.rrf_k,
-        candidate_pool_size=cfg.search.candidate_pool_size,
-    )
-
-
 def main() -> int:
     print("[test] Constructing CodebaseRAG (one embedding-model load)...")
-    rag = _build()
-    cfg = load_config(CONFIG_FILE)
+    cfg, source_name, rag = build_rag_from_first_source(CONFIG_FILE)
+    print(f"[test] Bound to source {source_name!r}")
     thresholds = cfg.search.deep.score_thresholds
 
     # ----- 1. single variant, strong query -----

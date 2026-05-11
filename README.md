@@ -2,10 +2,14 @@
 
 A self-hosted **MCP (Model Context Protocol) server** that gives any AI coding
 assistant — Claude Code, Antigravity, Cursor, Continue.dev, Aider, etc. —
-the ability to perform **semantic search over your codebase**.
+the ability to perform **semantic search over your code and library
+documentation**.
 
-Everything runs **100% locally**: no code, no embeddings, no queries ever
-leave your machine. No API keys, no cloud dependencies, no recurring costs.
+Configure one or more **sources** (your codebase, library docs, references)
+and the server exposes a dedicated set of MCP tools for each, plus
+cross-source search. Everything runs **100% locally**: no code, no
+embeddings, no queries ever leave your machine. No API keys, no cloud
+dependencies, no recurring costs.
 
 > **License:** [MIT](LICENSE)
 
@@ -19,23 +23,25 @@ leave your machine. No API keys, no cloud dependencies, no recurring costs.
 4. [Prerequisites](#prerequisites)
 5. [Installation](#installation)
 6. [Configuration](#configuration)
-7. [Build the index for the first time](#build-the-index-for-the-first-time)
-8. [Connect it to your AI client](#connect-it-to-your-ai-client)
-   - [Claude Code (CLI)](#claude-code-cli)
-   - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
-   - [Google Antigravity](#google-antigravity)
-   - [Cursor](#cursor)
-   - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-9. [Command-line interface](#command-line-interface)
-10. [Verify the integration works](#verify-the-integration-works)
-11. [The MCP tools you get](#the-mcp-tools-you-get)
-12. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
-13. [Keeping the index up to date](#keeping-the-index-up-to-date)
-14. [Hybrid retrieval](#hybrid-retrieval)
-15. [Config drift detection](#config-drift-detection)
-16. [Architecture](#architecture)
-17. [Troubleshooting](#troubleshooting)
-18. [Contributing](#contributing)
+7. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
+8. [Build the index for the first time](#build-the-index-for-the-first-time)
+9. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
+10. [Connect it to your AI client](#connect-it-to-your-ai-client)
+    - [Claude Code (CLI)](#claude-code-cli)
+    - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
+    - [Google Antigravity](#google-antigravity)
+    - [Cursor](#cursor)
+    - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
+11. [Command-line interface](#command-line-interface)
+12. [Verify the integration works](#verify-the-integration-works)
+13. [The MCP tools you get](#the-mcp-tools-you-get)
+14. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+15. [Keeping the index up to date](#keeping-the-index-up-to-date)
+16. [Hybrid retrieval](#hybrid-retrieval)
+17. [Config drift detection](#config-drift-detection)
+18. [Architecture](#architecture)
+19. [Troubleshooting](#troubleshooting)
+20. [Contributing](#contributing)
 
 ---
 
@@ -45,20 +51,31 @@ When an AI assistant has to answer questions about a codebase larger than its
 context window, it has two options: read files almost at random hoping to find
 what it needs, or ask you. Neither is great.
 
-This server fixes that. It indexes your codebase into a local vector database
-and exposes four MCP tools the assistant can call:
+This server fixes that. You configure N **sources** in `config.json` (a
+codebase, a folder of library docs, a vendor reference dump, ...). For
+each source the server auto-generates two MCP tools at boot:
 
-| Tool | What it does |
+| Tool generated per source `<name>` | What it does |
 |---|---|
-| `search_codebase(query, top_k, ...)` | **Default** semantic search. One query, hybrid retrieval, fast. |
-| `deep_search_codebase(queries, ...)` | **Fallback** semantic search. Tries multiple query variants in order and stops at the first strong result. Use when `search_codebase` returned weak or empty results. |
-| `update_codebase_index(force)` | Force a full rebuild of the index. |
-| `get_rag_status()` | Report current state of the index. |
+| `search_<name>(query, top_k, ...)` | **Default** semantic search over that source. Hybrid retrieval (dense + BM25 + RRF), one query. |
+| `deep_search_<name>(queries, ...)` | **Fallback** for the same source. Tries multiple query variants in order, stops at the first strong result. Use when `search_<name>` returned weak or empty results. |
 
-When you ask the AI *"how is damage handled in this codebase?"*, it calls
-`search_codebase("damage handling")` and gets back the top-5 most relevant
-code snippets — across files, regardless of naming conventions — and then
-answers your question with that context.
+Plus the global, cross-source tools:
+
+| Global tool | What it does |
+|---|---|
+| `list_sources()` | Enumerate configured sources with type, path, chunk count, drift status. |
+| `search_all_sources(query, ...)` | Run the query against every source in parallel and fuse rankings via RRF. Use when you don't know which source has the answer. |
+| `deep_search_all_sources(queries, ...)` | Multi-query × multi-source fallback. Use sparingly — runs N×M retrievals. |
+| `update_source_index(source, force)` | Force a full rebuild of one source. |
+| `get_rag_status(source?)` | Report state of one source or all. |
+
+When you ask the AI *"how is damage handled in this codebase?"* with a
+source named `myproject`, it calls `search_myproject("damage handling")`
+and gets back the top-K most relevant code snippets — across files,
+regardless of naming conventions — and answers your question with that
+context. With multiple sources, it picks the right tool based on the
+docstring of each `search_<name>`.
 
 ## Why it exists
 
@@ -80,8 +97,8 @@ This project addresses all three:
   model. ChromaDB stores vectors on local disk. Nothing leaves the host.
 - **Vendor-neutral.** Built on the open MCP protocol — works with any
   MCP-compliant client.
-- **Explicit retrieval.** `search_codebase` is a tool the assistant (or you,
-  through it) calls deliberately when needed.
+- **Explicit retrieval.** `search_<source>` tools are invoked deliberately
+  by the assistant — you can also bias *when* via project rules files.
 
 ## How it works (in 30 seconds)
 
@@ -182,49 +199,77 @@ local-codebase-rag-mcp --help
 
 ## Configuration
 
-Copy the example config and edit it to point at the codebase you want indexed:
+The config is a single JSON file with **shared settings at the top level**
+and a `sources` block that lists everything to index. Copy the example and
+edit it:
 
 ```bash
 cp config.example.json config.json
 ```
 
-Open `config.json` and at minimum set `codebase_path`:
+Minimum useful config (single source):
 
 ```json
 {
-  "codebase_path": "C:/path/to/your/codebase",
+  "config_version": 2,
   "storage_path": "./rag_storage",
-  "collection_name": "codebase",
   "loading_timeout_seconds": 600,
-  "supported_extensions": [".py", ".md", ".js", ".ts"],
-  "ignored_path_fragments": ["/.git/", "/node_modules/"],
-  "watcher": { "enabled": true, "debounce_seconds": 2.0 },
   "embedding": { "model_name": "BAAI/bge-small-en-v1.5" },
-  "git_integration": { "enabled": true },
-  "search": { "default_top_k": 5 }
+  "search": {
+    "default_top_k": 8,
+    "mode": "hybrid",
+    "rrf_k": 60,
+    "candidate_pool_size": 30,
+    "deep": {
+      "min_results": 2,
+      "score_thresholds": { "dense": 0.45, "hybrid": 0.012, "sparse": 3.0 }
+    }
+  },
+  "sources": {
+    "myproject": {
+      "type": "codebase",
+      "path": "C:/path/to/your/codebase",
+      "supported_extensions": [".py", ".md", ".js", ".ts"],
+      "ignored_path_fragments": ["/.git/", "/node_modules/"],
+      "watcher": { "enabled": true, "debounce_seconds": 2.0 },
+      "git_integration": { "enabled": true }
+    }
+  }
 }
 ```
 
+### Top-level (shared across every source)
+
 | Field | What it does |
 |---|---|
-| `codebase_path` | **Required.** Absolute path of the directory you want indexed. |
-| `storage_path` | Where ChromaDB stores the vectors. Relative paths are resolved against the config file's directory. Default `./rag_storage`. |
-| `collection_name` | ChromaDB collection name inside the storage. Useful when you want to keep multiple indexes in the same `storage_path`. Default `codebase`. |
-| `loading_timeout_seconds` | Max time to wait for the first index build before MCP tool calls give up. Raise it for very large codebases on slow CPUs. Default `600`. |
-| `supported_extensions` | File extensions to index. Anything else is ignored. |
-| `ignored_path_fragments` | Substrings: any path containing one is skipped by the file watcher (use forward slashes — they are auto-normalized to OS-native). |
-| `watcher.enabled` | Set to `false` to disable the live file watcher. |
-| `watcher.debounce_seconds` | Time to wait after a save before re-indexing. Coalesces burst-saves. |
-| `embedding.model_name` | Any HuggingFace sentence-transformer model. The default is small and CPU-friendly. **Changing this invalidates all existing vectors** — see [Config drift detection](#config-drift-detection). |
-| `git_integration.enabled` | When `true`, `get_rag_status` reports the last indexed git commit. Optional. |
-| `search.default_top_k` | Default number of chunks `search_codebase` returns when the caller does not pass `top_k`. |
+| `config_version` | **Required.** Must be `2`. Use `local-codebase-rag-mcp migrate-config` to upgrade an older config. |
+| `storage_path` | Where per-source ChromaDB folders live (each at `<storage_path>/<source_name>/`). Relative paths are resolved against the config file's directory. Default `./rag_storage`. |
+| `loading_timeout_seconds` | Max time to wait for the first index build before MCP tool calls give up. Default `600`. |
+| `embedding.model_name` | Any HuggingFace sentence-transformer model. **Changing this invalidates all existing vectors across every source** — see [Config drift detection](#config-drift-detection). |
+| `search.default_top_k` | Default number of chunks any `search_*` tool returns when `top_k` is not passed. |
 | `search.mode` | `"hybrid"` (default), `"dense"`, or `"sparse"`. See [Hybrid retrieval](#hybrid-retrieval). |
-| `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`, the value from the original RRF paper). Only used in hybrid mode. |
-| `search.candidate_pool_size` | How many candidates each retriever returns before fusion (default `30`). Larger = slower but more thorough. |
-| `search.deep.min_results` | For `deep_search_codebase`: minimum number of results required for a variant to be considered "strong" (default `2`). |
-| `search.deep.score_thresholds` | For `deep_search_codebase`: per-mode score floor below which a variant is considered "weak" and the next is tried. Defaults: `dense=0.45`, `hybrid=0.012`, `sparse=3.0`. |
+| `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`). |
+| `search.candidate_pool_size` | Per-retriever candidate pool size (default `30`). |
+| `search.deep.min_results` | For every `deep_search_*` tool: minimum results required for a variant to count as "strong" (default `2`). |
+| `search.deep.score_thresholds` | Mode-specific "weak" thresholds. Defaults: `dense=0.45`, `hybrid=0.012`, `sparse=3.0`. |
 
-> `config.json` is **gitignored** — your local config is never committed.
+### Per-source (one entry under `sources`)
+
+Source names must match `^[a-zA-Z][a-zA-Z0-9_]{0,39}$` — letter, then letters
+/ digits / underscores. The name is used **verbatim** in the auto-generated
+tool names (`search_<name>`, `deep_search_<name>`), so pick something the AI
+client will see clearly in its tool list (e.g. `myproject`, `unityDoc`,
+`avalonia_docs`).
+
+| Field (codebase type) | What it does |
+|---|---|
+| `type` | **Required.** `"codebase"` is the only type in M1. Future: `"webdoc"`, `"pdf"`. |
+| `path` | **Required.** Absolute path of the directory to index. |
+| `supported_extensions` | File extensions to include (e.g. `[".py", ".md"]`). Anything else is ignored. |
+| `ignored_path_fragments` | Substrings: any path containing one is skipped by the watcher (forward slashes are auto-normalized). |
+| `watcher.enabled` | Set to `false` to disable the live file watcher for this source. |
+| `watcher.debounce_seconds` | Time to wait after a save before re-indexing. Default `2.0`. |
+| `git_integration.enabled` | When `true`, drift / status reports include the last indexed git commit for this source. |
 
 **Want a different config location?** Three options, in priority order:
 
@@ -237,21 +282,48 @@ For MCP IDE integration, option (1) is the recommended approach — see the
 
 ---
 
+## Migrating from v1 (single-source) configs
+
+The v0.1.x line used a flat schema with `codebase_path` at the top level and
+no `sources` block. v0.2.0 introduced the multi-source schema documented
+above. The migration is a one-liner:
+
+```bash
+local-codebase-rag-mcp migrate-config --input config.json --source-name myproject
+# writes config.v2.json next to the input
+```
+
+Review the generated file, then replace your old `config.json` with it (or
+point your launcher at the new path via `--config` / `RAG_CONFIG_PATH`).
+Your old `rag_storage/` is at the v1 layout (chroma data at the root) and
+won't be read by v0.2 — delete it and run `build --source <name>` to rebuild
+under the v2 per-source layout. A 1k-file codebase rebuilds in a few minutes.
+
+The loader emits an explicit error pointing at this command if it sees a v1
+config, so you'll never silently run with a stale schema.
+
+---
+
 ## Build the index for the first time
 
-The first index build can take a few minutes on a large codebase
+The first index build can take a few minutes per source on a large codebase
 (it scans every file and computes embeddings on CPU). To avoid making your
 AI client wait the first time it connects, pre-build the index from a
-terminal:
+terminal.
 
 From the directory containing your `config.json`, run:
 
 ```bash
+# When you have a single source, --source is optional:
 local-codebase-rag-mcp build
+
+# When you have multiple sources, name the one you want:
+local-codebase-rag-mcp build --source myproject
+local-codebase-rag-mcp build --source unityDoc
 ```
 
 > If you get `command not found`, use the equivalent `python -m` form:
-> `python -m local_codebase_rag_mcp build`. See
+> `python -m local_codebase_rag_mcp build --source <name>`. See
 > [Two equivalent ways to invoke](#installation) for why.
 
 You should see logs like:
@@ -259,25 +331,103 @@ You should see logs like:
 ```
 [rag] Indexing codebase from C:\path\to\your\codebase...
 [rag] Found 1247 files
-[rag] Index updated successfully.
+Source 'myproject' ready.
 ```
 
 If your `config.json` lives elsewhere, use `--config`:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json
+local-codebase-rag-mcp build --config /path/to/config.json --source myproject
 ```
 
 The same `build` command also handles **rebuilding** later (e.g. after
-changing the embedding model) — it always does a full force rebuild, which
-is the right thing for a CLI invocation.
+changing the embedding model) — it does a full force rebuild whenever the
+source already has an index.
 
 > Note: starting the server with `local-codebase-rag-mcp serve` on a fresh
-> install will also trigger an initial build implicitly. Pre-building is just
-> a courtesy so the first MCP client doesn't have to wait minutes.
+> install will also trigger an initial build of every source implicitly.
+> Pre-building is just a courtesy so the first MCP client doesn't have to
+> wait minutes.
 
-Once `rag_storage/` exists and is populated, every subsequent server start
-is fast (a few seconds).
+Each source has its own subdirectory under `storage_path/`:
+
+```
+rag_storage/
+├── myproject/
+│   ├── chroma.sqlite3
+│   └── metadata.json
+└── unityDoc/
+    ├── chroma.sqlite3
+    └── metadata.json
+```
+
+Subsequent server starts are fast (seconds) once every configured source
+has a populated `<source>/` subdir.
+
+---
+
+## Multi-source: indexing code AND library documentation
+
+The primary use case for multi-source is keeping a local copy of library
+documentation that the AI client doesn't know about — either because the
+library updates faster than the model's knowledge cutoff (Unity, AvaloniaUI,
+SDKs that ship every quarter) or because it's internal / niche / unindexed
+on the public web.
+
+Configure each one as its own source. Example for a Unity gamedev with
+local copies of two documentation sets in addition to their code:
+
+```json
+{
+  "config_version": 2,
+  "storage_path": "./rag_storage",
+  "embedding": { "model_name": "BAAI/bge-small-en-v1.5" },
+  "search": { ... },
+  "sources": {
+    "myproject": {
+      "type": "codebase",
+      "path": "C:/projects/mygame/Assets/Scripts",
+      "supported_extensions": [".cs", ".md", ".shader"],
+      "watcher": { "enabled": true, "debounce_seconds": 2.0 }
+    },
+    "unityDoc": {
+      "type": "codebase",
+      "path": "C:/vendor-docs/unity-6.2-manual",
+      "supported_extensions": [".md", ".html", ".txt"],
+      "watcher": { "enabled": false, "debounce_seconds": 2.0 }
+    },
+    "avalonia": {
+      "type": "codebase",
+      "path": "C:/vendor-docs/avalonia-docs",
+      "supported_extensions": [".md", ".rst"],
+      "watcher": { "enabled": false, "debounce_seconds": 2.0 }
+    }
+  }
+}
+```
+
+This boots the server with **six per-source tools** plus the globals:
+
+```
+search_myproject         deep_search_myproject
+search_unityDoc          deep_search_unityDoc
+search_avalonia          deep_search_avalonia
+
+list_sources             search_all_sources       deep_search_all_sources
+update_source_index      get_rag_status
+```
+
+Each `search_<name>` has a docstring that names the source by type and path,
+so the AI client picks the right tool without you having to tell it. Pair
+this with an AI integration rules file (see the [section below](#get-the-most-out-of-it-ai-integration-rules))
+to bias the AI toward `search_unityDoc` for Unity API questions, etc.
+
+> **Documentation source types are coming.** Today every source is
+> `type: "codebase"` — fine for any folder of text files (markdown
+> documentation included). Native `type: "webdoc"` (crawl + index a docs
+> site) and `type: "pdf"` (extract + index PDF manuals) land in upcoming
+> milestones. The architecture is already in place; only the new ingestors
+> need adding.
 
 ---
 
@@ -337,8 +487,10 @@ Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
 }
 ```
 
-Restart Claude Code. The next session will list `search_codebase`,
-`update_codebase_index`, and `get_rag_status` among its available tools.
+Restart Claude Code. The next session will list one `search_<name>` /
+`deep_search_<name>` pair for every configured source, plus the global
+tools (`list_sources`, `search_all_sources`, `deep_search_all_sources`,
+`update_source_index`, `get_rag_status`).
 
 ### Claude Code extension for VS Code
 
@@ -517,7 +669,8 @@ After connecting the server to your client, ask the AI assistant:
 > *"Use the search_codebase tool to find anything related to authentication
 > in this codebase."*
 
-You should see it invoke `search_codebase` and return relevant snippets.
+You should see it invoke the appropriate `search_<name>` tool for your
+source and return relevant snippets.
 
 To verify directly without an AI client, run either smoke test:
 
@@ -548,20 +701,27 @@ real index is left untouched. Expected ending:
 
 ## The MCP tools you get
 
-Once connected, the AI client sees three tools:
+For each source `<name>` configured in `config.json`, the server
+auto-registers **two tools** at boot. Add three sources → six per-source
+tools. Plus the five globals. The AI client sees the whole set in its tool
+list and picks based on the docstrings.
 
-### `search_codebase(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
+### Per-source tools (auto-generated)
 
-Semantic search. Returns the top-K most relevant code chunks, with file name
-and similarity score. **Use natural language**, not exact identifiers — that's
+#### `search_<name>(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
+
+Semantic search over the source named `<name>`. Returns the top-K most
+relevant chunks with file name, score, and (for cross-source results) the
+`source` tag. **Use natural language**, not exact identifiers — that's
 where semantic search beats grep:
 
-- ❌ `search_codebase("CalculateDistance")` — too lexical
-- ✅ `search_codebase("calculate distance between two points")` — semantic;
+- ❌ `search_myproject("CalculateDistance")` — too lexical
+- ✅ `search_myproject("calculate distance between two points")` — semantic;
   also matches `ComputeSpacing`, `MeasureGap`, etc.
 
 **Optional filters** (all AND-ed together) let you scope the search to a
-subset of the codebase. Useful when the AI knows roughly where to look:
+subset of files within the source. Useful when the AI knows roughly where
+to look:
 
 | Filter | Type | Example | When to use |
 |---|---|---|---|
@@ -574,97 +734,93 @@ wider pool (5× `top_k`) and the filters trim the result set. Very narrow
 filters on a large index may return fewer than `top_k` results — the
 formatted output mentions the active filters so you can tell.
 
-Example calls (the AI invokes these via MCP):
+#### `deep_search_<name>(queries, top_k=None, mode=None, file_glob=None, extensions=None, path_contains=None, min_score=None, min_results=None, return_all_variants=False)`
 
-```
-search_codebase("how damage is dispatched", extensions=[".cs"])
-search_codebase("test for serialization", file_glob="**/tests/**")
-search_codebase("damage", path_contains="BulletSystem")
-```
+**Fallback** for the same source. Use **only** when `search_<name>`
+returned weak or empty results, or when the user explicitly asks for a
+more thorough search. Slower — when all variants fail it makes N
+retrievals instead of 1.
 
-### `deep_search_codebase(queries, top_k=None, mode=None, file_glob=None, extensions=None, path_contains=None, min_score=None, min_results=None, return_all_variants=False)`
+Accepts an **ordered list of query variants**. The first variant whose
+result set crosses the quality threshold wins. If none crosses, the
+strongest weak set is returned with an explicit warning so the AI can
+decide what to tell the user. Crucially:
 
-**Fallback** semantic search. Use this **only** when `search_codebase` returned
-weak or empty results, or when the user explicitly asks for a more thorough
-search. It is slower than `search_codebase` — when all variants fail it makes
-N retrievals instead of 1.
-
-The tool accepts an **ordered list of query variants**. Each variant is tried
-in turn and the first one that crosses a quality threshold wins. If none
-crosses, the strongest weak set is returned with an explicit warning so the AI
-can decide what to tell the user. Crucially:
-
-- 1 string in the list ⇒ behaves like a single-query `search_codebase`.
-- N strings ⇒ the server stops at the first strong result. Variants 2..N are
-  only run when earlier variants were weak. **No cost when the first works.**
+- 1 string in the list ⇒ behaves like a single-query `search_<name>`.
+- N strings ⇒ the server stops at the first strong result. Variants 2..N
+  are only run when earlier variants were weak. **No cost when the first
+  works.**
 
 | Parameter | Type | Purpose |
 |---|---|---|
 | `queries` | `list[str]` | Required, ordered. Variant 1 is your best guess, variants 2+ are fallbacks. Use *genuinely different* phrasings, not paraphrases. |
 | `top_k` | `int` | Results to return. Defaults to `search.default_top_k`. |
-| `mode` | `"dense" \| "sparse" \| "hybrid" \| None` | Per-call override of retrieval mode. Useful: `"dense"` if hybrid noise hurts, `"sparse"` for exact identifier hunting. |
-| `file_glob`, `extensions`, `path_contains` | same as `search_codebase` | Applied to every variant. |
-| `min_score` | `float \| None` | Per-call threshold override. `None` = use mode-specific default from `search.deep.score_thresholds`. |
+| `mode` | `"dense" \| "sparse" \| "hybrid" \| None` | Per-call retrieval mode override for this source. `"dense"` if hybrid noise hurts, `"sparse"` for exact identifier hunting. |
+| `file_glob`, `extensions`, `path_contains` | same as `search_<name>` | Applied to every variant. |
+| `min_score` | `float \| None` | Per-call threshold override. `None` = use mode-specific default. |
 | `min_results` | `int \| None` | Per-call min-results override. `None` = `search.deep.min_results` (default 2). |
-| `return_all_variants` | `bool` | When `True`, response includes a per-variant summary. Useful for diagnosing "why are results bad". |
+| `return_all_variants` | `bool` | Include a per-variant summary in the response for debugging. |
 
 The output includes a header that tells the AI **which variant won**:
 
 ```
-Found 5 results (variant 2/3 won (mode='dense')):
+Found 5 results in source 'myproject' (variant 2/3 won (mode='dense')):
 --- 1. File: IDamageable.cs (Score: 0.6234) ---
 ...
 ```
 
-or, when all variants are weak:
-
-```
-WARNING: all 3 query variants returned WEAK results (no variant crossed the
-threshold). Showing the strongest weak set below.
---- 1. File: ...
-```
-
 **Good query-variant design.** Bad variants are paraphrases of the same
-phrasing; good variants approach the question from genuinely different angles:
+phrasing; good variants approach the question from different angles
+(literal identifier, semantic intent, usage angle). See the "AI integration
+rules" section for examples.
 
-- Variant A — literal terms the user used: `"IDamageable interface"`
-- Variant B — semantic intent: `"damage system contract"`
-- Variant C — usage angle: `"where damage is dispatched between entities"`
+### Global tools (always available, do not depend on source names)
 
-A common-but-wrong pattern is *"`IDamageable`, `IDamageable interface`,
-`the IDamageable interface`"*. Those are three rephrasings of the same dense
-vector — they will all succeed or all fail together.
+#### `list_sources()`
 
-**Tuning thresholds.** The "weakness" thresholds are mode-aware because
-scores live on different scales (dense cosine ~0.3–0.7, hybrid RRF ~0.01–0.03,
-BM25 unbounded). Defaults live in `config.json`:
+Enumerate all configured sources with their type, path, chunk count, and
+drift status. Useful for the AI to discover what's available without
+inspecting the config:
 
-```json
-"search": {
-  "deep": {
-    "min_results": 2,
-    "score_thresholds": {
-      "dense": 0.45,
-      "hybrid": 0.012,
-      "sparse": 3.0
-    }
-  }
-}
+```
+Sources (3):
+  - myproject (type: codebase, chunks: 3168)
+      path: C:/projects/mygame/Assets/Scripts
+  - unityDoc (type: codebase, chunks: 8421)
+      path: C:/vendor-docs/unity-6.2-manual
+  - avalonia (type: codebase, chunks: 1245)
+      path: C:/vendor-docs/avalonia-docs
 ```
 
-Override per-call with `min_score` / `min_results` when you need different
-behavior for one specific search without editing the config.
+#### `search_all_sources(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
 
-### `update_codebase_index(force: bool = False)`
+Run the query against **every** source in parallel and fuse the rankings
+via Reciprocal Rank Fusion. Each result is tagged with its `source` so the
+AI can tell which source produced it. Use when you don't know which source
+has the answer (e.g. *"is `Spline` a class in my code or in a library
+I'm using?"*).
 
-Force a full rebuild. The watcher keeps things in sync incrementally, so
-day-to-day this is rarely needed. Useful after a complex merge or if you
-suspect drift.
+Cost: linear in the number of sources. With 3 sources you get 3 retrievals
+per call. With 10 sources, 10. Use direct `search_<name>` when you can.
 
-### `get_rag_status()`
+#### `deep_search_all_sources(queries, top_k=None, ...)`
 
-Reports current state of the index, including the last indexed git commit
-(if `git_integration.enabled` is `true`).
+Multi-query × multi-source fallback. Combines the variant ladder with
+cross-source fusion. Each variant is run on every source; results fused;
+first variant that passes the threshold wins. **Use very sparingly** —
+runs N×M retrievals in the worst case.
+
+#### `update_source_index(source, force=False)`
+
+Force a full rebuild of one source's index. Day-to-day the watcher keeps
+things in sync; use this after a complex merge, a bulk rename, or when
+drift detection flags a critical change.
+
+#### `get_rag_status(source=None)`
+
+Report state of the RAG index. Pass `source="<name>"` to inspect one;
+omit to get the status of every source. Reports git state, last update
+time, and config drift.
 
 ---
 
@@ -673,32 +829,47 @@ Reports current state of the index, including the last indexed git commit
 Installing the server and registering the MCP tools makes them *available*
 to your AI assistant. It does not, on its own, make the assistant use them
 strategically. By default most AI clients will only invoke
-`search_codebase` when the query is obviously "find X" — they will not,
-unprompted, search the codebase before implementing a new utility, a new
-interface, or a new architectural pattern.
+`search_<source>` when the query is obviously "find X" — they will not,
+unprompted, search before implementing a new utility, a new interface,
+or a new architectural pattern, and they may not realize a docs source
+exists for the library they're about to misuse.
 
-That habit (search before implement) is the single highest-value workflow
-this tool unlocks. It is also the workflow your AI client will skip
-unless you ask for it explicitly. The standard way to ask is a project
-rules file the assistant reads at the start of every session.
+That habit (search before implement, pick the right source) is the
+single highest-value workflow this tool unlocks. It is also the workflow
+your AI client will skip unless you ask for it explicitly. The standard
+way to ask is a project rules file the assistant reads at the start of
+every session.
 
 ### Drop-in template
 
-Below is a generic template suitable for any codebase. Copy it into
-whichever convention file your AI client uses (see the table further
-down), then adjust the categories and threshold to your taste.
+Below is a generic template. Replace `<myproject>` / `<unityDoc>` / etc.
+with your actual source names. Copy it into whichever convention file
+your AI client uses (table further down).
 
 ```markdown
-# Codebase Reuse & Anti-Duplication
+# Code Reuse & Library Awareness
 
-This project ships with a local MCP server (`codebase-rag`) that
-semantically indexes the codebase. Use it to discover existing
-implementations **before** writing new code.
+This project exposes a local MCP server with semantic search over
+multiple sources. Use them BEFORE writing new code or guessing at
+library APIs.
+
+## Sources available
+
+- `search_<myproject>` — our own codebase. Use to discover existing
+  implementations before writing new utilities, interfaces, or patterns.
+- `search_<unityDoc>` — Unity 6.x manual / API reference. Use whenever
+  you're about to call a Unity API: the model's knowledge cutoff may
+  predate the version actually in use.
+- `search_<avalonia>` — AvaloniaUI docs. Use for any AvaloniaUI binding,
+  control, or style question (the model doesn't know this library well).
+
+When in doubt about *which* source has the answer, call
+`search_all_sources(query)` once. It fuses results across every source
+with RRF and tags each hit with its source.
 
 ## When to search first
 
-Before implementing any of the following, query the codebase via
-`search_codebase`:
+Before implementing any of the following, search the codebase source:
 
 - **Utility functions** — math, geometry, IO, parsing, formatting,
   helpers, extension methods.
@@ -707,33 +878,52 @@ Before implementing any of the following, query the codebase via
 - **Architectural patterns** — factory, registry, observer, strategy,
   command, mediator.
 
+Before invoking a library API, search the corresponding docs source.
+Old habits (relying on training-data knowledge) are wrong for libraries
+that update frequently.
+
 For one-off code that lives in a single feature (gameplay scripting,
 a single API endpoint, a one-shot script), normal judgement is fine.
 
 ## How to search
 
 - **Semantic, not lexical.** Describe what the code *does*, not the
-  name you would give it. The whole point of semantic retrieval is
-  finding code with different names but the same meaning.
-  - Bad: `search_codebase("AngleBetween")`
-  - Good: `search_codebase("calculate angle between two vectors in degrees")`
-- **Top-K**: 5 to 10 for discovery queries. Use `top_k=3` for "find the
-  one canonical place".
-- **Threshold for triage**: results with `score > 0.65` deserve a
-  closer look. Below ~0.5 the match is usually only superficial.
+  name you would give it.
+  - Bad: `search_<myproject>("AngleBetween")`
+  - Good: `search_<myproject>("calculate angle between two vectors in degrees")`
+- **Top-K**: the server default is `search.default_top_k` from config
+  (typically 8). Pass `top_k=10` or higher for very open discovery
+  queries; pass `top_k=3` when you only want the one canonical place.
 - **Filters**: when you already know the rough area, narrow with
   `extensions=[...]`, `path_contains="..."`, or `file_glob="..."`.
-  Filtered queries reduce noise and let you use a smaller top_k.
 
-## When to escalate to `deep_search_codebase`
+## How to interpret scores
 
-`search_codebase` is your default — fast, one query, hybrid retrieval.
+The default retrieval mode is **hybrid** (BM25 + dense, fused via
+Reciprocal Rank Fusion with `k=60`). RRF scores are **NOT** cosine
+similarity — they live on a different scale:
+
+| Hybrid (RRF) score | Meaning |
+|---|---|
+| ~0.030–0.033 | Excellent. The chunk is near rank 0 in both retrievers. This is the practical maximum. |
+| ~0.020–0.029 | Strong. Worth showing to the user. |
+| ~0.012–0.019 | Decent. Useful for context but maybe not the canonical answer. |
+| < 0.012 | Weak. Consider escalating to `deep_search_<source>`. |
+
+Do **NOT** interpret a hybrid score of 0.03 as "low confidence" — that
+is the top of the scale, not the bottom. If you ever see scores in the
+range 0.3–0.7, the call was running in `mode="dense"` (per-call
+override) and you're looking at cosine similarity, where `> 0.55` is
+a good match and `< 0.45` is weak.
+
+## When to escalate to `deep_search_<source>`
+
+`search_<source>` is your default — fast, one query, hybrid retrieval.
 Use it 90% of the time.
 
-Escalate to `deep_search_codebase` ONLY when:
+Escalate to the matching `deep_search_<source>` ONLY when:
 
-1. `search_codebase` returned no results or all scores looked weak
-   (below ~0.5 in dense scores).
+1. `search_<source>` returned no results or all scores looked weak.
 2. The user rejected the previous results ("non è quello che cercavo",
    "search more thoroughly", "look harder").
 3. The user explicitly asks for an exhaustive search.
@@ -743,7 +933,7 @@ not paraphrases. Bad: `["IDamageable", "IDamageable interface", "the
 IDamageable interface"]`. Good:
 
 ```
-deep_search_codebase([
+deep_search_<myproject>([
   "IDamageable interface",                              # literal terms
   "damage system contract",                             # semantic intent
   "where damage is dispatched between entities",        # usage angle
@@ -754,8 +944,8 @@ You can also override `mode` per-call:
 - `mode="dense"` if previous hybrid result was diluted by lexical noise.
 - `mode="sparse"` to chase an exact identifier or string.
 
-Anti-pattern: do NOT default to `deep_search_codebase` "just in case".
-If `search_codebase` already gave you what you need, you're done.
+Anti-pattern: do NOT default to `deep_search_<source>` "just in case".
+If `search_<source>` already gave you what you need, you're done.
 
 ## How to report back
 
@@ -809,16 +999,20 @@ making every session noisy.
 
 ### A note on what to *avoid* in your rules
 
-- Don't tell the AI to call `update_codebase_index(force=True)`
-  routinely. A force rebuild on a large codebase takes minutes and
-  re-embeds everything; it should be a deliberate user action, not a
-  reflex. The `Needs update` line above is the right surface.
-- Don't ask the AI to call `search_codebase` for queries it can answer
+- Don't tell the AI to call `update_source_index(source, force=True)`
+  routinely. A force rebuild on a large source takes minutes and re-embeds
+  everything; it should be a deliberate user action, not a reflex. The
+  `Needs update` line is the right surface.
+- Don't ask the AI to call `search_<source>` for queries it can answer
   by reading a single known file. The tool's job is discovery; once you
   know what file to read, just read it.
+- Don't default to `search_all_sources` for everything. It costs N
+  retrievals per call. Use it only when you genuinely don't know which
+  source has the answer; otherwise pick the specific `search_<source>`.
 - Don't ask for "search the entire codebase exhaustively" — `top_k=10`
-  is enough for almost any discovery query, and the tool's filters
-  exist precisely to avoid this.
+  is enough for almost any discovery query, and the filters
+  (`extensions`, `path_contains`, `file_glob`) exist precisely to avoid
+  this.
 
 ---
 
@@ -849,8 +1043,9 @@ backgrounds the rebuild so the commit returns immediately.
 
 ## Hybrid retrieval
 
-By default, `search_codebase` runs in **hybrid mode**: it combines a dense
-(semantic) retriever with a sparse (BM25, lexical) retriever and fuses the
+By default, every `search_<source>` tool runs in **hybrid mode**: it
+combines a dense (semantic) retriever with a sparse (BM25, lexical)
+retriever and fuses the
 two rankings using **Reciprocal Rank Fusion** (RRF, `k=60`).
 
 The motivation is that dense and sparse retrieval have complementary
@@ -922,11 +1117,11 @@ later, or maybe you want to inspect the impact first.
 To clear a drift warning, run a full rebuild via the CLI:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json
+local-codebase-rag-mcp build --config /path/to/config.json --source <name>
 ```
 
 Or, while the server is running, ask the AI client to call
-`update_codebase_index(force=True)`.
+`update_source_index("<name>", force=True)`.
 
 Fields **not** tracked (changing them does not trigger drift):
 `watcher.*`, `git_integration.*`, `loading_timeout_seconds`,
@@ -940,32 +1135,49 @@ currently only filters file-watcher events, not the indexing pipeline.
 ## Architecture
 
 ```
-+------------------------------------------------------------+
-| AI client (Claude Code, Antigravity, Cursor, ...)          |
-+--------------------------+---------------------------------+
-                           | MCP / JSON-RPC over stdio
-+--------------------------v---------------------------------+
-| mcp_server.py (FastMCP)                                    |
-|   tools: search_codebase / update_codebase_index / status  |
-|   watchdog observer (debounced incremental updates)        |
-+--------------------------+---------------------------------+
-                           |
-+--------------------------v---------------------------------+
-| rag_manager.py (CodebaseRAG)                               |
-|   - SimpleDirectoryReader  (LlamaIndex)                    |
-|   - HuggingFaceEmbedding   (BAAI/bge-small-en-v1.5, CPU)   |
-|   - update_file / remove_file (incremental)                |
-+--------------------------+---------------------------------+
-                           |
-+--------------------------v---------------------------------+
-| ChromaDB (persistent, local file)                          |
-|   collection "codebase"                                    |
-+--------------------------+---------------------------------+
-                           ^
-                           | scanned + watched
-+--------------------------+---------------------------------+
-| Your codebase (read-only from this server's perspective)   |
-+------------------------------------------------------------+
++--------------------------------------------------------------------+
+| AI client (Claude Code, Antigravity, Cursor, ...)                  |
++----------------------------+---------------------------------------+
+                             | MCP / JSON-RPC over stdio
++----------------------------v---------------------------------------+
+| server.py  (FastMCP)                                               |
+|   - dynamically registers `search_<name>` / `deep_search_<name>`   |
+|     for every entry in config.sources                              |
+|   - global tools: list_sources / search_all_sources /              |
+|     deep_search_all_sources / update_source_index / get_rag_status |
++----------------------------+---------------------------------------+
+                             |
++----------------------------v---------------------------------------+
+| source_manager.py  (SourceManager)                                 |
+|   - per-source dispatch (KeyError on unknown source)               |
+|   - cross-source RRF fusion for *_all_sources                      |
++----------+------------------------------------+--------------------+
+           |                                    |
++----------v-----------+                +-------v-------------------+
+| sources/codebase.py  | ... per type ..| sources/<future>.py       |
+| CodebaseBackend      |                | WebdocBackend, PdfBackend |
+|   wraps CodebaseRAG  |                |   (M2 / M3)               |
+|   runs file watcher  |                +---------------------------+
++----------+-----------+
+           |
++----------v---------------------------------------------------------+
+| rag_manager.py (CodebaseRAG)                                       |
+|   - SimpleDirectoryReader  (LlamaIndex)                            |
+|   - HuggingFaceEmbedding   (BAAI/bge-small-en-v1.5, CPU)           |
+|   - dense + BM25 + RRF fusion (hybrid retrieval)                   |
+|   - drift detection + deep_search variant ladder                   |
+|   - update_file / remove_file (incremental)                        |
++----------+---------------------------------------------------------+
+           |
++----------v---------------------------------------------------------+
+| ChromaDB — one collection per source, in its own subdir            |
+|   rag_storage/<source_name>/chroma.sqlite3                         |
++----------+---------------------------------------------------------+
+           ^
+           | scanned + watched (codebase sources only)
++----------+---------------------------------------------------------+
+| Your sources (one path or URL per entry in config.sources)         |
++--------------------------------------------------------------------+
 ```
 
 Repository layout:
@@ -979,20 +1191,28 @@ local-codebase-rag-mcp/
 ├── config.json              Your local config (gitignored)
 ├── src/
 │   └── local_codebase_rag_mcp/
-│       ├── __init__.py      Package version
-│       ├── __main__.py      Enables `python -m local_codebase_rag_mcp`
-│       ├── cli.py           argparse-based CLI dispatcher
-│       ├── server.py        FastMCP server + tool definitions + watcher
-│       ├── rag_manager.py   CodebaseRAG: indexing, search, drift, BM25
-│       └── config.py        Typed config loader
+│       ├── __init__.py        Package version
+│       ├── __main__.py        Enables `python -m local_codebase_rag_mcp`
+│       ├── cli.py             argparse-based CLI dispatcher (incl. migrate-config)
+│       ├── server.py          FastMCP server, dynamic per-source tool registration
+│       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
+│       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search
+│       ├── config.py          v2 config loader with per-type validation
+│       └── sources/           Per-type source backends
+│           ├── __init__.py    SOURCE_BACKENDS registry
+│           ├── base.py        SourceBackend abstract base class
+│           └── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher)
 ├── tests/
-│   ├── conftest.py          pytest path shim for src/ layout
-│   ├── test_watch.py        End-to-end smoke test for the watcher
-│   ├── test_drift.py        End-to-end smoke test for drift detection
-│   ├── test_filters.py      Smoke test for search-filter parameters
-│   ├── test_deep_search.py  Smoke test for the deep_search_codebase fallback
+│   ├── conftest.py            pytest path shim + per-source RAG helper
+│   ├── test_watch.py          End-to-end smoke test for the watcher
+│   ├── test_drift.py          End-to-end smoke test for drift detection
+│   ├── test_filters.py        Smoke test for search-filter parameters
+│   ├── test_deep_search.py    Smoke test for the deep_search fallback ladder
+│   ├── test_multi_source.py   Smoke test for multi-source dispatch + isolation
 │   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
-└── rag_storage/             ChromaDB collection (gitignored, auto-created)
+└── rag_storage/               ChromaDB collections, one subdir per source (gitignored)
+    ├── myproject/
+    └── unityDoc/
 ```
 
 ### Key design decisions
@@ -1077,11 +1297,12 @@ When contributing code:
   ```bash
   pip install -e .
   ```
-- Run `python -m py_compile src/local_codebase_rag_mcp/*.py tests/*.py`
+- Run `python -m py_compile src/local_codebase_rag_mcp/*.py src/local_codebase_rag_mcp/sources/*.py tests/*.py`
   to catch syntax errors.
 - Run `python tests/test_watch.py`, `python tests/test_drift.py`,
-  `python tests/test_filters.py`, and `python tests/test_deep_search.py`
-  to confirm the smoke tests still pass.
+  `python tests/test_filters.py`, `python tests/test_deep_search.py`,
+  and `python tests/test_multi_source.py` to confirm the smoke tests
+  still pass.
   (`tests/test_hybrid_vs_dense.py` is a side-by-side benchmark, not a
   pass/fail test.)
 - Keep all comments, docstrings, and log messages in English.
