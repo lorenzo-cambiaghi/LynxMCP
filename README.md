@@ -1270,7 +1270,10 @@ lynx/
 │       ├── cli.py             argparse-based CLI dispatcher (incl. migrate-config)
 │       ├── server.py          FastMCP server, dynamic per-source tool registration
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
-│       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search
+│       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
+│       │                      per-file SHA-256 incremental cache
+│       ├── chunking.py        AST-aware chunker (tree-sitter for 9 languages +
+│       │                      SentenceSplitter fallback) with CHUNKER_VERSION
 │       ├── config.py          v2 config loader with per-type validation
 │       └── sources/           Per-type source backends
 │           ├── __init__.py    SOURCE_BACKENDS registry
@@ -1283,9 +1286,14 @@ lynx/
 │   ├── test_filters.py        Smoke test for search-filter parameters
 │   ├── test_deep_search.py    Smoke test for the deep_search fallback ladder
 │   ├── test_multi_source.py   Smoke test for multi-source dispatch + isolation
+│   ├── test_sha_incremental.py  Smoke test for the per-file SHA rebuild cache
+│   ├── test_tree_sitter.py    Unit tests for the AST chunker (per-language)
 │   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
 └── rag_storage/               ChromaDB collections, one subdir per source (gitignored)
     ├── myproject/
+    │   ├── chroma.sqlite3     Vector store
+    │   ├── metadata.json      Drift snapshot (config_snapshot + last_update)
+    │   └── file_hashes.json   Per-file SHA-256 cache for incremental rebuilds
     └── unityDoc/
 ```
 
@@ -1373,10 +1381,16 @@ When contributing code:
   ```
 - Run `python -m py_compile src/lynx/*.py src/lynx/sources/*.py tests/*.py`
   to catch syntax errors.
-- Run `python tests/test_watch.py`, `python tests/test_drift.py`,
-  `python tests/test_filters.py`, `python tests/test_deep_search.py`,
-  and `python tests/test_multi_source.py` to confirm the smoke tests
-  still pass.
+- Run the smoke tests:
+  ```bash
+  python tests/test_tree_sitter.py       # AST chunker (per-language)
+  python tests/test_filters.py           # search filter parameters
+  python tests/test_drift.py             # config drift detection
+  python tests/test_deep_search.py       # deep_search fallback ladder
+  python tests/test_multi_source.py      # multi-source dispatch + isolation
+  python tests/test_sha_incremental.py   # per-file SHA rebuild cache
+  python tests/test_watch.py             # watcher (subprocess; slowest)
+  ```
   (`tests/test_hybrid_vs_dense.py` is a side-by-side benchmark, not a
   pass/fail test.)
 - Keep all comments, docstrings, and log messages in English.
