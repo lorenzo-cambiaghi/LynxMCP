@@ -1,6 +1,23 @@
-# local-codebase-rag-mcp
+# Lynx
 
-A self-hosted **MCP (Model Context Protocol) server** that gives any AI coding
+```
+           /\     /\           Lynceus (Latin: Lynx or Lynceus) was a hero in Greek mythology,
+          {  `---'  }          one of the Argonauts who joined Jason's expedition, renowned
+          {  O   O  }          for his extraordinary eyesight. Son of Aphareus and brother
+          ~~>  V  <~~          of Idas, Lynceus was said to possess the ability to see through
+           \  \|/  /           solid objects and perceive things at immense distances.
+            `-----'____
+            /     \    \_
+           {       }\  )_\_   _
+           |  \_/  |/ /  \_\_/ )
+            \__/  /(_/     \__/
+              (__/
+```
+
+A tool that finds the buried answer in your codebase deserves the name of
+the man who saw it first.
+
+**Lynx** is a self-hosted **MCP (Model Context Protocol) server** that gives any AI coding
 assistant — Claude Code, Antigravity, Cursor, Continue.dev, Aider, etc. —
 the ability to perform **semantic search over your code and library
 documentation**.
@@ -136,14 +153,14 @@ The project is a standard Python package. Install it from a local clone in
 editable mode (recommended while it is pre-PyPI):
 
 ```bash
-git clone https://github.com/<your-username>/local-codebase-rag-mcp.git
-cd local-codebase-rag-mcp
+git clone https://github.com/<your-username>/lynx.git
+cd lynx
 pip install -e .
 ```
 
-This installs the package and exposes a `local-codebase-rag-mcp` console
+This installs the package and exposes a `lynx` console
 command. (When PyPI publication lands, the install becomes a single
-`pip install local-codebase-rag-mcp`.)
+`pip install lynx`.)
 
 > On Python 3.14+ you may also need: `pip install "mcp[cli]"`
 
@@ -163,37 +180,36 @@ Dependencies installed automatically:
 **Verify the install:**
 
 ```bash
-local-codebase-rag-mcp --version
-local-codebase-rag-mcp --help
+lynx --version
+lynx --help
 ```
 
 > ### ⚠️ Two equivalent ways to invoke (read this once)
 >
 > Throughout this README every example uses the short form
-> `local-codebase-rag-mcp ...`. The fully equivalent long form is
-> `python -m local_codebase_rag_mcp ...`. Pick whichever works for you:
+> `lynx ...`. The fully equivalent long form is
+> `python -m lynx ...`. Pick whichever works for you:
 >
 > | Use the short form... | Use `python -m ...` instead when... |
 > |---|---|
-> | The `local-codebase-rag-mcp` command is on your `PATH`. | The console script is missing or not on `PATH` (common on Windows: pip prints a warning at install time when `Scripts/` is not in `PATH`). |
+> | The `lynx` command is on your `PATH`. | The console script is missing or not on `PATH` (common on Windows: pip prints a warning at install time when `Scripts/` is not in `PATH`). |
 > | You want shorter snippets in IDE config files. | You want a guaranteed-working invocation regardless of `PATH`. Recommended for IDE configs that you'll share or commit to dotfiles. |
 >
 > Side-by-side, all of these are interchangeable:
 >
 > ```bash
-> local-codebase-rag-mcp --help
-> python -m local_codebase_rag_mcp --help
+> lynx --help
+> python -m lynx --help
 >
-> local-codebase-rag-mcp build --config /path/to/config.json
-> python -m local_codebase_rag_mcp build --config /path/to/config.json
+> lynx build --config /path/to/config.json
+> python -m lynx build --config /path/to/config.json
 >
-> local-codebase-rag-mcp serve --config /path/to/config.json
-> python -m local_codebase_rag_mcp serve --config /path/to/config.json
+> lynx serve --config /path/to/config.json
+> python -m lynx serve --config /path/to/config.json
 > ```
 >
 > If you're on Windows and the short form fails with "command not found",
-> just prefix with `python -m ` and substitute hyphens with underscores in
-> the package name. That's the only difference.
+> just prefix the invocation with `python -m`. That's the only difference.
 
 ---
 
@@ -242,7 +258,7 @@ Minimum useful config (single source):
 
 | Field | What it does |
 |---|---|
-| `config_version` | **Required.** Must be `2`. Use `local-codebase-rag-mcp migrate-config` to upgrade an older config. |
+| `config_version` | **Required.** Must be `2`. Use `lynx migrate-config` to upgrade an older config. |
 | `storage_path` | Where per-source ChromaDB folders live (each at `<storage_path>/<source_name>/`). Relative paths are resolved against the config file's directory. Default `./rag_storage`. |
 | `loading_timeout_seconds` | Max time to wait for the first index build before MCP tool calls give up. Default `600`. |
 | `embedding.model_name` | Any HuggingFace sentence-transformer model. **Changing this invalidates all existing vectors across every source** — see [Config drift detection](#config-drift-detection). |
@@ -289,7 +305,7 @@ no `sources` block. v0.2.0 introduced the multi-source schema documented
 above. The migration is a one-liner:
 
 ```bash
-local-codebase-rag-mcp migrate-config --input config.json --source-name myproject
+lynx migrate-config --input config.json --source-name myproject
 # writes config.v2.json next to the input
 ```
 
@@ -315,15 +331,15 @@ From the directory containing your `config.json`, run:
 
 ```bash
 # When you have a single source, --source is optional:
-local-codebase-rag-mcp build
+lynx build
 
 # When you have multiple sources, name the one you want:
-local-codebase-rag-mcp build --source myproject
-local-codebase-rag-mcp build --source unityDoc
+lynx build --source myproject
+lynx build --source unityDoc
 ```
 
 > If you get `command not found`, use the equivalent `python -m` form:
-> `python -m local_codebase_rag_mcp build --source <name>`. See
+> `python -m lynx build --source <name>`. See
 > [Two equivalent ways to invoke](#installation) for why.
 
 You should see logs like:
@@ -337,14 +353,14 @@ Source 'myproject' ready.
 If your `config.json` lives elsewhere, use `--config`:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json --source myproject
+lynx build --config /path/to/config.json --source myproject
 ```
 
 The same `build` command also handles **rebuilding** later (e.g. after
 changing the embedding model) — it does a full force rebuild whenever the
 source already has an index.
 
-> Note: starting the server with `local-codebase-rag-mcp serve` on a fresh
+> Note: starting the server with `lynx serve` on a fresh
 > install will also trigger an initial build of every source implicitly.
 > Pre-building is just a courtesy so the first MCP client doesn't have to
 > wait minutes.
@@ -437,14 +453,14 @@ The server speaks **MCP over stdio** — every modern AI client supports this
 the same way: a `command` to launch the server, an array of `args`, and
 optionally `env` and `cwd`.
 
-In every example below, replace `C:/path/to/local-codebase-rag-mcp` with the
+In every example below, replace `C:/path/to/lynx` with the
 absolute path where you cloned this repo.
 
 > Tip on Windows: in JSON, you can use either forward slashes (`C:/Users/...`)
 > or escaped backslashes (`C:\\Users\\...`). Forward slashes are simpler.
 
 All snippets below assume the package is installed (`pip install -e .` from
-the repo, or eventually `pip install local-codebase-rag-mcp`) and that you
+the repo, or eventually `pip install lynx`) and that you
 have a `config.json` somewhere on disk.
 
 > **Tip — passing the config:** since an MCP client launches the server
@@ -453,13 +469,13 @@ have a `config.json` somewhere on disk.
 > your actual path.
 
 > **Tip — if the short command isn't on your `PATH`:** every snippet below
-> uses `"command": "local-codebase-rag-mcp"`. If pip installed the console
+> uses `"command": "lynx"`. If pip installed the console
 > script outside your `PATH` (common on Windows — pip prints a warning at
 > install time), swap the entry for the equivalent `python -m` form:
 >
 > ```json
 > "command": "python",
-> "args": ["-m", "local_codebase_rag_mcp", "serve", "--config", "C:/path/to/config.json"]
+> "args": ["-m", "lynx", "serve", "--config", "C:/path/to/config.json"]
 > ```
 >
 > The two are functionally identical. The `python -m` form is also a
@@ -471,7 +487,7 @@ have a `config.json` somewhere on disk.
 Add the server with one command:
 
 ```bash
-claude mcp add codebase-rag --scope user -- local-codebase-rag-mcp serve --config C:/path/to/config.json
+claude mcp add codebase-rag --scope user -- lynx serve --config C:/path/to/config.json
 ```
 
 Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
@@ -480,7 +496,7 @@ Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
@@ -504,7 +520,7 @@ workspace root:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
@@ -527,7 +543,7 @@ Add an entry under `mcpServers`:
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/path/to/config.json"],
       "type": "stdio"
     }
@@ -545,7 +561,7 @@ Cursor reads `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/path/to/config.json"]
     }
   }
@@ -558,7 +574,7 @@ Restart Cursor. Settings → MCP should now list the server.
 
 Any MCP client takes the same three pieces of information:
 
-- **Command:** `local-codebase-rag-mcp`
+- **Command:** `lynx`
 - **Args:** `["serve", "--config", "C:/path/to/config.json"]`
 - **Transport:** `stdio`
 
@@ -573,11 +589,11 @@ entries:
 {
   "mcpServers": {
     "codebase-rag-frontend": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/configs/frontend.json"]
     },
     "codebase-rag-backend": {
-      "command": "local-codebase-rag-mcp",
+      "command": "lynx",
       "args": ["serve", "--config", "C:/configs/backend.json"]
     }
   }
@@ -591,12 +607,12 @@ A single `pip install` covers all of them.
 
 ## Command-line interface
 
-The same `local-codebase-rag-mcp` command exposes four subcommands. Useful
+The same `lynx` command exposes four subcommands. Useful
 for debugging the index, scripting, or just querying the codebase without
 opening an AI assistant.
 
 ```text
-local-codebase-rag-mcp [--version] [-h] COMMAND ...
+lynx [--version] [-h] COMMAND ...
 
   serve   Run the MCP server (default if no command is given)
   build   Force a full rebuild of the index
@@ -605,8 +621,8 @@ local-codebase-rag-mcp [--version] [-h] COMMAND ...
 ```
 
 > Every example in this section can be invoked equivalently as
-> `python -m local_codebase_rag_mcp <subcommand> ...` if the short
-> `local-codebase-rag-mcp` script is not on your `PATH`. See
+> `python -m lynx <subcommand> ...` if the short
+> `lynx` script is not on your `PATH`. See
 > [Two equivalent ways to invoke](#installation) at the end of the
 > Installation section.
 
@@ -618,7 +634,7 @@ falls back to `./config.json` in the current directory).
 Runs the MCP server over stdio. This is what your IDE invokes:
 
 ```bash
-local-codebase-rag-mcp serve --config /path/to/config.json
+lynx serve --config /path/to/config.json
 ```
 
 ### `build`
@@ -628,7 +644,7 @@ after changing the embedding model, or whenever you want a known-clean
 rebuild:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json
+lynx build --config /path/to/config.json
 ```
 
 ### `search`
@@ -638,9 +654,9 @@ for "is the index actually finding this file?" debugging or for piping
 into other commands.
 
 ```bash
-local-codebase-rag-mcp search "how damage is dispatched" --top-k 3
-local-codebase-rag-mcp search "IDamageable" --mode dense --ext .cs
-local-codebase-rag-mcp search "auth" --glob "**/middleware/**" -k 5
+lynx search "how damage is dispatched" --top-k 3
+lynx search "IDamageable" --mode dense --ext .cs
+lynx search "auth" --glob "**/middleware/**" -k 5
 ```
 
 Supported flags: `--top-k / -k`, `--mode {hybrid,dense,sparse}`, `--ext`
@@ -652,7 +668,7 @@ Reports git state, last update time, and any config drift detected since
 the last full rebuild:
 
 ```bash
-$ local-codebase-rag-mcp status
+$ lynx status
 Status:       Up to date
 Last commit:  0edb21f9e07c5d64ba0e632606ae4ccb64b5c16a
 Last update:  2026-05-10T13:45:27.492806
@@ -1033,7 +1049,7 @@ keeps the index in sync at every commit. Add this to
 
 ```bash
 #!/bin/bash
-local-codebase-rag-mcp build --config /path/to/config.json >/dev/null 2>&1 &
+lynx build --config /path/to/config.json >/dev/null 2>&1 &
 ```
 
 Replace `/path/to/config.json` with your absolute config path. The `&`
@@ -1117,7 +1133,7 @@ later, or maybe you want to inspect the impact first.
 To clear a drift warning, run a full rebuild via the CLI:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json --source <name>
+lynx build --config /path/to/config.json --source <name>
 ```
 
 Or, while the server is running, ask the AI client to call
@@ -1183,16 +1199,16 @@ currently only filters file-watcher events, not the indexing pipeline.
 Repository layout:
 
 ```
-local-codebase-rag-mcp/
+lynx/
 ├── pyproject.toml           Package metadata + dependencies
 ├── README.md                You are here
 ├── LICENSE                  MIT
 ├── config.example.json      Template config (commit this)
 ├── config.json              Your local config (gitignored)
 ├── src/
-│   └── local_codebase_rag_mcp/
+│   └── lynx/
 │       ├── __init__.py        Package version
-│       ├── __main__.py        Enables `python -m local_codebase_rag_mcp`
+│       ├── __main__.py        Enables `python -m lynx`
 │       ├── cli.py             argparse-based CLI dispatcher (incl. migrate-config)
 │       ├── server.py          FastMCP server, dynamic per-source tool registration
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
@@ -1258,16 +1274,16 @@ Either copy `config.example.json` to `config.json`, or set the
 Expected: in MCP stdio mode the server reads JSON-RPC from stdin; closing
 stdin (Ctrl+D / EOF) terminates the process. To exercise the server
 manually, use `python tests/test_watch.py` instead, or use the CLI:
-`local-codebase-rag-mcp search "..."` runs a query without keeping a
+`lynx search "..."` runs a query without keeping a
 server alive.
 
-**The `local-codebase-rag-mcp` command is not on my PATH.**
+**The `lynx` command is not on my PATH.**
 On Windows, pip may install console scripts into a directory that is not
 on `PATH` by default (it prints a warning at install time when this
 happens). Two options:
 
 - **Recommended:** use the equivalent
-  `python -m local_codebase_rag_mcp ...` form everywhere. It does not
+  `python -m lynx ...` form everywhere. It does not
   depend on `PATH` and is interchangeable with the short command. Full
   details in [Two equivalent ways to invoke](#installation).
 - Or add the printed install directory to `PATH` (typically something
@@ -1280,7 +1296,7 @@ produce non-comparable vectors. The next start will also flag a CRITICAL
 drift if you forget:
 
 ```bash
-local-codebase-rag-mcp build --config /path/to/config.json
+lynx build --config /path/to/config.json
 ```
 
 ---
@@ -1293,11 +1309,11 @@ an issue first so we can discuss the approach.
 When contributing code:
 
 - After a clone, install in editable mode so the package and the
-  `local-codebase-rag-mcp` command resolve:
+  `lynx` command resolve:
   ```bash
   pip install -e .
   ```
-- Run `python -m py_compile src/local_codebase_rag_mcp/*.py src/local_codebase_rag_mcp/sources/*.py tests/*.py`
+- Run `python -m py_compile src/lynx/*.py src/lynx/sources/*.py tests/*.py`
   to catch syntax errors.
 - Run `python tests/test_watch.py`, `python tests/test_drift.py`,
   `python tests/test_filters.py`, `python tests/test_deep_search.py`,

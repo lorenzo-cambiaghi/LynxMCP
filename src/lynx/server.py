@@ -1,5 +1,5 @@
 """
-MCP server for the local-codebase-rag-mcp project (multi-source).
+MCP server for the lynx project (multi-source).
 
 The bulk of the work happens inside `run_server(config_path)`:
   - load config (v2 schema, validates `sources` block)
@@ -395,7 +395,7 @@ def _register_global_tools(mcp, manager):
 def run_server(config_path=None):
     """Boot the MCP server. Blocks on mcp.run() until the client disconnects."""
     config = load_config(config_path=config_path)
-    mcp = FastMCP("local-codebase-rag-mcp")
+    mcp = FastMCP("lynx")
 
     state = {
         "manager": None,
@@ -452,6 +452,6 @@ def run_server(config_path=None):
 
 
 if __name__ == "__main__":
-    # Allow `python -m local_codebase_rag_mcp.server` for ad-hoc invocation.
-    # Normal entry point goes through cli:main (`local-codebase-rag-mcp serve`).
+    # Allow `python -m lynx.server` for ad-hoc invocation.
+    # Normal entry point goes through cli:main (`lynx serve`).
     run_server()

@@ -1,5 +1,5 @@
 """
-Configuration loader for the local-codebase-rag-mcp server (schema v2).
+Configuration loader for the lynx server (schema v2).
 
 Reads `config.json` and exposes a typed `Config` dataclass used by
 `server.py`, `cli.py`, and `source_manager.py`.
@@ -31,7 +31,7 @@ Schema v2 — top-level shape:
 
 A v1 config (recognized by the presence of a top-level `codebase_path` field
 and the absence of `sources`) is rejected with a pointer to
-`local-codebase-rag-mcp migrate-config`.
+`lynx migrate-config`.
 """
 
 from __future__ import annotations
@@ -233,7 +233,7 @@ def load_config(config_path: Path | None = None) -> Config:
             _config_error(
                 f"{config_path} looks like a v1 config (has 'codebase_path' at the "
                 f"top level). Schema v2 reorganizes the file under a 'sources' "
-                f"block.\n[config] Run:  local-codebase-rag-mcp migrate-config "
+                f"block.\n[config] Run:  lynx migrate-config "
                 f"--input \"{config_path}\"\n[config] (or rewrite manually — see "
                 f"config.example.json for the v2 template.)"
             )
@@ -247,7 +247,7 @@ def load_config(config_path: Path | None = None) -> Config:
         _config_error(
             f"'config_version': {version} is older than this package's schema "
             f"(v{CURRENT_CONFIG_VERSION}). Run "
-            f"'local-codebase-rag-mcp migrate-config --input \"{config_path}\"' "
+            f"'lynx migrate-config --input \"{config_path}\"' "
             f"to upgrade."
         )
     if version > CURRENT_CONFIG_VERSION:

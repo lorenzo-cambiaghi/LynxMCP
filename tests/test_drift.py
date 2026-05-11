@@ -17,7 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from local_codebase_rag_mcp.rag_manager import DRIFT_CRITICAL, DRIFT_WARNING
+from lynx.rag_manager import DRIFT_CRITICAL, DRIFT_WARNING
 from conftest import build_rag_from_first_source
 
 

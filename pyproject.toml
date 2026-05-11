@@ -3,9 +3,9 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "local-codebase-rag-mcp"
+name = "lynx"
 version = "0.2.0"
-description = "Self-hosted MCP server with semantic + lexical search over your local code and documentation. Multi-source, 100% local, no data egress."
+description = "Linx — a self-hosted MCP server with semantic + lexical search over your local code and documentation. Multi-source, 100% local, no data egress. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -54,12 +54,12 @@ dev = [
 ]
 
 [project.scripts]
-local-codebase-rag-mcp = "local_codebase_rag_mcp.cli:main"
+lynx = "lynx.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/loren/local-codebase-rag-mcp"
-Repository = "https://github.com/loren/local-codebase-rag-mcp"
-Issues = "https://github.com/loren/local-codebase-rag-mcp/issues"
+Homepage = "https://github.com/loren/lynx"
+Repository = "https://github.com/loren/lynx"
+Issues = "https://github.com/loren/lynx/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

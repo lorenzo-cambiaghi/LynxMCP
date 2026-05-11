@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from local_codebase_rag_mcp.config import load_config
+from lynx.config import load_config
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
@@ -52,12 +52,12 @@ def main() -> int:
     if log_path.exists():
         log_path.unlink()
 
-    print(f"[test] Launching server (python -m local_codebase_rag_mcp serve), "
+    print(f"[test] Launching server (python -m lynx serve), "
           f"stderr -> {log_path.name}")
     log_handle = log_path.open("wb")
     proc = subprocess.Popen(
         [
-            sys.executable, "-u", "-m", "local_codebase_rag_mcp",
+            sys.executable, "-u", "-m", "lynx",
             "serve", "--config", str(CONFIG_FILE),
         ],
         stdin=subprocess.PIPE,  # keep mcp.run() alive (otherwise EOF -> exit)

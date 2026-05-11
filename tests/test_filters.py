@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-from local_codebase_rag_mcp.rag_manager import CodebaseRAG, _matches_filters, _normalize_extension
+from lynx.rag_manager import CodebaseRAG, _matches_filters, _normalize_extension
 from conftest import build_rag_from_first_source
 
 

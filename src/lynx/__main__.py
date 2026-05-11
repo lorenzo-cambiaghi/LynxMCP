@@ -1,4 +1,4 @@
-"""Enable `python -m local_codebase_rag_mcp [subcommand] [args...]`."""
+"""Enable `python -m lynx [subcommand] [args...]`."""
 
 from .cli import main
 

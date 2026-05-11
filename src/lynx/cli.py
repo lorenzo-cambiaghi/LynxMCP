@@ -1,4 +1,4 @@
-"""Command-line entry point for local-codebase-rag-mcp (multi-source).
+"""Command-line entry point for lynx (multi-source).
 
 Subcommands:
   serve           - run the MCP server (default if no command is given)
@@ -32,13 +32,13 @@ from . import __version__
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="local-codebase-rag-mcp",
-        description="Self-hosted MCP server with semantic + lexical search "
-                    "over your local code and documentation. Runs 100 percent "
-                    "local, no data egress.",
+        prog="lynx",
+        description="Linx — self-hosted MCP server with semantic + lexical "
+                    "search over your local code and documentation. Multi-source, "
+                    "100 percent local, no data egress.",
     )
     parser.add_argument(
-        "--version", action="version", version=f"local-codebase-rag-mcp {__version__}"
+        "--version", action="version", version=f"lynx {__version__}"
     )
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -184,7 +184,7 @@ def _cmd_migrate_config(args) -> int:
     print(
         "[migrate] NOTE: your existing 'rag_storage/' (built under v1) "
         f"is now at the wrong layout for v2. After replacing the config, "
-        "delete rag_storage/ and run 'local-codebase-rag-mcp build' to "
+        "delete rag_storage/ and run 'lynx build' to "
         "rebuild under the per-source storage layout.",
         file=sys.stderr,
     )

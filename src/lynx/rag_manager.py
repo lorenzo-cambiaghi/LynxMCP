@@ -10,6 +10,7 @@ No data ever leaves the host. No calls to external services.
 """
 
 import fnmatch
+import hashlib
 import logging
 import os
 import sys
@@ -137,6 +138,16 @@ def _matches_filters(item: dict, file_glob, extensions, path_contains) -> bool:
 DRIFT_CRITICAL = "critical"
 DRIFT_WARNING = "warning"
 
+# Schema version for the per-source file_hashes.json. Bump if the file shape
+# changes incompatibly (the loader auto-discards mismatched files and a full
+# rebuild kicks in, so existing installs upgrade transparently).
+FILE_HASHES_SCHEMA_VERSION = 1
+
+# Read buffer for SHA-256 hashing. 1 MiB is enough to keep IO efficient on
+# big files (.shader / .compute can be hundreds of KB) while staying small
+# in memory.
+_HASH_READ_CHUNK_BYTES = 1 << 20
+
 # Mapping of impacting field -> severity. Fields not in this mapping are
 # considered runtime-only and do not trigger drift detection.
 _DRIFT_SEVERITY = {
@@ -233,6 +244,13 @@ class CodebaseRAG:
         # and the config snapshot used to build the index.
         self.metadata_file = self.storage_path / "metadata.json"
         self.metadata = self._load_metadata()
+
+        # Per-file SHA-256 cache for incremental rebuilds. The loader returns
+        # an empty dict when the file is missing or its snapshot disagrees
+        # with the live config — both cases force a full rebuild downstream.
+        self.file_hashes_file = self.storage_path / "file_hashes.json"
+        self._file_hashes: dict = self._load_file_hashes()
+
         self.index = self._load_or_build_index()
 
         # After index is loaded, check whether the live config matches the
@@ -258,6 +276,102 @@ class CodebaseRAG:
     def _save_metadata(self):
         self.metadata_file.write_text(json.dumps(self.metadata, indent=2))
 
+    # ------------------------------------------------------------------
+    # Per-file SHA-256 cache (incremental rebuild support)
+    # ------------------------------------------------------------------
+
+    def _compute_file_hash(self, abs_path: str) -> str:
+        """SHA-256 of a file's bytes. Returns empty string on read error so
+        callers can decide whether to treat that as 'always re-index'."""
+        h = hashlib.sha256()
+        try:
+            with open(abs_path, "rb") as f:
+                while True:
+                    block = f.read(_HASH_READ_CHUNK_BYTES)
+                    if not block:
+                        break
+                    h.update(block)
+            return h.hexdigest()
+        except OSError as e:
+            log(f"[rag] hash failed for {abs_path}: {e}")
+            return ""
+
+    def _file_hashes_snapshot(self) -> dict:
+        """Snapshot of the config fields the hash file must be consistent with.
+
+        Mirrors `_build_config_snapshot` BUT excludes `codebase_path`: the
+        hashes are keyed by absolute path, so a path change naturally
+        invalidates them (files at the new path simply aren't in the cache).
+        """
+        return {
+            "embedding_model_name": self.embedding_model_name,
+            "collection_name": self.collection_name,
+            "supported_extensions": sorted(self.supported_extensions),
+        }
+
+    def _load_file_hashes(self) -> dict:
+        """Load the per-file SHA cache, or empty dict on any inconsistency.
+
+        Returns {} (forcing a full rebuild) when:
+          - the file is missing (first run, or wiped)
+          - schema_version mismatches
+          - the stored snapshot disagrees with the live config (any tracked
+            change makes the stored vectors / chunk identities unreliable)
+        """
+        if not self.file_hashes_file.exists():
+            return {}
+        try:
+            raw = json.loads(self.file_hashes_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            log(f"[rag] file_hashes.json unreadable ({e}); ignoring and rebuilding.")
+            return {}
+
+        if raw.get("schema_version") != FILE_HASHES_SCHEMA_VERSION:
+            log(
+                f"[rag] file_hashes.json schema_version mismatch "
+                f"(got {raw.get('schema_version')!r}, expected "
+                f"{FILE_HASHES_SCHEMA_VERSION}); discarding cache."
+            )
+            return {}
+
+        stored_snapshot = raw.get("config_snapshot") or {}
+        live_snapshot = self._file_hashes_snapshot()
+        if stored_snapshot != live_snapshot:
+            log(
+                "[rag] file_hashes.json config snapshot disagrees with live "
+                "config; cache is invalid, will rebuild from scratch."
+            )
+            return {}
+
+        return raw.get("files") or {}
+
+    def _save_file_hashes(self):
+        """Persist the current in-memory hash cache + the matching snapshot."""
+        payload = {
+            "schema_version": FILE_HASHES_SCHEMA_VERSION,
+            "config_snapshot": self._file_hashes_snapshot(),
+            "files": self._file_hashes,
+        }
+        try:
+            self.file_hashes_file.write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            log(f"[rag] could not persist file_hashes.json: {e}")
+
+    def _record_file_hash(self, abs_path: str, sha: str):
+        """Update one entry in the in-memory cache. Caller persists via
+        _save_file_hashes when convenient (batched at end of a rebuild,
+        or per-event in the watcher path)."""
+        self._file_hashes[abs_path] = {
+            "sha256": sha,
+            "last_indexed_at": datetime.now().isoformat(),
+        }
+
+    def _forget_file_hash(self, abs_path: str):
+        """Drop one entry. No-op if absent."""
+        self._file_hashes.pop(abs_path, None)
+
     def _reset_collection(self):
         """Drop the ChromaDB collection so a rebuild does not duplicate data."""
         try:
@@ -268,28 +382,136 @@ class CodebaseRAG:
         self.vector_store = ChromaVectorStore(chroma_collection=collection)
         self.storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
 
+    def _list_candidate_files(self) -> list:
+        """Return abs paths of files we would index, mirroring SimpleDirectoryReader.
+
+        Walks self.codebase_path recursively, skipping dot-prefixed dirs/files
+        (matching `exclude_hidden=True`) and keeping only files whose extension
+        is in supported_extensions. The result is the canonical "what should
+        be in the index" set, used by the SHA partitioner.
+        """
+        out = []
+        exts = self.supported_extensions
+        root_path = str(self.codebase_path)
+        for dirpath, dirs, files in os.walk(root_path):
+            # Match SimpleDirectoryReader(exclude_hidden=True): prune dot-dirs.
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.startswith("."):
+                    continue
+                if Path(f).suffix.lower() not in exts:
+                    continue
+                out.append(_norm(os.path.join(dirpath, f)))
+        out.sort()
+        return out
+
+    def _partition_files(self, candidate_files: list) -> tuple:
+        """Diff disk-state against the SHA cache.
+
+        Returns (unchanged, changed, added, removed) as four disjoint sets of
+        absolute paths:
+          - unchanged: in cache, SHA still matches → preserve existing chunks
+          - changed:   in cache, SHA differs       → delete chunks + re-index
+          - added:     not in cache                → index
+          - removed:   in cache but not on disk    → delete chunks + drop entry
+
+        Computes a SHA for every file that exists in BOTH sets (the common
+        case). For 1.5k files at ~50KB average this is ~1s on a modern SSD —
+        cheap compared to the embedding cost it lets us skip.
+        """
+        candidate_set = set(candidate_files)
+        cached_set = set(self._file_hashes.keys())
+
+        added = candidate_set - cached_set
+        removed = cached_set - candidate_set
+
+        unchanged = set()
+        changed = set()
+        for abs_path in candidate_set & cached_set:
+            cached_sha = self._file_hashes[abs_path].get("sha256")
+            live_sha = self._compute_file_hash(abs_path)
+            if live_sha and live_sha == cached_sha:
+                unchanged.add(abs_path)
+            else:
+                changed.add(abs_path)
+
+        return unchanged, changed, added, removed
+
     def _build_index(self):
-        log(f"[rag] Indexing codebase from {self.codebase_path}...")
+        """Build or incrementally update the index.
 
-        # Wipe the collection before re-indexing to avoid duplicates.
-        self._reset_collection()
+        Two regimes:
+          - No usable SHA cache (first build, snapshot mismatch, or a wiped
+            file_hashes.json): full destructive rebuild — wipe any leftover
+            chunks (they may be bound to a stale embedding space) and index
+            everything.
+          - Valid SHA cache: delta rebuild — skip files whose SHA still
+            matches, delete + re-index files whose SHA changed, drop
+            files removed from disk, index files newly added.
+        """
+        candidate_files = self._list_candidate_files()
 
-        documents = SimpleDirectoryReader(
-            self.codebase_path,
-            exclude_hidden=True,
-            recursive=True,
-            required_exts=sorted(self.supported_extensions),
-        ).load_data()
+        if not self._file_hashes:
+            log(f"[rag] Full rebuild from {self.codebase_path} ({len(candidate_files)} files)")
+            # Stale chunks (from a previous embedding model or extension set)
+            # would corrupt search results; wipe before inserting.
+            try:
+                existing_count = self.vector_store._collection.count()
+            except Exception:
+                existing_count = 0
+            if existing_count > 0:
+                self._reset_collection()
+            unchanged, changed, added, removed = set(), set(), set(candidate_files), set()
+        else:
+            unchanged, changed, added, removed = self._partition_files(candidate_files)
+            log(
+                f"[rag] Delta rebuild from {self.codebase_path}: "
+                f"{len(unchanged)} unchanged, {len(changed)} changed, "
+                f"{len(added)} added, {len(removed)} removed"
+            )
 
-        log(f"[rag] Found {len(documents)} files")
+        # Short-circuit when there's nothing to do (delta only — full rebuild
+        # always falls through to the indexing step).
+        if not changed and not added and not removed:
+            log("[rag] Index already in sync with disk; no work to do.")
+            return VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
 
-        index = VectorStoreIndex.from_documents(
-            documents,
-            storage_context=self.storage_context,
-        )
+        # Drop chunks for files that need re-indexing or removal.
+        for abs_path in changed:
+            self._delete_file_chunks(abs_path)
+        for abs_path in removed:
+            self._delete_file_chunks(abs_path)
+            self._forget_file_hash(abs_path)
 
-        # Collection contents changed wholesale: drop the BM25 cache so the
-        # next search rebuilds it from the new ChromaDB state.
+        # Index added + changed.
+        files_to_index = sorted(changed | added)
+        index = VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
+        if files_to_index:
+            try:
+                documents = SimpleDirectoryReader(input_files=files_to_index).load_data()
+            except Exception as e:
+                log(f"[rag] file read failed during build: {e}")
+                documents = []
+
+            for doc in documents:
+                try:
+                    index.insert(doc)
+                except Exception as e:
+                    log(f"[rag] insert failed: {e}")
+
+            # Record SHAs for the files we just (re-)indexed. Compute fresh —
+            # _partition_files already computed them for 'changed' but not for
+            # 'added', and we want the source-of-truth to be a single point.
+            for abs_path in files_to_index:
+                sha = self._compute_file_hash(abs_path)
+                if sha:
+                    self._record_file_hash(abs_path, sha)
+
+            log(f"[rag] Indexed {len(files_to_index)} file(s).")
+
+        self._save_file_hashes()
+        # Collection contents changed: drop the BM25 cache so the next search
+        # rebuilds it from the new ChromaDB state.
         self._invalidate_bm25()
         return index
 
@@ -726,13 +948,27 @@ class CodebaseRAG:
             return 0
 
     def update_file(self, filepath) -> bool:
-        """Re-index a single file: drop the old chunks, insert the new ones."""
+        """Re-index a single file: drop the old chunks, insert the new ones.
+
+        Skips the re-index entirely when the file's SHA-256 matches the cached
+        one — this filters out phantom saves (editor "save" that didn't change
+        any bytes, whitespace-only diffs the editor normalized back, etc.) so
+        the watcher path stays cheap in noisy IDE environments.
+        """
         abs_path = _norm(filepath)
         if not self.is_supported(abs_path):
             return False
         if not os.path.isfile(abs_path):
             # Modify followed by delete before flush: treat as remove.
             return self.remove_file(abs_path)
+
+        # Cheap pre-check: if content hash hasn't changed, do nothing.
+        new_sha = self._compute_file_hash(abs_path)
+        if new_sha:
+            cached_sha = self._file_hashes.get(abs_path, {}).get("sha256")
+            if cached_sha == new_sha:
+                # Genuine no-op save.
+                return False
 
         with self._write_lock:
             removed = self._delete_file_chunks(abs_path)
@@ -756,6 +992,12 @@ class CodebaseRAG:
             # Chunks changed: invalidate BM25 cache (rebuilt lazily on next search).
             self._invalidate_bm25()
 
+            # Persist the new SHA. If the hash function failed earlier we
+            # leave the cache entry stale; the next change will recompute.
+            if new_sha:
+                self._record_file_hash(abs_path, new_sha)
+                self._save_file_hashes()
+
         log(f"[rag] Re-indexed {Path(abs_path).name} ({removed} old chunks dropped)")
         return True
 
@@ -768,6 +1010,12 @@ class CodebaseRAG:
             removed = self._delete_file_chunks(abs_path)
             if removed:
                 self._invalidate_bm25()
+            # Drop the SHA entry regardless of whether chunks existed: the
+            # source of truth is that this file is gone.
+            had_hash = abs_path in self._file_hashes
+            self._forget_file_hash(abs_path)
+            if had_hash:
+                self._save_file_hashes()
         if removed:
             log(f"[rag] Removed {removed} chunks for {Path(abs_path).name}")
         return removed > 0

@@ -114,8 +114,8 @@ def main() -> int:
         cfg_path.write_text(json.dumps(cfg_dict, indent=2), encoding="utf-8")
 
         # ----- Construct SourceManager -----
-        from local_codebase_rag_mcp.config import load_config
-        from local_codebase_rag_mcp.source_manager import SourceManager
+        from lynx.config import load_config
+        from lynx.source_manager import SourceManager
 
         cfg = load_config(cfg_path)
         mgr = SourceManager(cfg)

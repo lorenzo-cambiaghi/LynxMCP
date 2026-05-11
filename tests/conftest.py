@@ -24,8 +24,8 @@ def build_rag_from_first_source(config_path):
     this so they don't depend on which name the user picked for the source.
     Returns (config, source_name, rag).
     """
-    from local_codebase_rag_mcp.config import load_config
-    from local_codebase_rag_mcp.rag_manager import CodebaseRAG
+    from lynx.config import load_config
+    from lynx.rag_manager import CodebaseRAG
 
     cfg = load_config(config_path)
     name = next(iter(cfg.sources))
