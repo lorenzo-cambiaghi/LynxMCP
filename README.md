@@ -28,7 +28,7 @@ cross-source search. Everything runs **100% locally**: no code, no
 embeddings, no queries ever leave your machine. No API keys, no cloud
 dependencies, no recurring costs.
 
-> **License:** [MIT](LICENSE)
+> **License:** [Apache 2.0](LICENSE)
 
 ---
 
