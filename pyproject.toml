@@ -79,9 +79,9 @@ dev = [
 lynx = "lynx.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/loren/lynx"
-Repository = "https://github.com/loren/lynx"
-Issues = "https://github.com/loren/lynx/issues"
+Homepage = "https://github.com/lorenzo-cambiaghi/LynxMCP"
+Repository = "https://github.com/lorenzo-cambiaghi/LynxMCP"
+Issues = "https://github.com/lorenzo-cambiaghi/LynxMCP/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -155,8 +155,8 @@ The project is a standard Python package. Install it from a local clone in
 editable mode (recommended while it is pre-PyPI):
 
 ```bash
-git clone https://github.com/<your-username>/lynx.git
-cd lynx
+git clone https://github.com/lorenzo-cambiaghi/LynxMCP.git
+cd LynxMCP
 pip install -e .
 ```
 
