@@ -178,11 +178,18 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
 
         Indexed location: {path_hint}
 
-        Use natural-language descriptions of what the code does, not exact
-        identifiers — that's where semantic search beats grep.
+        This is your PRIMARY search tool. Use it FIRST for any codebase question.
+        Only escalate to `{deep_tool_name}` if this returns weak or empty results.
+
+        Best practices:
+        - Use natural-language descriptions of what the code does, not exact
+          identifiers — that's where semantic search beats grep.
+        - Good: "method that handles player damage calculation"
+        - Bad: "CalculateDamage" (use grep for exact identifiers)
+        - Use filters to narrow scope when you know the file type or location.
 
         Args:
-            query: Natural-language search query.
+            query: Natural-language search query. Describe behavior, not names.
             top_k: Number of results to return. Defaults to search.default_top_k.
             file_glob: Optional Unix-shell glob (e.g. "**/Bullet*/*.cs").
             extensions: Optional list of file extensions (e.g. [".py", ".pyi"]).
@@ -215,26 +222,30 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
         min_results: int | None = None,
         return_all_variants: bool = False,
     ) -> str:
-        f"""Deeper, fallback search over the {source_name!r} source
-        (type: {source_type}).
+        f"""Multi-query fallback search over the {source_name!r} source (type: {source_type}).
 
-        Use ONLY when `{search_tool_name}` returned weak or empty results, or
-        when the user explicitly asks for a more thorough search.
+        ESCALATION TOOL: Use ONLY when `{search_tool_name}` returned weak or empty results,
+        or when the user explicitly asks for a more thorough search.
+        Do NOT use this as a first resort — it runs multiple retrievals and is slower.
 
-        Tries each query variant in order. Stops at the first variant whose
+        How it works: tries each query variant in order. Stops at the first variant whose
         results pass the weakness threshold. If all variants fail, returns
         the strongest weak set with a warning.
 
+        Best practices for writing query variants:
+        - Provide 2-4 genuinely DIFFERENT phrasings, not paraphrases.
+        - Each variant should approach the topic from a different angle.
+        - Good: ["player health system", "damage and healing logic", "HP component lifecycle"]
+        - Bad: ["player health", "health of the player", "the player's health"] (too similar)
+
         Args:
-            queries: Ordered list of query variants. Use *genuinely different*
-                phrasings, not paraphrases.
+            queries: Ordered list of query variants (2-4 recommended).
             top_k: Defaults to search.default_top_k.
             mode: Per-call mode override: "dense" | "sparse" | "hybrid".
-            file_glob, extensions, path_contains: Same as the matching
-                `{search_tool_name}` params.
+            file_glob, extensions, path_contains: Same as `{search_tool_name}` filters.
             min_score: Per-call weakness threshold override.
             min_results: Per-call min-results override.
-            return_all_variants: Include per-variant summary in the response.
+            return_all_variants: Set to true to include per-variant diagnostics.
         """
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
@@ -271,8 +282,12 @@ def _register_global_tools(mcp, manager):
 
     @mcp.tool()
     def list_sources() -> str:
-        """List all configured sources with their type, location, chunk
-        count, and drift status."""
+        """List all configured sources with their type, location, chunk count, and drift status.
+
+        Call this first when you don't know which sources are available.
+        Each source has its own `search_<name>` and `deep_search_<name>` tools.
+        Use the source name from this list to pick the right search tool.
+        """
         lines = [f"Sources ({len(manager.backends)}):"]
         for status in manager.list_sources():
             line = (
@@ -299,6 +314,11 @@ def _register_global_tools(mcp, manager):
         Useful when you don't know which source has the answer (e.g. "is X a
         feature of my code or of a library I'm using?"). Each result is tagged
         with its source. Slower than searching one source — runs N retrievals.
+
+        When to use vs source-specific search:
+        - Use this when the answer could be in ANY source and you don't want to guess.
+        - Use source-specific `search_<name>` when you know which codebase to target.
+        - Same query best practices apply: use natural-language, describe behavior.
         """
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
@@ -330,6 +350,10 @@ def _register_global_tools(mcp, manager):
         Each variant is run on every source; results fused; first variant
         that passes the threshold wins. Use very sparingly — runs N*M
         retrievals in the worst case (N variants x M sources).
+
+        LAST RESORT: Only use this when both `search_all_sources` and source-specific
+        deep_search tools have failed. This is the most expensive operation.
+        Same query variant best practices as deep_search_<source> apply.
         """
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
@@ -351,13 +375,15 @@ def _register_global_tools(mcp, manager):
     def update_source_index(source: str, force: bool = False) -> str:
         """Force a full rebuild of a specific source's index.
 
-        Day-to-day the watcher keeps the index in sync; use this after a
-        complex merge, a bulk rename, or when drift detection flags a
+        Day-to-day the watcher keeps the index in sync automatically; you rarely need this.
+        Use it after a complex merge, a bulk rename, or when drift detection flags a
         critical change (e.g. embedding model swap).
 
+        Do NOT call this routinely — it is expensive and blocks until complete.
+        Call `get_rag_status` first to check if a rebuild is actually needed.
+
         Args:
-            source: Name of the source to rebuild. Use `list_sources` to
-                discover available names.
+            source: Name of the source to rebuild. Use `list_sources` to discover names.
             force: If True, rebuild even when no new git commits are detected.
         """
         try:
@@ -371,6 +397,10 @@ def _register_global_tools(mcp, manager):
     @mcp.tool()
     def get_rag_status(source: str | None = None) -> str:
         """Report state of the RAG index for one source or all sources.
+
+        Use this to check if the index is up to date before deciding whether to
+        call `update_source_index`. Also useful for debugging when search results
+        seem stale or incomplete.
 
         Args:
             source: Specific source name to inspect. If None, returns the
