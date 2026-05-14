@@ -1,4 +1,4 @@
-# Lynx
+# LynxMCP
 
 ```
            /\     /\           Lynceus (Latin: Lynx or Lynceus) was a hero in Greek mythology,
@@ -1385,7 +1385,7 @@ Repository layout:
 lynx/
 ├── pyproject.toml           Package metadata + dependencies
 ├── README.md                You are here
-├── LICENSE                  MIT
+├── LICENSE                  Apache 2.0
 ├── config.example.json      Template config (commit this)
 ├── config.json              Your local config (gitignored)
 ├── src/
