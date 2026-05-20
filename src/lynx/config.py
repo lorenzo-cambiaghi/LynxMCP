@@ -168,7 +168,14 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
     # Default disabled — existing configs keep working without changes; the
     # extra MCP tools (`get_callers_*`, `architectural_overview_*`, ...) are
     # only registered when this is true.
-    graph_raw = raw.get("graph") or {}
+    graph_raw = raw.get("graph")
+    if graph_raw is None:
+        graph_raw = {}
+    elif not isinstance(graph_raw, dict):
+        _config_error(
+            f"source {name!r}: 'graph' must be an object like "
+            f"{{ \"enabled\": true }}, got {type(graph_raw).__name__} {graph_raw!r}"
+        )
     graph = {"enabled": bool(graph_raw.get("enabled", False))}
 
     return {
