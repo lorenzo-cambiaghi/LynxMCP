@@ -32,8 +32,12 @@ import tree_sitter_cpp as ts_cpp
 import tree_sitter_go as ts_go
 import tree_sitter_java as ts_java
 import tree_sitter_javascript as ts_js
+import tree_sitter_kotlin as ts_kt
+import tree_sitter_php as ts_php
 import tree_sitter_python as ts_py
+import tree_sitter_ruby as ts_rb
 import tree_sitter_rust as ts_rs
+import tree_sitter_swift as ts_sw
 import tree_sitter_typescript as ts_ts
 
 
@@ -45,12 +49,14 @@ import tree_sitter_typescript as ts_ts
 # CRITICAL drift and the user is prompted to rebuild). Bump whenever the
 # chunking logic changes the boundaries / metadata in a backwards-incompatible
 # way.
-CHUNKER_VERSION = 3
+CHUNKER_VERSION = 4
 # History:
 #   1 — SentenceSplitter only (pre-M3 era)
 #   2 — tree-sitter + fallback, naive _extract_name (took first identifier)
 #   3 — _extract_name now uses child_by_field_name("name") so C# method
 #       declarations correctly report the method name (not the return type).
+#   4 — added Ruby/PHP/Kotlin/Swift; exposed parse_file() helper so the new
+#       graph layer can reuse the AST instead of re-parsing every file.
 
 # Soft cap on chunk size. Anything bigger gets split with SentenceSplitter so
 # huge auto-generated methods don't produce a single 50k-token chunk. ~8000
@@ -218,6 +224,65 @@ _LANG_RULES: dict = {
         },
         "name_node_types": ["identifier", "type_identifier"],
     },
+    "ruby": {
+        "parser_factory": lambda: _ts_language(ts_rb.language),
+        # Class/module bodies are walked into; the wrapper class node is not a chunk.
+        "container_types": {"class", "module"},
+        # `method` is a regular instance method; `singleton_method` is `def self.foo`.
+        "chunk_types": {"method", "singleton_method"},
+        # Ruby uses `constant` for class/module names, `identifier` for methods.
+        "name_node_types": ["identifier", "constant"],
+    },
+    "php": {
+        # PHP's tree-sitter package exposes a separate parser for the embedded
+        # variant (language_php_only handles pure-PHP files without the <?php
+        # tag). We use language_php which handles the standard case where the
+        # file starts with <?php.
+        "parser_factory": lambda: _ts_language(ts_php.language_php),
+        "container_types": {
+            "class_declaration",
+            "interface_declaration",
+            "trait_declaration",
+            # namespace_definition wraps the whole file in many real-world
+            # codebases (Laravel/Symfony); without it everything would render
+            # under the synthetic <header> and lose qualification context.
+            "namespace_definition",
+        },
+        "chunk_types": {
+            "method_declaration",
+            "function_definition",
+        },
+        # PHP grammar uses `name` for identifiers in declarations.
+        "name_node_types": ["name", "qualified_name"],
+    },
+    "kotlin": {
+        "parser_factory": lambda: _ts_language(ts_kt.language),
+        # Kotlin's grammar uses class_declaration for both `class` and
+        # `interface` (distinguishable only by the first keyword child).
+        # object_declaration handles `object Singleton { ... }`.
+        "container_types": {"class_declaration", "object_declaration"},
+        # Primary constructors are inline in the class header (no dedicated
+        # node), so only secondary_constructor needs an explicit chunk type.
+        "chunk_types": {"function_declaration", "secondary_constructor"},
+        "name_node_types": ["identifier", "simple_identifier", "type_identifier"],
+    },
+    "swift": {
+        "parser_factory": lambda: _ts_language(ts_sw.language),
+        # Swift's grammar collapses class/struct/extension/enum into a single
+        # class_declaration node type (distinguishable by the first keyword
+        # child). protocol_declaration is separate.
+        "container_types": {"class_declaration", "protocol_declaration"},
+        # protocol_function_declaration is the signature-only form inside a
+        # protocol body (no function_body child).
+        "chunk_types": {
+            "function_declaration",
+            "init_declaration",
+            "deinit_declaration",
+            "protocol_function_declaration",
+            "property_declaration",
+        },
+        "name_node_types": ["simple_identifier", "type_identifier", "identifier"],
+    },
 }
 
 
@@ -240,6 +305,11 @@ _EXT_TO_LANG: dict = {
     ".go":   "go",
     ".rs":   "rust",
     ".java": "java",
+    ".rb":    "ruby",
+    ".php":   "php",
+    ".kt":    "kotlin",
+    ".kts":   "kotlin",
+    ".swift": "swift",
 }
 
 
@@ -423,6 +493,30 @@ def _fallback_chunks(abs_path: str, content: str) -> list:
     return out
 
 
+def parse_file(abs_path: str, content: str) -> "Optional[tuple]":
+    """Parse `content` with the tree-sitter grammar matching `abs_path`.
+
+    Returns a tuple `(tree, lang_key, rules)` on success, or `None` if:
+      - the file extension has no registered grammar, OR
+      - tree-sitter raises during parse (rare; the grammar is usually
+        resilient to syntax errors but pathological inputs still crash).
+
+    This exists as a public helper so callers that need both the chunks AND
+    the AST (e.g. the graph layer) can avoid parsing the file twice.
+    `chunk_file` uses it internally for exactly that reason.
+    """
+    lang_key = language_for_path(abs_path)
+    if lang_key is None:
+        return None
+    parser = _get_parser(lang_key)
+    rules = _LANG_RULES[lang_key]
+    try:
+        tree = parser.parse(content.encode("utf-8"))
+    except Exception:
+        return None
+    return tree, lang_key, rules
+
+
 def chunk_file(abs_path: str, content: str) -> list:
     """Chunk one file. Returns a list of chunk dicts ready to embed.
 
@@ -444,36 +538,25 @@ def chunk_file(abs_path: str, content: str) -> list:
          exceeds MAX_CHUNK_CHARS.
       4. Annotate every chunk with file_path / file_name / language / chunker.
     """
-    lang_key = language_for_path(abs_path)
     abs_path_norm = os.path.normpath(os.path.abspath(abs_path))
     file_name = os.path.basename(abs_path_norm)
 
-    if lang_key is None:
+    parsed = parse_file(abs_path, content)
+    if parsed is None:
+        # Either the extension has no grammar OR parse blew up. In both cases
+        # we fall back; the language tag preserves the original extension
+        # mapping when we know it (so search filters by language still work).
         chunks = _fallback_chunks(abs_path, content)
+        lang_for_meta = language_for_path(abs_path) or "text"
         for c in chunks:
-            c["language"] = "text"
+            c["language"] = lang_for_meta
             c["chunker"] = "sentence_splitter"
             c["file_path"] = abs_path_norm
             c["file_name"] = file_name
         return chunks
 
-    # Tree-sitter path.
-    parser = _get_parser(lang_key)
-    rules = _LANG_RULES[lang_key]
+    tree, lang_key, rules = parsed
     source = content.encode("utf-8")
-    try:
-        tree = parser.parse(source)
-    except Exception:
-        # Parse failure (rare — tree-sitter recovers from most syntax errors).
-        # Fall back rather than dropping the file entirely.
-        chunks = _fallback_chunks(abs_path, content)
-        for c in chunks:
-            c["language"] = lang_key  # we still know what it was supposed to be
-            c["chunker"] = "sentence_splitter"
-            c["file_path"] = abs_path_norm
-            c["file_name"] = file_name
-        return chunks
-
     chunks = _walk(tree.root_node, source, rules, container_path=[])
 
     # Header chunk: imports / using / top-level statements.

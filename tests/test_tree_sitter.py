@@ -15,6 +15,12 @@ Scenarios:
      with #partN suffixes
   8. Metadata invariants — every chunk has file_path / file_name /
      symbol_name / symbol_kind / language / chunker / start_line / end_line
+  9. Ruby — class.method + module.class.method qualification, singleton_method
+ 10. PHP — namespace.class.method qualification, free function
+ 11. Kotlin — class.method qualification, object.method, top-level function
+ 12. Swift — class.method qualification, protocol.method, init/deinit, free func
+ 13. parse_file helper — returns (tree, lang_key, rules) and is reused by
+     chunk_file so a single file is only parsed once.
 """
 
 from __future__ import annotations
@@ -50,18 +56,18 @@ class Greeter:
     chunks = chunk_file("demo.py", py_src)
     names = [c["symbol_name"] for c in chunks]
     if "greet" not in names:
-        print(f"[test] FAIL [1/8]: 'greet' missing from {names}")
+        print(f"[test] FAIL [1/13]: 'greet' missing from {names}")
         return 1
     if "Greeter.__init__" not in names:
-        print(f"[test] FAIL [1/8]: 'Greeter.__init__' missing from {names}")
+        print(f"[test] FAIL [1/13]: 'Greeter.__init__' missing from {names}")
         return 1
     if "Greeter.hello" not in names:
-        print(f"[test] FAIL [1/8]: 'Greeter.hello' missing from {names}")
+        print(f"[test] FAIL [1/13]: 'Greeter.hello' missing from {names}")
         return 1
     if not any(c.get("symbol_kind") == "module_header" for c in chunks):
-        print(f"[test] FAIL [1/8]: no module_header chunk for Python imports")
+        print(f"[test] FAIL [1/13]: no module_header chunk for Python imports")
         return 1
-    print(f"[test] OK [1/8] Python: {len(chunks)} chunks, methods qualified as Greeter.X")
+    print(f"[test] OK [1/13] Python: {len(chunks)} chunks, methods qualified as Greeter.X")
 
     # ============================================================
     # 2. C# — namespace.class.method qualification
@@ -86,15 +92,15 @@ namespace MyFramework.Damage
     names = [c["symbol_name"] for c in chunks]
     expected_qualified = "MyFramework.Damage.HealthSystem.ApplyDamage"
     if expected_qualified not in names:
-        print(f"[test] FAIL [2/8]: {expected_qualified!r} missing from {names}")
+        print(f"[test] FAIL [2/13]: {expected_qualified!r} missing from {names}")
         return 2
     if "MyFramework.Damage.HealthSystem.Heal" not in names:
-        print(f"[test] FAIL [2/8]: 'HealthSystem.Heal' missing from {names}")
+        print(f"[test] FAIL [2/13]: 'HealthSystem.Heal' missing from {names}")
         return 2
     if "MyFramework.Damage.IDamageable.ApplyDamage" not in names:
-        print(f"[test] FAIL [2/8]: 'IDamageable.ApplyDamage' missing from {names}")
+        print(f"[test] FAIL [2/13]: 'IDamageable.ApplyDamage' missing from {names}")
         return 2
-    print(f"[test] OK [2/8] C#: {len(chunks)} chunks with full namespace.class.method qualification")
+    print(f"[test] OK [2/13] C#: {len(chunks)} chunks with full namespace.class.method qualification")
 
     # ============================================================
     # 3. TypeScript — function + class + method
@@ -116,13 +122,13 @@ export class MyClass {
     chunks = chunk_file("demo.ts", ts_src)
     names = [c["symbol_name"] for c in chunks]
     if "bar" not in names:
-        print(f"[test] FAIL [3/8]: 'bar' missing from {names}")
+        print(f"[test] FAIL [3/13]: 'bar' missing from {names}")
         return 3
     # MyClass.greet should be qualified
     if not any(n.endswith("greet") and "MyClass" in n for n in names):
-        print(f"[test] FAIL [3/8]: 'MyClass.greet' missing from {names}")
+        print(f"[test] FAIL [3/13]: 'MyClass.greet' missing from {names}")
         return 3
-    print(f"[test] OK [3/8] TypeScript: {len(chunks)} chunks, class method qualified")
+    print(f"[test] OK [3/13] TypeScript: {len(chunks)} chunks, class method qualified")
 
     # ============================================================
     # 4. Markdown — fallback to SentenceSplitter
@@ -130,15 +136,15 @@ export class MyClass {
     md_src = "# Title\n\nThis is a paragraph.\n\n## Section\n\nMore text.\n"
     chunks = chunk_file("readme.md", md_src)
     if not chunks:
-        print(f"[test] FAIL [4/8]: markdown returned 0 chunks")
+        print(f"[test] FAIL [4/13]: markdown returned 0 chunks")
         return 4
     if chunks[0]["chunker"] != "sentence_splitter":
-        print(f"[test] FAIL [4/8]: markdown not routed to SentenceSplitter (got {chunks[0]['chunker']!r})")
+        print(f"[test] FAIL [4/13]: markdown not routed to SentenceSplitter (got {chunks[0]['chunker']!r})")
         return 4
     if chunks[0]["language"] != "text":
-        print(f"[test] FAIL [4/8]: markdown language should be 'text', got {chunks[0]['language']!r}")
+        print(f"[test] FAIL [4/13]: markdown language should be 'text', got {chunks[0]['language']!r}")
         return 4
-    print(f"[test] OK [4/8] Markdown: fallback to SentenceSplitter, language='text'")
+    print(f"[test] OK [4/13] Markdown: fallback to SentenceSplitter, language='text'")
 
     # ============================================================
     # 5. HLSL shader file — fallback (no parser for .hlsl)
@@ -149,12 +155,12 @@ export class MyClass {
 """
     chunks = chunk_file("shader.hlsl", hlsl_src)
     if not chunks:
-        print(f"[test] FAIL [5/8]: shader returned 0 chunks")
+        print(f"[test] FAIL [5/13]: shader returned 0 chunks")
         return 5
     if chunks[0]["chunker"] != "sentence_splitter":
-        print(f"[test] FAIL [5/8]: HLSL should use fallback, got {chunks[0]['chunker']!r}")
+        print(f"[test] FAIL [5/13]: HLSL should use fallback, got {chunks[0]['chunker']!r}")
         return 5
-    print(f"[test] OK [5/8] HLSL: fallback used (no tree-sitter parser)")
+    print(f"[test] OK [5/13] HLSL: fallback used (no tree-sitter parser)")
 
     # ============================================================
     # 6. Empty file — must not crash
@@ -162,7 +168,7 @@ export class MyClass {
     chunks = chunk_file("empty.py", "")
     # Empty content can produce 0 chunks OR 1 trivial chunk; either is fine
     # as long as no exception is raised.
-    print(f"[test] OK [6/8] empty file: returned {len(chunks)} chunks without crashing")
+    print(f"[test] OK [6/13] empty file: returned {len(chunks)} chunks without crashing")
 
     # ============================================================
     # 7. Oversized function — split into multiple sub-chunks
@@ -174,15 +180,15 @@ export class MyClass {
     # Find chunks that come from `huge`
     huge_pieces = [c for c in chunks if c["symbol_name"].startswith("huge")]
     if len(huge_pieces) < 2:
-        print(f"[test] FAIL [7/8]: oversized 'huge' should split into >=2 chunks, got {len(huge_pieces)} "
+        print(f"[test] FAIL [7/13]: oversized 'huge' should split into >=2 chunks, got {len(huge_pieces)} "
               f"(source size {len(big_src)} chars, MAX_CHUNK_CHARS={MAX_CHUNK_CHARS})")
         return 7
     # Each piece should have a #partN suffix
     suffixes = {c["symbol_name"] for c in huge_pieces if "#part" in c["symbol_name"]}
     if not suffixes:
-        print(f"[test] FAIL [7/8]: split chunks missing #partN suffix; names: {[c['symbol_name'] for c in huge_pieces]}")
+        print(f"[test] FAIL [7/13]: split chunks missing #partN suffix; names: {[c['symbol_name'] for c in huge_pieces]}")
         return 7
-    print(f"[test] OK [7/8] huge function split into {len(huge_pieces)} sub-chunks with #partN suffixes")
+    print(f"[test] OK [7/13] huge function split into {len(huge_pieces)} sub-chunks with #partN suffixes")
 
     # ============================================================
     # 8. Metadata invariants across every chunk produced so far
@@ -201,15 +207,172 @@ export class MyClass {
     for i, c in enumerate(all_chunks):
         missing = required_keys - set(c.keys())
         if missing:
-            print(f"[test] FAIL [8/8]: chunk {i} ({c.get('symbol_name', '?')}) missing keys: {missing}")
+            print(f"[test] FAIL [8/13]: chunk {i} ({c.get('symbol_name', '?')}) missing keys: {missing}")
             return 8
         if not isinstance(c["start_line"], int) or not isinstance(c["end_line"], int):
-            print(f"[test] FAIL [8/8]: chunk {i} has non-int line numbers: {c['start_line']!r}, {c['end_line']!r}")
+            print(f"[test] FAIL [8/13]: chunk {i} has non-int line numbers: {c['start_line']!r}, {c['end_line']!r}")
             return 8
         if c["start_line"] < 1 or c["end_line"] < c["start_line"]:
-            print(f"[test] FAIL [8/8]: chunk {i} has invalid line range L{c['start_line']}-L{c['end_line']}")
+            print(f"[test] FAIL [8/13]: chunk {i} has invalid line range L{c['start_line']}-L{c['end_line']}")
             return 8
-    print(f"[test] OK [8/8] metadata invariants hold across {len(all_chunks)} chunks")
+    print(f"[test] OK [8/13] metadata invariants hold across {len(all_chunks)} chunks")
+
+    # ============================================================
+    # 9. Ruby — class.method + module.class.method + singleton_method
+    # ============================================================
+    rb_src = '''require "json"
+
+module MyMod
+  class Greeter
+    def hello(name)
+      "hi #{name}"
+    end
+
+    def self.factory
+      Greeter.new
+    end
+  end
+end
+'''
+    chunks = chunk_file("demo.rb", rb_src)
+    names = [c["symbol_name"] for c in chunks]
+    if "MyMod.Greeter.hello" not in names:
+        print(f"[test] FAIL [9/13]: 'MyMod.Greeter.hello' missing from {names}")
+        return 9
+    if "MyMod.Greeter.factory" not in names:
+        print(f"[test] FAIL [9/13]: 'MyMod.Greeter.factory' (singleton_method) missing from {names}")
+        return 9
+    if chunks[0]["language"] != "ruby":
+        print(f"[test] FAIL [9/13]: ruby language tag wrong, got {chunks[0]['language']!r}")
+        return 9
+    print(f"[test] OK [9/13] Ruby: {len(chunks)} chunks, module.class.method qualified")
+
+    # ============================================================
+    # 10. PHP — namespace.class.method + free function
+    # ============================================================
+    php_src = '''<?php
+namespace App\\Models {
+    interface IRepo {
+        public function find($id);
+    }
+
+    class UserRepo implements IRepo {
+        public function find($id) { return null; }
+        public function all() { return []; }
+    }
+
+    function helper() { return 1; }
+}
+'''
+    chunks = chunk_file("demo.php", php_src)
+    names = [c["symbol_name"] for c in chunks]
+    if not any("UserRepo.find" in n for n in names):
+        print(f"[test] FAIL [10/13]: 'UserRepo.find' missing from {names}")
+        return 10
+    if not any("UserRepo.all" in n for n in names):
+        print(f"[test] FAIL [10/13]: 'UserRepo.all' missing from {names}")
+        return 10
+    if not any("IRepo.find" in n for n in names):
+        print(f"[test] FAIL [10/13]: 'IRepo.find' missing from {names}")
+        return 10
+    if not any(n.endswith("helper") for n in names):
+        print(f"[test] FAIL [10/13]: free function 'helper' missing from {names}")
+        return 10
+    print(f"[test] OK [10/13] PHP: {len(chunks)} chunks, namespace.class.method qualified")
+
+    # ============================================================
+    # 11. Kotlin — class.method + object.method + top-level function
+    # ============================================================
+    kt_src = '''package com.example
+
+class Greeter(val prefix: String) {
+    fun hello(name: String): String = "$prefix $name"
+    fun bye(name: String): String = "bye $name"
+}
+
+object Util {
+    fun ping(): String = "pong"
+}
+
+fun topLevel(): Int = 42
+'''
+    chunks = chunk_file("demo.kt", kt_src)
+    names = [c["symbol_name"] for c in chunks]
+    if "Greeter.hello" not in names:
+        print(f"[test] FAIL [11/13]: 'Greeter.hello' missing from {names}")
+        return 11
+    if "Greeter.bye" not in names:
+        print(f"[test] FAIL [11/13]: 'Greeter.bye' missing from {names}")
+        return 11
+    if "Util.ping" not in names:
+        print(f"[test] FAIL [11/13]: 'Util.ping' missing from {names}")
+        return 11
+    if "topLevel" not in names:
+        print(f"[test] FAIL [11/13]: 'topLevel' missing from {names}")
+        return 11
+    print(f"[test] OK [11/13] Kotlin: {len(chunks)} chunks, class/object/top-level qualified")
+
+    # ============================================================
+    # 12. Swift — class.method + protocol.method + init + free func
+    # ============================================================
+    sw_src = '''import Foundation
+
+protocol IFoo {
+    func bar() -> Int
+}
+
+class Greeter: IFoo {
+    init() {}
+    deinit {}
+    func bar() -> Int { return 1 }
+    func hello(name: String) -> String { return "hi \\(name)" }
+}
+
+func topLevel() -> String { return "hi" }
+'''
+    chunks = chunk_file("demo.swift", sw_src)
+    names = [c["symbol_name"] for c in chunks]
+    if "Greeter.bar" not in names:
+        print(f"[test] FAIL [12/13]: 'Greeter.bar' missing from {names}")
+        return 12
+    if "Greeter.hello" not in names:
+        print(f"[test] FAIL [12/13]: 'Greeter.hello' missing from {names}")
+        return 12
+    if not any(n.startswith("Greeter.init") or n == "Greeter.init" for n in names):
+        print(f"[test] FAIL [12/13]: 'Greeter.init' missing from {names}")
+        return 12
+    if not any("IFoo" in n and "bar" in n for n in names):
+        print(f"[test] FAIL [12/13]: protocol method 'IFoo.bar' missing from {names}")
+        return 12
+    if "topLevel" not in names:
+        print(f"[test] FAIL [12/13]: free function 'topLevel' missing from {names}")
+        return 12
+    print(f"[test] OK [12/13] Swift: {len(chunks)} chunks, class/protocol/init/free func qualified")
+
+    # ============================================================
+    # 13. parse_file helper — must return the same tree chunk_file uses
+    # ============================================================
+    from lynx.chunking import parse_file
+
+    res = parse_file("demo.py", py_src)
+    if res is None:
+        print(f"[test] FAIL [13/13]: parse_file returned None on valid Python source")
+        return 13
+    tree, lang_key, rules = res
+    if lang_key != "python":
+        print(f"[test] FAIL [13/13]: parse_file returned lang_key={lang_key!r}, expected 'python'")
+        return 13
+    if "container_types" not in rules or "chunk_types" not in rules:
+        print(f"[test] FAIL [13/13]: rules dict from parse_file missing expected keys")
+        return 13
+    if tree.root_node.type != "module":
+        print(f"[test] FAIL [13/13]: parse_file Python root is {tree.root_node.type!r}, expected 'module'")
+        return 13
+    # Unsupported extension must return None (not raise).
+    if parse_file("readme.md", "# Hello\n") is not None:
+        print(f"[test] FAIL [13/13]: parse_file should return None for .md, got non-None")
+        return 13
+    print(f"[test] OK [13/13] parse_file helper: returns (tree, lang_key, rules) and None for unsupported")
 
     print("\n[test] === SUCCESS: tree-sitter chunker works as expected ===")
     return 0

@@ -59,6 +59,13 @@ dependencies = [
     "tree-sitter-go",
     "tree-sitter-rust",
     "tree-sitter-java",
+    "tree-sitter-ruby",
+    "tree-sitter-php",
+    "tree-sitter-kotlin",
+    "tree-sitter-swift",
+    # Pure-Python graph library used by the opt-in graph layer (call graph +
+    # import graph + community detection). Small (~2MB), no native code.
+    "networkx>=3.0",
     # M4 webdoc source: fetch + extract + index public docs sites on demand.
     # All three are well-maintained, pure-Python, no compilation needed.
     "httpx>=0.27",          # HTTP client used by the crawler
