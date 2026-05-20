@@ -1,0 +1,24 @@
+"""Opt-in knowledge graph layer for code sources.
+
+A complement to the vector store: the graph models *structural* facts (who
+calls whom, what imports what, which symbols live in which container) that
+similarity search cannot answer directly. Activated per-source via
+`graph: { enabled: true }` in config.json.
+
+Two public surfaces:
+
+  - `extractor.extract_file(abs_path, content)` — pure, stateless. Reuses the
+    tree-sitter pass from `lynx.chunking.parse_file`, walks the AST, and
+    returns `{nodes, edges, raw_calls}` for one file. Cross-file calls live
+    in `raw_calls` for the builder to resolve later.
+  - `GraphLayer` (added in the next phase) — orchestrates extraction across a
+    codebase, persists the graph as JSON, exposes query / analysis methods.
+
+Kept independent from `rag_manager.py` so the graph layer remains optional:
+disabling it removes a layer of behavior without touching the search path.
+"""
+from __future__ import annotations
+
+from .extractor import extract_file, LangGraphRules, GRAPH_LANGUAGES
+
+__all__ = ["extract_file", "LangGraphRules", "GRAPH_LANGUAGES"]
