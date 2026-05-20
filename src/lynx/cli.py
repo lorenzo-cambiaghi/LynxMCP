@@ -81,6 +81,37 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_list = sub.add_parser("list-sources", help="Enumerate configured sources")
     sp_list.add_argument("--config", "-c", metavar="PATH")
 
+    sp_graph = sub.add_parser(
+        "graph",
+        help="Manage the per-source knowledge graph layer (opt-in via "
+             "`graph: { enabled: true }` in the source config).",
+    )
+    graph_sub = sp_graph.add_subparsers(dest="graph_command", metavar="GRAPH_COMMAND")
+
+    sp_graph_build = graph_sub.add_parser(
+        "build", help="Rebuild the graph layer for a source"
+    )
+    sp_graph_build.add_argument("--config", "-c", metavar="PATH")
+    sp_graph_build.add_argument(
+        "--source", "-s", metavar="NAME",
+        help="Source whose graph to rebuild. Optional when only one source "
+             "has the graph layer enabled.",
+    )
+    sp_graph_build.add_argument(
+        "--force", action="store_true",
+        help="Wipe state and rebuild from scratch (default: SHA-incremental).",
+    )
+
+    sp_graph_status = graph_sub.add_parser(
+        "status", help="Show graph layer status (nodes/edges/by-language/...)"
+    )
+    sp_graph_status.add_argument("--config", "-c", metavar="PATH")
+    sp_graph_status.add_argument(
+        "--source", "-s", metavar="NAME",
+        help="Show status for a single source. Default: all sources with "
+             "the graph layer enabled.",
+    )
+
     sp_mig = sub.add_parser(
         "migrate-config",
         help="Convert a v1 config.json to the v2 schema",
@@ -369,12 +400,103 @@ def _cmd_list_sources(args) -> int:
     return 0
 
 
+def _resolve_graph_source(manager, args) -> str:
+    """Return the source name to operate on for `lynx graph ...`.
+
+    If --source is provided, validate it has the graph layer enabled.
+    Otherwise default to the single source with graph enabled; error out
+    when there are zero or more than one such sources.
+    """
+    candidates = [
+        n for n, b in manager.backends.items()
+        if getattr(b, "graph", None) is not None
+    ]
+    if not candidates:
+        print(
+            "error: no source has the graph layer enabled. "
+            "Add `graph: { enabled: true }` to a codebase source's config.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.source:
+        if args.source not in manager.backends:
+            print(f"error: unknown source {args.source!r}. Available: {list(manager.backends)}",
+                  file=sys.stderr)
+            sys.exit(2)
+        if args.source not in candidates:
+            print(f"error: source {args.source!r} has no graph layer enabled.",
+                  file=sys.stderr)
+            sys.exit(2)
+        return args.source
+    if len(candidates) == 1:
+        return candidates[0]
+    print(
+        f"error: multiple sources have the graph layer enabled ({candidates}); "
+        f"specify --source NAME",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def _cmd_graph(args) -> int:
+    sub = getattr(args, "graph_command", None)
+    if sub not in ("build", "status"):
+        print("error: `lynx graph` requires a sub-command (build|status). "
+              "Run `lynx graph --help` for details.", file=sys.stderr)
+        return 2
+    _config, manager = _build_manager(getattr(args, "config", None))
+
+    if sub == "build":
+        source = _resolve_graph_source(manager, args)
+        force = bool(getattr(args, "force", False))
+        print(f"Rebuilding graph for source {source!r} (force={force})...")
+        summary = manager.get(source).graph.rebuild(force=force)
+        print(f"  candidates:       {summary['candidates']}")
+        print(f"  added:            {summary['added']}")
+        print(f"  changed:          {summary['changed']}")
+        print(f"  removed:          {summary['removed']}")
+        print(f"  unchanged:        {summary['unchanged']}")
+        print(f"  extracted_files:  {summary['extracted_files']}")
+        print(f"  nodes_total:      {summary['nodes_total']}")
+        print(f"  edges_total:      {summary['edges_total']}")
+        print(f"  resolved_x-file:  {summary['resolved_cross_file']}")
+        return 0
+
+    # status
+    if args.source:
+        sources = [_resolve_graph_source(manager, args)]
+    else:
+        sources = [
+            n for n, b in manager.backends.items()
+            if getattr(b, "graph", None) is not None
+        ]
+        if not sources:
+            print("No source has the graph layer enabled.", file=sys.stderr)
+            return 0
+    for name in sources:
+        st = manager.graph_status(name)
+        print(f"=== Graph status: {name} ===")
+        print(f"  schema_version:    {st['schema_version']}")
+        print(f"  nodes:             {st['nodes']}")
+        print(f"  edges:             {st['edges']}")
+        print(f"  files_indexed:     {st['files_indexed']}")
+        print(f"  raw_calls_pending: {st['raw_calls_pending']}")
+        print(f"  last_update:       {st['last_update']}")
+        print(f"  last_full_rebuild: {st['last_full_rebuild']}")
+        print(f"  by_language:       {st['by_language']}")
+        print(f"  by_kind:           {st['by_kind']}")
+        print(f"  by_relation:       {st['by_relation']}")
+        print()
+    return 0
+
+
 _DISPATCH = {
     "serve": _cmd_serve,
     "build": _cmd_build,
     "search": _cmd_search,
     "status": _cmd_status,
     "list-sources": _cmd_list_sources,
+    "graph": _cmd_graph,
     "migrate-config": _cmd_migrate_config,
 }
 

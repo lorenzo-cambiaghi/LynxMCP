@@ -164,6 +164,13 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
     git_raw = raw.get("git_integration") or {}
     git_integration = {"enabled": bool(git_raw.get("enabled", True))}
 
+    # Opt-in graph layer (call graph + import graph + community analysis).
+    # Default disabled — existing configs keep working without changes; the
+    # extra MCP tools (`get_callers_*`, `architectural_overview_*`, ...) are
+    # only registered when this is true.
+    graph_raw = raw.get("graph") or {}
+    graph = {"enabled": bool(graph_raw.get("enabled", False))}
+
     return {
         "type": "codebase",
         "path": path,
@@ -171,6 +178,7 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
         "ignored_path_fragments": ignored,
         "watcher": watcher,
         "git_integration": git_integration,
+        "graph": graph,
     }
 
 

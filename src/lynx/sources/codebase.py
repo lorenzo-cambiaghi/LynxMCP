@@ -51,6 +51,21 @@ class CodebaseBackend(SourceBackend):
         # Watcher state — populated lazily by start_watcher().
         self._observer = None
 
+        # Opt-in graph layer (call graph + import graph + analyzer).
+        # Disabled by default; activated via `graph: { enabled: true }` in
+        # the source's config. When enabled, every search/update/watcher
+        # event also keeps the graph in sync.
+        self.graph = None
+        graph_cfg = source_config.get("graph") or {}
+        if graph_cfg.get("enabled"):
+            from ..graph import GraphLayer
+            self.graph = GraphLayer(
+                storage_dir=self.storage_dir / "graph",
+                codebase_path=source_config["path"],
+                supported_extensions=source_config["supported_extensions"],
+                ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+            )
+
     # ------------------------------------------------------------------
     # Search dispatch (thin delegation to the underlying CodebaseRAG)
     # ------------------------------------------------------------------
@@ -102,6 +117,18 @@ class CodebaseBackend(SourceBackend):
 
     def update(self, force: bool = False) -> None:
         self.rag.update(force=force)
+        # Keep the graph layer in sync with the same trigger. We do this
+        # after the RAG update so a partial failure in the graph layer
+        # doesn't leave the vector index half-built.
+        if self.graph is not None:
+            try:
+                self.graph.rebuild(force=force)
+            except Exception as e:
+                # Failures here must not break search — log and move on.
+                print(
+                    f"[graph:{self.name}] rebuild failed (search still works): {e}",
+                    file=sys.stderr,
+                )
 
     # ------------------------------------------------------------------
     # Watcher
@@ -125,6 +152,7 @@ class CodebaseBackend(SourceBackend):
         debounce_seconds = float(watcher_cfg.get("debounce_seconds", 2.0))
         ignored_fragments = tuple(self.source_config.get("ignored_path_fragments") or ())
         rag = self.rag
+        graph = self.graph
         source_name = self.name
 
         def _is_ignored(path: str) -> bool:
@@ -140,8 +168,12 @@ class CodebaseBackend(SourceBackend):
                 try:
                     if action == "delete":
                         rag.remove_file(path)
+                        if graph is not None:
+                            graph.remove_file(path)
                     else:
                         rag.update_file(path)
+                        if graph is not None:
+                            graph.update_file(path)
                 except Exception as e:
                     print(
                         f"[watcher:{source_name}] flush failed for {path}: {e}",
@@ -211,7 +243,7 @@ class CodebaseBackend(SourceBackend):
 
         drift = self.rag.check_config_drift()
 
-        return {
+        status = {
             "name": self.name,
             "type": self.type_name,
             "path": str(self.source_config.get("path", "")),
@@ -220,6 +252,15 @@ class CodebaseBackend(SourceBackend):
             "last_update": self.rag.metadata.get("last_update"),
             "drift_severity": drift["severity"] if drift else None,
         }
+        if self.graph is not None:
+            gstat = self.graph.status()
+            status["graph"] = {
+                "nodes": gstat["nodes"],
+                "edges": gstat["edges"],
+                "files_indexed": gstat["files_indexed"],
+                "last_update": gstat["last_update"],
+            }
+        return status
 
     def drift_status_text(self) -> str:
         return self.rag.drift_status_text()
@@ -227,3 +268,52 @@ class CodebaseBackend(SourceBackend):
     def needs_update(self) -> bool:
         """Forwarded for the `get_rag_status` global tool."""
         return self.rag.needs_update()
+
+    # ------------------------------------------------------------------
+    # Graph layer pass-through (only meaningful when graph.enabled=true)
+    # ------------------------------------------------------------------
+    # The SourceManager / MCP server check `hasattr(backend, "graph") and
+    # backend.graph is not None` before registering the graph tools, so
+    # these methods are only invoked when the layer is active.
+
+    def get_callers(self, symbol: str, limit: int = 50) -> list:
+        from ..graph import get_callers as _q
+        return _q(self.graph.graph, symbol, limit=limit)
+
+    def get_callees(self, symbol: str, limit: int = 50) -> list:
+        from ..graph import get_callees as _q
+        return _q(self.graph.graph, symbol, limit=limit)
+
+    def get_imports(self, file_or_symbol: str, limit: int = 100) -> list:
+        from ..graph import get_imports as _q
+        return _q(self.graph.graph, file_or_symbol, limit=limit)
+
+    def get_neighbors(
+        self,
+        symbol: str,
+        relation_filter: str | None = None,
+        depth: int = 1,
+        limit: int = 100,
+    ) -> list:
+        from ..graph import get_neighbors as _q
+        return _q(self.graph.graph, symbol,
+                  relation_filter=relation_filter, depth=depth, limit=limit)
+
+    def shortest_path(self, source: str, target: str, max_hops: int = 8):
+        from ..graph import shortest_path as _q
+        return _q(self.graph.graph, source, target, max_hops=max_hops)
+
+    def architectural_overview(self, top_n_gods: int = 10, min_community_size: int = 3) -> dict:
+        from ..graph import god_nodes, communities
+        return {
+            "god_nodes": god_nodes(self.graph.graph, top_n=top_n_gods),
+            "communities": communities(self.graph.graph, min_size=min_community_size),
+            "status": self.graph.status(),
+        }
+
+    def surprising_connections(self, top_n: int = 5) -> list:
+        from ..graph import surprising_connections as _q
+        return _q(self.graph.graph, top_n=top_n)
+
+    def graph_status(self) -> dict:
+        return self.graph.status()

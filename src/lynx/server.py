@@ -166,7 +166,38 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
     search_tool_name = f"search_{source_name}"
     deep_tool_name = f"deep_search_{source_name}"
 
-    @mcp.tool(name=search_tool_name)
+    # Per-source tool descriptions. We pass them via `description=` rather
+    # than as Python docstrings because an f-string as the first statement
+    # of a function is just an evaluated expression — it never becomes
+    # __doc__, so FastMCP would see an empty description and the AI client
+    # would have no idea when to use which tool.
+    _desc_search = (
+        f"Semantic search over the {source_name!r} source (type: {source_type}). "
+        f"Indexed location: {path_hint}. "
+        f"This is your PRIMARY search tool — use it FIRST for any question about this source. "
+        f"Only escalate to `{deep_tool_name}` if results are weak or empty. "
+        f"Best practices: use natural-language descriptions of what the code does, not exact "
+        f"identifiers (use grep for those). Good: 'method that handles player damage calculation'. "
+        f"Bad: 'CalculateDamage'. Args: query (natural language); top_k (default from config); "
+        f"file_glob, extensions, path_contains (optional filters)."
+    )
+
+    _desc_deep = (
+        f"Multi-query fallback search over the {source_name!r} source (type: {source_type}). "
+        f"ESCALATION TOOL — use only when `{search_tool_name}` returned weak or empty results, "
+        f"or when the user explicitly asks for a more thorough search. Slower than `{search_tool_name}` "
+        f"because it runs multiple retrievals. "
+        f"How it works: tries each query variant in order; stops at the first whose results pass the "
+        f"weakness threshold. If all fail, returns the strongest weak set with a warning. "
+        f"Best practices: provide 2-4 GENUINELY DIFFERENT phrasings (different angles, not paraphrases). "
+        f"Good: ['player health system', 'damage and healing logic', 'HP component lifecycle']. "
+        f"Bad: ['player health', 'health of the player'] (too similar). "
+        f"Args: queries (ordered list of variants); top_k; mode ('dense'|'sparse'|'hybrid' override); "
+        f"file_glob, extensions, path_contains (same filters as `{search_tool_name}`); "
+        f"min_score, min_results (threshold overrides); return_all_variants (include per-variant diagnostics)."
+    )
+
+    @mcp.tool(name=search_tool_name, description=_desc_search)
     def _search(
         query: str,
         top_k: int | None = None,
@@ -174,27 +205,6 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
         extensions: list[str] | None = None,
         path_contains: str | None = None,
     ) -> str:
-        f"""Semantic search over the {source_name!r} source (type: {source_type}).
-
-        Indexed location: {path_hint}
-
-        This is your PRIMARY search tool. Use it FIRST for any codebase question.
-        Only escalate to `{deep_tool_name}` if this returns weak or empty results.
-
-        Best practices:
-        - Use natural-language descriptions of what the code does, not exact
-          identifiers — that's where semantic search beats grep.
-        - Good: "method that handles player damage calculation"
-        - Bad: "CalculateDamage" (use grep for exact identifiers)
-        - Use filters to narrow scope when you know the file type or location.
-
-        Args:
-            query: Natural-language search query. Describe behavior, not names.
-            top_k: Number of results to return. Defaults to search.default_top_k.
-            file_glob: Optional Unix-shell glob (e.g. "**/Bullet*/*.cs").
-            extensions: Optional list of file extensions (e.g. [".py", ".pyi"]).
-            path_contains: Optional substring required in the file path.
-        """
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
             results = manager.search(
@@ -210,7 +220,7 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
         except Exception as e:
             return f"Error during search in {source_name!r}: {str(e)}"
 
-    @mcp.tool(name=deep_tool_name)
+    @mcp.tool(name=deep_tool_name, description=_desc_deep)
     def _deep_search(
         queries: list[str],
         top_k: int | None = None,
@@ -222,31 +232,6 @@ def _register_source_tools(mcp, manager, source_name: str, source_type: str, sou
         min_results: int | None = None,
         return_all_variants: bool = False,
     ) -> str:
-        f"""Multi-query fallback search over the {source_name!r} source (type: {source_type}).
-
-        ESCALATION TOOL: Use ONLY when `{search_tool_name}` returned weak or empty results,
-        or when the user explicitly asks for a more thorough search.
-        Do NOT use this as a first resort — it runs multiple retrievals and is slower.
-
-        How it works: tries each query variant in order. Stops at the first variant whose
-        results pass the weakness threshold. If all variants fail, returns
-        the strongest weak set with a warning.
-
-        Best practices for writing query variants:
-        - Provide 2-4 genuinely DIFFERENT phrasings, not paraphrases.
-        - Each variant should approach the topic from a different angle.
-        - Good: ["player health system", "damage and healing logic", "HP component lifecycle"]
-        - Bad: ["player health", "health of the player", "the player's health"] (too similar)
-
-        Args:
-            queries: Ordered list of query variants (2-4 recommended).
-            top_k: Defaults to search.default_top_k.
-            mode: Per-call mode override: "dense" | "sparse" | "hybrid".
-            file_glob, extensions, path_contains: Same as `{search_tool_name}` filters.
-            min_score: Per-call weakness threshold override.
-            min_results: Per-call min-results override.
-            return_all_variants: Set to true to include per-variant diagnostics.
-        """
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
             response = manager.deep_search(
@@ -440,6 +425,230 @@ def _register_global_tools(mcp, manager):
 
 
 # ----------------------------------------------------------------------
+# Graph tools (registered per source when graph.enabled=true)
+# ----------------------------------------------------------------------
+
+
+def _format_node_brief(n: dict) -> str:
+    """One-line summary of a graph node for tool text output."""
+    label = n.get("label", "?")
+    fp = n.get("file") or ""
+    sl, el = n.get("start_line") or 0, n.get("end_line") or 0
+    loc = f"{fp}:L{sl}" if sl == el else f"{fp}:L{sl}-{el}"
+    return f"{label}  [{n.get('kind', '?')}] @ {loc}"
+
+
+def _format_edge_lines(edges: list, header: str) -> str:
+    if not edges:
+        return f"{header}\n  (no results)"
+    out = [header]
+    for e in edges:
+        src, tgt = e.get("source", {}), e.get("target", {})
+        conf = e.get("confidence")
+        rel = e.get("relation", "?")
+        conf_part = f" [{conf}]" if conf else ""
+        out.append(f"  • {_format_node_brief(src)}")
+        out.append(f"      --{rel}{conf_part}--> {_format_node_brief(tgt)}")
+        if e.get("from_file"):
+            out.append(f"        at {e['from_file']}:L{e.get('from_line') or '?'}")
+    return "\n".join(out)
+
+
+def _register_graph_tools(mcp, manager, source_name: str):
+    """Register 7 graph-layer MCP tools, namespaced as `<verb>_<source_name>`.
+
+    The naming mirrors `search_<source>` / `deep_search_<source>` so the AI
+    client sees a consistent per-source toolset. Tools are only registered
+    when `backend.graph` is not None; the manager itself raises ValueError
+    if a call slips through to a source whose graph is disabled.
+    """
+
+    # NOTE on descriptions: we pass them via @mcp.tool(description=...)
+    # rather than as Python docstrings. An f-string as the first statement
+    # of a function is just an evaluated expression — it never becomes
+    # __doc__, so FastMCP would see an empty description and the AI client
+    # would have no idea when to call each tool.
+
+    _desc_get_callers = (
+        f"List functions that CALL `symbol` in source {source_name!r}. "
+        f"Use when the user asks 'who calls X?', 'what uses X?', 'what depends on X?'. "
+        f"The result includes file path + line so you can cite the caller. "
+        f"Symbol matching is fuzzy (case-insensitive substring) — pass an identifier, "
+        f"not a description. Args: symbol (function/method name); limit (max edges, default 50)."
+    )
+
+    @mcp.tool(name=f"get_callers_{source_name}", description=_desc_get_callers)
+    def _get_callers(symbol: str, limit: int = 50) -> str:
+        try:
+            edges = manager.get_callers(source_name, symbol, limit=limit)
+            return _format_edge_lines(edges, f"Callers of {symbol!r} in {source_name!r}:")
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_get_callees = (
+        f"List functions CALLED BY `symbol` in source {source_name!r}. "
+        f"Use when the user asks 'what does X call?', 'what does X depend on?', "
+        f"'trace what X does'. Args: symbol (function/method name); limit (max edges, default 50)."
+    )
+
+    @mcp.tool(name=f"get_callees_{source_name}", description=_desc_get_callees)
+    def _get_callees(symbol: str, limit: int = 50) -> str:
+        try:
+            edges = manager.get_callees(source_name, symbol, limit=limit)
+            return _format_edge_lines(edges, f"Callees of {symbol!r} in {source_name!r}:")
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_get_imports = (
+        f"List import edges originating from a file (or from the file that contains "
+        f"the given symbol) in source {source_name!r}. Pass either a file path substring "
+        f"(e.g. 'main.py') or the name of a symbol defined in the file. Useful for "
+        f"'what does this file depend on?', 'what third-party packages are used here?'. "
+        f"Args: file_or_symbol; limit (max edges, default 100)."
+    )
+
+    @mcp.tool(name=f"get_imports_{source_name}", description=_desc_get_imports)
+    def _get_imports(file_or_symbol: str, limit: int = 100) -> str:
+        try:
+            edges = manager.get_imports(source_name, file_or_symbol, limit=limit)
+            return _format_edge_lines(edges, f"Imports from {file_or_symbol!r} in {source_name!r}:")
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_get_neighbors = (
+        f"All graph neighbors of `symbol` within `depth` hops in source {source_name!r}, "
+        f"optionally filtered by edge relation. Use for 'show me everything around X', "
+        f"'expand context on X'. When you only need callers OR callees, prefer the dedicated tools. "
+        f"Args: symbol; relation_filter (optional 'calls' | 'imports' | 'imports_from' | 'contains'); "
+        f"depth (1-6, default 1); limit (max edges, default 100)."
+    )
+
+    @mcp.tool(name=f"get_neighbors_{source_name}", description=_desc_get_neighbors)
+    def _get_neighbors(
+        symbol: str,
+        relation_filter: str | None = None,
+        depth: int = 1,
+        limit: int = 100,
+    ) -> str:
+        try:
+            edges = manager.get_neighbors(
+                source_name, symbol,
+                relation_filter=relation_filter, depth=depth, limit=limit,
+            )
+            label = f"Neighbors of {symbol!r}"
+            if relation_filter:
+                label += f" (relation={relation_filter!r})"
+            label += f" depth={depth} in {source_name!r}:"
+            return _format_edge_lines(edges, label)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_shortest_path = (
+        f"Shortest directed path between two symbols in source {source_name!r}. "
+        f"Use for 'how does A reach B?', 'what's the call chain from A to B?'. "
+        f"Both endpoints are resolved fuzzily; if multiple matches exist on either side, "
+        f"the shortest path among combinations is returned. "
+        f"Args: source (starting symbol); target (destination symbol); max_hops (1-20, default 8)."
+    )
+
+    @mcp.tool(name=f"shortest_path_{source_name}", description=_desc_shortest_path)
+    def _shortest_path(source: str, target: str, max_hops: int = 8) -> str:
+        try:
+            path = manager.shortest_path(source_name, source, target, max_hops=max_hops)
+            if path is None:
+                return f"No directed path from {source!r} to {target!r} (within {max_hops} hops)."
+            lines = [f"Path from {source!r} → {target!r} ({path['hops']} hops):"]
+            for n in path["nodes"]:
+                lines.append(f"  • {_format_node_brief(n)}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_overview = (
+        f"High-level architectural snapshot of source {source_name!r}: top god-nodes "
+        f"(most-connected symbols — the architectural hubs), detected communities "
+        f"(tightly-coupled symbol groups), and basic graph stats. Use for "
+        f"'give me an overview of this codebase', 'what are the main abstractions?', "
+        f"'how is this organized?'. Call once at the start of an unfamiliar session. "
+        f"Args: top_n_gods (default 10); min_community_size (default 3)."
+    )
+
+    @mcp.tool(name=f"architectural_overview_{source_name}", description=_desc_overview)
+    def _architectural_overview(top_n_gods: int = 10, min_community_size: int = 3) -> str:
+        try:
+            ov = manager.architectural_overview(
+                source_name, top_n_gods=top_n_gods, min_community_size=min_community_size,
+            )
+            lines = [f"=== Architectural overview of {source_name!r} ==="]
+            st = ov.get("status", {})
+            lines.append(f"Graph: {st.get('nodes', '?')} nodes, {st.get('edges', '?')} edges, "
+                         f"{st.get('files_indexed', '?')} files, last_update={st.get('last_update')}")
+            lines.append("\n--- God nodes (most-connected) ---")
+            for g in ov["god_nodes"]:
+                lines.append(f"  • {g['label']:40}  degree={g['degree']}  "
+                             f"(in={g['in_degree']}, out={g['out_degree']})  "
+                             f"{g.get('file', '')}")
+            lines.append(f"\n--- Communities ({len(ov['communities'])}) ---")
+            for c in ov["communities"][:10]:
+                sample = ", ".join(c["members_sample"][:5])
+                more = "" if c["size"] <= 5 else f", +{c['size'] - 5} more"
+                lines.append(f"  [{c['id']}] {c['name']!r}  size={c['size']}  "
+                             f"langs={c['by_language']}  members: {sample}{more}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_surprising = (
+        f"Edges that bridge distant parts of source {source_name!r}, computed via "
+        f"edge betweenness centrality. High-betweenness edges are structural bottlenecks: "
+        f"removing them would split the codebase into disconnected components. Useful for "
+        f"spotting non-obvious dependencies and god-class antipatterns. "
+        f"Args: top_n (number of bridge edges to return, default 5)."
+    )
+
+    @mcp.tool(name=f"surprising_connections_{source_name}", description=_desc_surprising)
+    def _surprising(top_n: int = 5) -> str:
+        try:
+            surprises = manager.surprising_connections(source_name, top_n=top_n)
+            if not surprises:
+                return f"No surprising connections detected in {source_name!r}."
+            lines = [f"Top {len(surprises)} bridge edges in {source_name!r} (by betweenness):"]
+            for s in surprises:
+                lines.append(
+                    f"  • {s['source_label']!r} --{s['relation']}--> {s['target_label']!r}  "
+                    f"betweenness={s['betweenness']}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_graph_status = (
+        f"Counts and metadata for the graph layer of source {source_name!r}: total "
+        f"nodes/edges, breakdowns by language and kind, count of unresolved cross-file "
+        f"calls, last update timestamp. Useful for diagnosing why a query returned empty results."
+    )
+
+    @mcp.tool(name=f"graph_status_{source_name}", description=_desc_graph_status)
+    def _graph_status() -> str:
+        try:
+            st = manager.graph_status(source_name)
+            lines = [f"=== Graph status for {source_name!r} ==="]
+            lines.append(f"Schema version:    {st['schema_version']}")
+            lines.append(f"Nodes:             {st['nodes']}")
+            lines.append(f"Edges:             {st['edges']}")
+            lines.append(f"Files indexed:     {st['files_indexed']}")
+            lines.append(f"Raw calls pending: {st['raw_calls_pending']}")
+            lines.append(f"Last update:       {st['last_update']}")
+            lines.append(f"Last full rebuild: {st['last_full_rebuild']}")
+            lines.append(f"By language: {st['by_language']}")
+            lines.append(f"By kind:     {st['by_kind']}")
+            lines.append(f"By relation: {st['by_relation']}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+# ----------------------------------------------------------------------
 # Main server entry point
 # ----------------------------------------------------------------------
 
@@ -497,6 +706,14 @@ def run_server(config_path=None):
             mcp, manager, name, backend.type_name, backend.source_config
         )
     _register_global_tools(mcp, manager)
+
+    # Per-source graph tools — only when the source has graph.enabled=true.
+    # We probe `backend.graph` rather than `backend.type_name == "codebase"`
+    # so future source types (e.g. a pdf backend with a graph) can opt in
+    # too without modifying this loop.
+    for name, backend in manager.backends.items():
+        if getattr(backend, "graph", None) is not None:
+            _register_graph_tools(mcp, manager, name)
 
     # Loading phase done: restore fd 1 and start the transport.
     _restore_real_stdout()

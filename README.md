@@ -69,10 +69,11 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 16. [Keeping the index up to date](#keeping-the-index-up-to-date)
 17. [AST-aware chunking](#ast-aware-chunking)
 18. [Hybrid retrieval](#hybrid-retrieval)
-19. [Config drift detection](#config-drift-detection)
-20. [Architecture](#architecture)
-21. [Troubleshooting](#troubleshooting)
-22. [Contributing](#contributing)
+19. [Graph layer (opt-in)](#graph-layer-opt-in)
+20. [Config drift detection](#config-drift-detection)
+21. [Architecture](#architecture)
+22. [Troubleshooting](#troubleshooting)
+23. [Contributing](#contributing)
 
 ---
 
@@ -1280,6 +1281,102 @@ The BM25 index lives entirely in memory and is rebuilt lazily from the
 ChromaDB collection on first query (and after any incremental update). For
 a few thousand chunks the build takes about a second; query latency adds
 ~5-15 ms compared to dense alone.
+
+---
+
+## Graph layer (opt-in)
+
+Hybrid search excels at **"find me the code that does X"**. It struggles
+with **structural questions** — *"who calls `IDamageable`?", "what does
+`PaymentGateway` depend on?", "what's the shortest path from
+`CheckoutController` to `PaymentGateway`?"* — because those are graph
+queries, not similarity queries.
+
+The graph layer answers them. It's an **opt-in** companion to the vector
+store: when enabled on a `codebase` source, Lynx parses the same files
+already chunked for retrieval and builds a small knowledge graph of
+classes, functions, imports, and calls. The graph lives in memory and
+persists to JSON next to the ChromaDB collection.
+
+### Enable it
+
+Add `graph: { enabled: true }` to a codebase source in `config.json`:
+
+```json
+"sources": {
+  "myproject": {
+    "type": "codebase",
+    "path": "C:/path/to/your/code",
+    "supported_extensions": [".py", ".cs", ".ts"],
+    "watcher": { "enabled": true },
+    "graph": { "enabled": true }
+  }
+}
+```
+
+That's it. The graph is built automatically on the next `lynx build` (or
+`lynx graph build --source myproject` for graph-only). The watcher keeps
+it in sync the same way it does the RAG index.
+
+### Languages supported
+
+The graph extractor reuses the chunker's tree-sitter parsers, so any
+language with an AST chunk rule also has a graph rule: **C#, Python,
+TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java, Ruby, PHP, Kotlin,
+Swift**. Unsupported file types (markdown, shaders, JSON) are silently
+skipped — they don't contribute to the graph but still feed search.
+
+### The 7 MCP tools you get per source
+
+When `graph.enabled=true` on source `myproject`, Lynx auto-registers these
+extra tools on top of the usual `search_*` / `deep_search_*`:
+
+| Tool | Answers |
+|------|---------|
+| `get_callers_myproject(symbol)` | "Who calls X?" |
+| `get_callees_myproject(symbol)` | "What does X call?" |
+| `get_imports_myproject(file_or_symbol)` | "What does this file depend on?" |
+| `get_neighbors_myproject(symbol, relation_filter, depth)` | "Show me everything around X" |
+| `shortest_path_myproject(source, target)` | "How does A reach B?" |
+| `architectural_overview_myproject()` | "What are the main abstractions?" (god nodes + communities) |
+| `surprising_connections_myproject()` | Bridge edges between distant communities (god-class antipatterns) |
+
+Plus `graph_status_myproject()` for diagnostics.
+
+### How cross-file calls are resolved
+
+Within a file, a call like `helper(x)` resolves immediately to the
+locally-defined `def helper(...)`. Across files, the builder builds a
+**global symbol index** keyed by lowercase identifier:
+
+- **1 match** → edge with `confidence="resolved"`
+- **>1 matches + direct call** → edges to all candidates, `confidence="ambiguous"`
+- **>1 matches + member call (`obj.foo()`)** → skipped (too noisy without type info)
+- **0 matches** → skipped (external / stdlib / dynamic call)
+
+This is best-effort, not whole-program type inference. The trade-off:
+fast (sub-second on thousands of files), zero false negatives on simple
+direct calls, controlled false positives on common names.
+
+### What it costs
+
+- **Disk**: ~1–5 MB JSON per 10k-file repo (nodes + edges + SHA cache).
+- **RAM**: a NetworkX DiGraph rebuilt at startup — typically 20–80 MB.
+- **Build time**: roughly equal to a second chunking pass. The graph
+  layer shares the tree-sitter *parser cache* with the chunker (no
+  duplicate parser instantiation), but each file is parsed twice — once
+  for chunks, once for graph extraction — because the two passes use
+  different AST traversal rules. An incremental SHA cache means unchanged
+  files are skipped on subsequent runs of either layer.
+- **Query latency**: sub-millisecond on graphs up to ~100k edges.
+  `surprising_connections` is the heaviest (edge betweenness, ~seconds
+  on large graphs; sampled automatically beyond 1500 nodes).
+
+### Disabling it
+
+Drop the `graph` block (or set `enabled: false`) and restart the server:
+the 7 graph tools simply aren't registered. Search and deep_search work
+exactly as before — the layer is genuinely optional.
 
 ---
 

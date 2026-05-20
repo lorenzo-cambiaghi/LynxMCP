@@ -87,6 +87,60 @@ class SourceManager:
         self.get(source).update(force=force)
 
     # ------------------------------------------------------------------
+    # Graph layer pass-through (opt-in per source)
+    # ------------------------------------------------------------------
+    # All of these raise ValueError if the named source doesn't have the
+    # graph layer enabled, so callers (the MCP server, the CLI) can fail
+    # fast with a clear message instead of returning empty results.
+
+    def _require_graph(self, source: str):
+        backend = self.get(source)
+        graph = getattr(backend, "graph", None)
+        if graph is None:
+            raise ValueError(
+                f"source {source!r} does not have the graph layer enabled "
+                f"(set `graph: {{ enabled: true }}` in its config)"
+            )
+        return backend
+
+    def get_callers(self, source: str, symbol: str, limit: int = 50) -> list:
+        return self._require_graph(source).get_callers(symbol, limit=limit)
+
+    def get_callees(self, source: str, symbol: str, limit: int = 50) -> list:
+        return self._require_graph(source).get_callees(symbol, limit=limit)
+
+    def get_imports(self, source: str, file_or_symbol: str, limit: int = 100) -> list:
+        return self._require_graph(source).get_imports(file_or_symbol, limit=limit)
+
+    def get_neighbors(
+        self,
+        source: str,
+        symbol: str,
+        relation_filter: str | None = None,
+        depth: int = 1,
+        limit: int = 100,
+    ) -> list:
+        return self._require_graph(source).get_neighbors(
+            symbol, relation_filter=relation_filter, depth=depth, limit=limit
+        )
+
+    def shortest_path(self, source: str, src_symbol: str, target_symbol: str, max_hops: int = 8):
+        return self._require_graph(source).shortest_path(
+            src_symbol, target_symbol, max_hops=max_hops
+        )
+
+    def architectural_overview(self, source: str, top_n_gods: int = 10, min_community_size: int = 3) -> dict:
+        return self._require_graph(source).architectural_overview(
+            top_n_gods=top_n_gods, min_community_size=min_community_size
+        )
+
+    def surprising_connections(self, source: str, top_n: int = 5) -> list:
+        return self._require_graph(source).surprising_connections(top_n=top_n)
+
+    def graph_status(self, source: str) -> dict:
+        return self._require_graph(source).graph_status()
+
+    # ------------------------------------------------------------------
     # Cross-source operations
     # ------------------------------------------------------------------
 

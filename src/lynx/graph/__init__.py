@@ -20,5 +20,21 @@ disabling it removes a layer of behavior without touching the search path.
 from __future__ import annotations
 
 from .extractor import extract_file, LangGraphRules, GRAPH_LANGUAGES
+from .builder import GraphLayer, GRAPH_SCHEMA_VERSION
+from .analyzer import god_nodes, communities, surprising_connections
+from .query import (
+    get_callers, get_callees, get_imports, get_neighbors, shortest_path,
+    find_symbols,
+)
 
-__all__ = ["extract_file", "LangGraphRules", "GRAPH_LANGUAGES"]
+__all__ = [
+    # extractor
+    "extract_file", "LangGraphRules", "GRAPH_LANGUAGES",
+    # builder
+    "GraphLayer", "GRAPH_SCHEMA_VERSION",
+    # analyzer
+    "god_nodes", "communities", "surprising_connections",
+    # query
+    "get_callers", "get_callees", "get_imports", "get_neighbors",
+    "shortest_path", "find_symbols",
+]
