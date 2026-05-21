@@ -31,16 +31,30 @@ from pathlib import Path
 
 
 def _write_pdf(path: Path, pages_text: list, title: str = "", author: str = "") -> None:
-    """Write a PDF to `path` with one page per item in `pages_text`."""
+    """Write a PDF to `path` with one page per item in `pages_text`.
+
+    The text is wrapped across multiple lines on the page so the extracted
+    output matches the input length regardless of backend. pymupdf only
+    extracts text inside the page viewport; a single drawString call with
+    a long string runs off the right margin and the off-page portion is
+    silently dropped — hence the per-page line wrapping below.
+    """
     from reportlab.pdfgen import canvas
+    _LINE_CHARS = 70   # ~ default font size, comfortably inside an A4/Letter margin
+    _LINE_HEIGHT = 14  # points between lines
+    _Y_TOP = 750
     c = canvas.Canvas(str(path))
     if title:
         c.setTitle(title)
     if author:
         c.setAuthor(author)
     for text in pages_text:
-        # Single line per page is enough for the assertions.
-        c.drawString(100, 750, text)
+        y = _Y_TOP
+        # Slice the page text into fixed-width lines so every char gets
+        # rendered on-page (extractable by both pypdf and pymupdf).
+        for i in range(0, len(text), _LINE_CHARS):
+            c.drawString(100, y, text[i:i + _LINE_CHARS])
+            y -= _LINE_HEIGHT
         c.showPage()
     c.save()
 

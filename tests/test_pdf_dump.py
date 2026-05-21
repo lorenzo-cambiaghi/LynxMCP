@@ -55,7 +55,9 @@ def main() -> int:
         if out_path.name != "page_0042.md":
             print(f"[test] FAIL [1/8]: wrong filename: {out_path.name!r}")
             return 1
-        if not str(out_path).endswith("manuals/v2/user_guide/page_0042.md"):
+        # Normalize to POSIX separators so the assertion is portable
+        # (Windows produces `manuals\v2\...` and `endswith` would fail).
+        if not out_path.as_posix().endswith("manuals/v2/user_guide/page_0042.md"):
             print(f"[test] FAIL [1/8]: wrong nested path: {out_path}")
             return 1
         content = out_path.read_text("utf-8")
