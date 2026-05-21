@@ -341,6 +341,7 @@ class WebdocBackend(SourceBackend):
             search_mode=shared_config.search.mode,
             rrf_k=shared_config.search.rrf_k,
             candidate_pool_size=shared_config.search.candidate_pool_size,
+            reranker_config=shared_config.search.reranker,
         )
 
     # ------------------------------------------------------------------

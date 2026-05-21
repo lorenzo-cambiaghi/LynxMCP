@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lynx"
-version = "0.7.0"
+version = "0.8.0"
 description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code AND library documentation (fetched from the web on demand). AST-aware chunking via tree-sitter, multi-source, 100% local except the explicit doc-fetch step. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -80,6 +80,11 @@ dependencies = [
     # zero external deps" promise. For richer extraction on multi-column
     # PDFs see the optional `pdf-fast` extra below (pymupdf, AGPL).
     "pypdf>=4.0",
+    # Cross-encoder reranker (optional via config; ~80MB model downloaded
+    # on first use when enabled). Already pulled in transitively by
+    # llama-index-embeddings-huggingface, but we pin it explicitly so the
+    # reranker feature has a documented baseline.
+    "sentence-transformers>=2.7",
 ]
 
 [project.optional-dependencies]

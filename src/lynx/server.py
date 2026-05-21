@@ -698,6 +698,197 @@ def _register_graph_tools(mcp, manager, source_name: str):
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# Combined tools (find_definition / find_usages / find_tests_for /
+# find_similar) — registered for every codebase source. Use the graph
+# layer when present, fall back to search otherwise.
+# ----------------------------------------------------------------------
+
+
+def _format_definition_results(symbol: str, results: list) -> str:
+    if not results:
+        return f"No definition found for {symbol!r}."
+    lines = [f"Definitions of {symbol!r}:"]
+    for r in results:
+        loc = f"{r.get('file', '?')}:L{r.get('start_line') or '?'}"
+        if r.get("end_line") and r["end_line"] != r.get("start_line"):
+            loc += f"-{r['end_line']}"
+        lines.append(f"  • {r.get('symbol', symbol)}  [{r.get('kind', '?')}]  @ {loc}  ({r.get('source')})")
+    return "\n".join(lines)
+
+
+def _format_usage_results(symbol: str, results: list) -> str:
+    if not results:
+        return f"No usages found for {symbol!r}."
+    lines = [f"Usages of {symbol!r}:"]
+    for r in results:
+        loc = f"{r.get('file', '?')}:L{r.get('start_line') or '?'}"
+        if r.get("end_line") and r["end_line"] != r.get("start_line"):
+            loc += f"-{r['end_line']}"
+        src_tag = r.get("source", "")
+        rel = r.get("edge_relation", "")
+        rel_part = f" [{rel}]" if rel else ""
+        lines.append(f"  • {r.get('symbol') or '?'}  @ {loc}  ({src_tag}{rel_part})")
+    return "\n".join(lines)
+
+
+def _format_test_results(symbol: str, results: list) -> str:
+    if not results:
+        return f"No tests found mentioning {symbol!r}."
+    lines = [f"Tests mentioning {symbol!r} ({len(results)}):"]
+    for r in results:
+        loc = f"{r.get('file', '?')}:L{r.get('start_line') or '?'}-{r.get('end_line') or '?'}"
+        lines.append(f"  • {r.get('symbol') or '?'}  @ {loc}  score={r.get('score'):.3f}" if isinstance(r.get('score'), (int, float)) else f"  • {r.get('symbol') or '?'}  @ {loc}")
+    return "\n".join(lines)
+
+
+def _format_similar_results(results: list) -> str:
+    if not results:
+        return "No similar code found."
+    lines = [f"Found {len(results)} similar chunks:"]
+    for r in results:
+        loc = f"{r.get('file', '?')}:L{r.get('start_line') or '?'}-{r.get('end_line') or '?'}"
+        score = r.get('score')
+        score_str = f"  score={score:.3f}" if isinstance(score, (int, float)) else ""
+        lines.append(f"  • {r.get('symbol') or '?'}  @ {loc}{score_str}")
+        content = r.get('content', '')
+        if content:
+            snippet = content[:200].replace("\n", " ")
+            if len(content) > 200:
+                snippet += "..."
+            lines.append(f"      {snippet}")
+    return "\n".join(lines)
+
+
+def _register_combined_tools(mcp, manager, source_name: str, source_config: dict):
+    """Register find_definition_<src> + find_usages_<src> +
+    find_tests_for_<src> + find_similar_<src> for one codebase source.
+
+    Same description-as-parameter pattern used by the graph tools (we
+    learned the hard way that f-strings as "docstrings" silently produce
+    empty descriptions).
+    """
+
+    _desc_find_def = (
+        f"Find where a symbol is DEFINED in source {source_name!r}. "
+        f"Uses the graph layer when enabled (precise file+line from the AST), "
+        f"falls back to BM25 search when the symbol isn't in the graph or "
+        f"the graph layer is off. Each result carries `source` ('graph' or "
+        f"'search_bm25') so you can communicate confidence. "
+        f"Use for 'where is X declared?', 'show me the implementation of X'. "
+        f"Args: symbol (identifier name); limit (max results, default 10)."
+    )
+
+    @mcp.tool(name=f"find_definition_{source_name}", description=_desc_find_def)
+    def _find_def(symbol: str, limit: int = 10) -> str:
+        try:
+            results = manager.find_definition(source_name, symbol, limit=limit)
+            return _format_definition_results(symbol, results)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_find_usages = (
+        f"Find every USE of a symbol in source {source_name!r}: calls "
+        f"(from graph if enabled) AND non-call references (typeof, generics, "
+        f"decorators, imports, doc mentions) via textual search. Excludes the "
+        f"definition itself. Deduped by (file, line). "
+        f"Use for 'who uses X?', 'what breaks if I change X?'. "
+        f"Args: symbol (identifier name); limit (max results, default 50)."
+    )
+
+    @mcp.tool(name=f"find_usages_{source_name}", description=_desc_find_usages)
+    def _find_usages(symbol: str, limit: int = 50) -> str:
+        try:
+            results = manager.find_usages(source_name, symbol, limit=limit)
+            return _format_usage_results(symbol, results)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_find_tests = (
+        f"Find tests in source {source_name!r} that mention a symbol. "
+        f"Default pattern matches conventional test paths: `/tests/`, "
+        f"`/test/`, `/spec/`, `/__tests__/`, `_test.py`, `_test.go`, "
+        f"`.test.{{js,ts}}`, `.spec.{{js,ts}}`, `*Test.cs`, `*Tests.cs`. "
+        f"Pass a custom regex via `test_path_pattern` for non-standard layouts. "
+        f"Use for 'are there tests for X?', 'how is X tested?'. "
+        f"Args: symbol; limit (default 20); test_path_pattern (optional regex)."
+    )
+
+    @mcp.tool(name=f"find_tests_for_{source_name}", description=_desc_find_tests)
+    def _find_tests(symbol: str, limit: int = 20, test_path_pattern: str | None = None) -> str:
+        try:
+            results = manager.find_tests_for(
+                source_name, symbol, limit=limit,
+                test_path_pattern=test_path_pattern,
+            )
+            return _format_test_results(symbol, results)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_find_similar = (
+        f"Find code structurally / semantically similar to a given snippet "
+        f"in source {source_name!r}. Pure dense (semantic) search — BM25 "
+        f"would just bring back chunks that share identifiers, not the same. "
+        f"Truncates snippets longer than 2000 chars. Excludes chunks that "
+        f"are byte-identical to the input. "
+        f"Use for 'before I write this function, does something similar exist?'. "
+        f"Args: snippet (the code block); top_k (max results, default 10)."
+    )
+
+    @mcp.tool(name=f"find_similar_{source_name}", description=_desc_find_similar)
+    def _find_similar(snippet: str, top_k: int = 10) -> str:
+        try:
+            results = manager.find_similar(source_name, snippet, top_k=top_k)
+            return _format_similar_results(results)
+        except Exception as e:
+            return f"Error: {e}"
+
+    # search_diff_<src> only when this codebase source has git_integration
+    # enabled — without it the diff command can't run.
+    if source_config.get("git_integration", {}).get("enabled"):
+        _desc_search_diff = (
+            f"Search restricted to files added/modified vs a base branch in source "
+            f"{source_name!r}. Default base is auto-detected (`main`, then `master`, "
+            f"then `develop`); pass `base=` explicitly to override. "
+            f"Killer for code review: 'I changed the discount logic; what else uses "
+            f"the same formula?' — only chunks from files YOU edited in this branch. "
+            f"Returns base + modified_files list + hits. Excludes deleted files. "
+            f"Args: query (natural language); base (optional branch name); "
+            f"top_k (max hits, default 8)."
+        )
+
+        @mcp.tool(name=f"search_diff_{source_name}", description=_desc_search_diff)
+        def _search_diff(query: str, base: str | None = None, top_k: int = 8) -> str:
+            try:
+                out = manager.search_diff(source_name, query, base=base, top_k=top_k)
+            except Exception as e:
+                return f"Error: {e}"
+            lines = [
+                f"search_diff in {source_name!r} vs base {out.get('base')!r}:",
+                f"  Modified files ({len(out.get('modified_files', []))}): "
+                + ", ".join(out.get("modified_files", [])[:20])
+                + ("..." if len(out.get("modified_files", [])) > 20 else ""),
+            ]
+            if out.get("note"):
+                lines.append(f"  Note: {out['note']}")
+                return "\n".join(lines)
+            hits = out.get("hits", [])
+            if not hits:
+                lines.append("  No matching chunks in the modified files.")
+                return "\n".join(lines)
+            lines.append(f"  Hits ({len(hits)}):")
+            for h in hits:
+                fp = h.get("file_path") or h.get("file", "?")
+                sl, el = h.get("start_line") or 0, h.get("end_line") or 0
+                loc = f"{fp}:L{sl}" if sl == el else f"{fp}:L{sl}-{el}"
+                score = h.get("score")
+                score_str = f"  score={score:.4f}" if isinstance(score, (int, float)) else ""
+                sym = h.get("symbol_name") or ""
+                sym_part = f"  {sym}" if sym and not sym.startswith("<") else ""
+                lines.append(f"    • {loc}{sym_part}{score_str}")
+            return "\n".join(lines)
+
+
 def run_server(config_path=None):
     """Boot the MCP server. Blocks on mcp.run() until the client disconnects."""
     config = load_config(config_path=config_path)
@@ -759,6 +950,13 @@ def run_server(config_path=None):
     for name, backend in manager.backends.items():
         if getattr(backend, "graph", None) is not None:
             _register_graph_tools(mcp, manager, name)
+
+    # Per-source combined tools (find_definition / find_usages /
+    # find_tests_for / find_similar). Always-on for codebase sources,
+    # with graph layer used opportunistically when enabled.
+    for name, backend in manager.backends.items():
+        if backend.type_name == "codebase":
+            _register_combined_tools(mcp, manager, name, backend.source_config)
 
     # Loading phase done: restore fd 1 and start the transport.
     _restore_real_stdout()

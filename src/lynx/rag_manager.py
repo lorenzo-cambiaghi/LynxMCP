@@ -97,12 +97,18 @@ def _normalize_extension(ext: str) -> str:
     return ext if ext.startswith(".") else f".{ext}"
 
 
-def _matches_filters(item: dict, file_glob, extensions, path_contains) -> bool:
+def _matches_filters(item: dict, file_glob, extensions, path_contains, paths=None) -> bool:
     """Apply optional post-retrieval filters to a single result dict.
 
     All provided filters are AND-ed. None / empty filters are ignored.
     Both `file` (basename) and `file_path` (full path) are checked, so a
     glob like '*.cs' works regardless of which field carries the path.
+
+    `paths` is an explicit allowlist of relative paths (typically from
+    `git diff --name-only`). When set, the item passes only if its
+    `file_path` ends with one of them OR contains one of them as a
+    substring. Used by `search_diff` to restrict results to files
+    modified in the current branch.
     """
     file_name = item.get("file") or ""
     file_path = item.get("file_path") or ""
@@ -130,6 +136,17 @@ def _matches_filters(item: dict, file_glob, extensions, path_contains) -> bool:
             # Path normalization: file_path uses OS separators; allow forward-
             # slash globs to still match by trying a normalized variant.
             or fnmatch.fnmatch(file_path.replace(os.sep, "/"), file_glob)
+        ):
+            return False
+
+    if paths:
+        # Normalize separators on both sides so a posix `subdir/foo.py`
+        # from `git diff` matches Windows `subdir\foo.py` in chunks.
+        norm_file_path = file_path.replace("\\", "/")
+        if not any(
+            norm_file_path.endswith(p.replace("\\", "/"))
+            or p.replace("\\", "/") in norm_file_path
+            for p in paths
         ):
             return False
 
@@ -197,6 +214,7 @@ class CodebaseRAG:
         search_mode: str = "hybrid",
         rrf_k: int = 60,
         candidate_pool_size: int = 30,
+        reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
     ):
         self.codebase_path = Path(codebase_path)
         self.storage_path = Path(rag_storage_path)
@@ -220,6 +238,13 @@ class CodebaseRAG:
         self.search_mode = search_mode
         self.rrf_k = int(rrf_k)
         self.candidate_pool_size = int(candidate_pool_size)
+
+        # Optional cross-encoder reranker. We hold the config so search()
+        # knows top_n_before_rerank; the actual Reranker object is
+        # lazy-constructed on the first search call that needs it (saves
+        # ~80MB RAM when enabled but never queried).
+        self.reranker_config = reranker_config
+        self._reranker = None
 
         # BM25 sparse index, lazily built from chunks living in ChromaDB.
         # _bm25_docs maps chunk_id -> tokenized content; the BM25Okapi object
@@ -666,6 +691,7 @@ class CodebaseRAG:
         file_glob=None,
         extensions=None,
         path_contains=None,
+        paths=None,
     ):
         """Hybrid (default) / dense / sparse search over the codebase.
 
@@ -677,6 +703,8 @@ class CodebaseRAG:
           - file_glob: fnmatch pattern matched against basename and full path.
           - extensions: iterable of extensions ('.py' or 'py'), case-insensitive.
           - path_contains: substring required in file path or filename.
+          - paths: explicit allowlist of relative paths (used by search_diff
+            to restrict results to files modified vs a base branch).
 
         When any filter is present the underlying retrieval over-fetches a
         wider pool (5x top_k) so post-filtering still leaves enough results.
@@ -690,6 +718,7 @@ class CodebaseRAG:
             file_glob=file_glob,
             extensions=extensions,
             path_contains=path_contains,
+            paths=paths,
         )
 
     def _search_once(
@@ -701,16 +730,25 @@ class CodebaseRAG:
         file_glob=None,
         extensions=None,
         path_contains=None,
+        paths=None,
     ):
         """Single-pass retrieval helper shared by search() and deep_search().
 
         `mode` is explicit (rather than reading self.search_mode) so deep_search
         can override it per call without mutating instance state.
         """
-        has_filters = bool(file_glob or extensions or path_contains)
-        # Over-fetch when filtering: filtered-out candidates leave a smaller
-        # pool, so we need extras to still produce top_k matches.
-        fetch_n = top_k * 5 if has_filters else top_k
+        has_filters = bool(file_glob or extensions or path_contains or paths)
+        rerank_enabled = bool(
+            self.reranker_config is not None and self.reranker_config.enabled
+        )
+        # Over-fetch when filtering OR reranking: filtered-out candidates leave
+        # a smaller pool, and the reranker needs a bigger pool to actually
+        # reorder things (no point reranking exactly top_k results).
+        fetch_n = top_k
+        if has_filters:
+            fetch_n = top_k * 5
+        if rerank_enabled:
+            fetch_n = max(fetch_n, self.reranker_config.top_n_before_rerank)
 
         if mode == "dense":
             results = self._dense_lookup(query, fetch_n)
@@ -729,8 +767,22 @@ class CodebaseRAG:
         if has_filters:
             results = [
                 r for r in results
-                if _matches_filters(r, file_glob, extensions, path_contains)
+                if _matches_filters(r, file_glob, extensions, path_contains, paths=paths)
             ]
+
+        # Cross-encoder rerank (opt-in, after filters so we don't waste
+        # cycles on chunks the user filtered out anyway). Lazy-construct
+        # the Reranker on the first call that needs it — saves ~80MB
+        # RAM for sources where the flag is on but never queried.
+        if rerank_enabled and len(results) > 1:
+            if self._reranker is None:
+                from .reranker import Reranker
+                self._reranker = Reranker(
+                    model_name=self.reranker_config.model_name,
+                )
+            pool = results[: self.reranker_config.top_n_before_rerank]
+            results = self._reranker.rerank(query, pool, top_k=top_k)
+            return results  # reranker already sliced to top_k
 
         return results[:top_k]
 

@@ -17,6 +17,12 @@
         "hybrid": 0.012,
         "sparse": 3.0
       }
+    },
+    "_reranker_comment": "Optional cross-encoder reranker. After RRF fusion, the top N candidates are re-scored by a small cross-encoder (~80MB, ~50ms per query on CPU) that LOOKS AT chunk content vs query — fixing many 'top result is technically relevant but not the best answer' failures. Disabled by default to keep startup zero-cost; enable for production-grade quality.",
+    "reranker": {
+      "enabled": false,
+      "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+      "top_n_before_rerank": 30
     }
   },
   "sources": {

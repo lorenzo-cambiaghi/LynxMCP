@@ -147,6 +147,54 @@ class SourceManager:
         return self._require_graph(source).graph_status()
 
     # ------------------------------------------------------------------
+    # Combined tools pass-through (codebase sources only; graph optional)
+    # ------------------------------------------------------------------
+    # Unlike the pure-graph methods above, these work for any `codebase`
+    # source (with or without graph layer enabled). They raise ValueError
+    # if invoked on a non-codebase source so the AI client gets a clear
+    # error instead of silent garbage.
+
+    def _require_codebase(self, source: str):
+        backend = self.get(source)
+        if backend.type_name != "codebase":
+            raise ValueError(
+                f"source {source!r} is type={backend.type_name!r}; combined "
+                f"tools (find_definition, find_usages, find_tests_for, "
+                f"find_similar) are only available on codebase sources"
+            )
+        return backend
+
+    def find_definition(self, source: str, symbol: str, limit: int = 10) -> list:
+        return self._require_codebase(source).find_definition(symbol, limit=limit)
+
+    def find_usages(self, source: str, symbol: str, limit: int = 50) -> list:
+        return self._require_codebase(source).find_usages(symbol, limit=limit)
+
+    def find_tests_for(
+        self, source: str, symbol: str, limit: int = 20,
+        test_path_pattern: str | None = None,
+    ) -> list:
+        return self._require_codebase(source).find_tests_for(
+            symbol, limit=limit, test_path_pattern=test_path_pattern,
+        )
+
+    def find_similar(self, source: str, snippet: str, top_k: int = 10) -> list:
+        return self._require_codebase(source).find_similar(snippet, top_k=top_k)
+
+    def search_diff(
+        self, source: str, query: str,
+        base: str | None = None, top_k: int = 8, **kw,
+    ) -> dict:
+        """Pass-through to backend.search_diff (codebase only).
+
+        Returns a dict (NOT a list) — see CodebaseBackend.search_diff
+        for the shape. Raises ValueError on non-codebase sources.
+        """
+        return self._require_codebase(source).search_diff(
+            query, base=base, top_k=top_k, **kw,
+        )
+
+    # ------------------------------------------------------------------
     # Cross-source operations
     # ------------------------------------------------------------------
 

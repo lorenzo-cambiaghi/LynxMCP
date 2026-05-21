@@ -81,12 +81,32 @@ class DeepSearchConfig:
 
 
 @dataclass(frozen=True)
+class RerankerConfig:
+    """Cross-encoder reranker that runs after hybrid RRF fusion.
+
+    Default disabled — utenti esistenti non vedono cambi. When enabled,
+    after the standard pipeline produces N candidates we feed the top
+    `top_n_before_rerank` to a small cross-encoder model, get content-
+    aware relevance scores, and return the actually best `top_k`.
+
+    See README "Reranking" section for cost/benefit.
+    """
+    enabled: bool = False
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # How many results to feed the reranker. Bigger = better recall but
+    # slower (cross-encoder is O(n) in candidates). 30 is the sweet spot
+    # for ms-marco-MiniLM-L-6-v2 on CPU.
+    top_n_before_rerank: int = 30
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     default_top_k: int = 5
     mode: str = "hybrid"            # "hybrid" | "dense" | "sparse"
     rrf_k: int = 60                 # standard RRF constant
     candidate_pool_size: int = 30   # per-retriever candidate pool size
     deep: DeepSearchConfig = field(default_factory=DeepSearchConfig)
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -443,12 +463,35 @@ def load_config(config_path: Path | None = None) -> Config:
         min_results=int(deep_raw.get("min_results", 2)),
         score_thresholds=deep_thresholds,
     )
+
+    # Optional reranker block — disabled by default for backward compat.
+    reranker_raw = search_raw.get("reranker")
+    if reranker_raw is None:
+        reranker_raw = {}
+    elif not isinstance(reranker_raw, dict):
+        _config_error(
+            f"search.reranker must be an object like "
+            f"{{ \"enabled\": true, \"model_name\": \"...\" }}, got "
+            f"{type(reranker_raw).__name__} {reranker_raw!r}"
+        )
+    rerank_top_n = int(reranker_raw.get("top_n_before_rerank", 30))
+    if rerank_top_n < 1 or rerank_top_n > 200:
+        _config_error(
+            f"search.reranker.top_n_before_rerank must be between 1 and 200, "
+            f"got {rerank_top_n}"
+        )
+    reranker = RerankerConfig(
+        enabled=bool(reranker_raw.get("enabled", False)),
+        model_name=str(reranker_raw.get("model_name", "cross-encoder/ms-marco-MiniLM-L-6-v2")),
+        top_n_before_rerank=rerank_top_n,
+    )
     search = SearchConfig(
         default_top_k=int(search_raw.get("default_top_k", 5)),
         mode=mode,
         rrf_k=int(search_raw.get("rrf_k", 60)),
         candidate_pool_size=int(search_raw.get("candidate_pool_size", 30)),
         deep=deep,
+        reranker=reranker,
     )
 
     # --- sources -----------------------------------------------------------

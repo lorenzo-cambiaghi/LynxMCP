@@ -99,6 +99,7 @@ def _make_backend(name, source_path, storage_dir, extractor_overrides=None, **sr
         search=SimpleNamespace(
             mode="hybrid", rrf_k=60, candidate_pool_size=30,
             deep=SimpleNamespace(score_thresholds={"hybrid": 0.012}),
+            reranker=SimpleNamespace(enabled=False, model_name="", top_n_before_rerank=30),
         ),
     )
     extractor = {

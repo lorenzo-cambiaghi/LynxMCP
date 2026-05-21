@@ -29,6 +29,8 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 2. **🌐 Library docs at hand** (always on) — point Lynx at a docs site (Unity, Avalonia, your in-house framework) and the AI searches the *real* current API instead of hallucinating one from its training data.
 3. **📄 PDF documents** (always on, new in v0.7) — point Lynx at a folder of PDFs (manuals, RFCs, normative, white-papers) and it extracts the text page-by-page; results cite the source as `User Manual.pdf p.42`. Scanned PDFs and password-protected ones are auto-skipped with a clear warning.
 4. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
+5. **🎯 Code-aware combined queries** (new in v0.8) — `find_definition`, `find_usages`, `find_tests_for`, `find_similar`, `search_diff`. They combine the graph layer with hybrid search so the AI gets a direct answer to *"where is X defined?"*, *"who uses X?"*, *"are there tests for X?"*, *"is there code similar to this snippet?"*, *"what did I change vs main, and is anything else affected?"* — instead of you scrolling through search results.
+6. **⚙️ Optional cross-encoder reranker** (opt-in, new in v0.8) — after the hybrid RRF, a small ~80MB local cross-encoder model re-scores the top-N candidates by actually *looking at* (query, chunk) content. ~+20-30% precision@1 on ambiguous queries for ~50ms extra latency. Off by default.
 
 ### 💡 See the Difference
 
@@ -87,11 +89,12 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 17. [Keeping the index up to date](#keeping-the-index-up-to-date)
 18. [AST-aware chunking](#ast-aware-chunking)
 19. [Hybrid retrieval](#hybrid-retrieval)
-20. [Graph layer (opt-in)](#graph-layer-opt-in)
-21. [Config drift detection](#config-drift-detection)
-22. [Architecture](#architecture)
-23. [Troubleshooting](#troubleshooting)
-24. [Contributing](#contributing)
+20. [Reranking (opt-in)](#reranking-opt-in)
+21. [Graph layer (opt-in)](#graph-layer-opt-in)
+22. [Config drift detection](#config-drift-detection)
+23. [Architecture](#architecture)
+24. [Troubleshooting](#troubleshooting)
+25. [Contributing](#contributing)
 25. [Privacy guarantees](#privacy-guarantees)
 
 ---
@@ -1235,6 +1238,50 @@ get_callers_myproject("ApplyDamage")
 See [Graph layer (opt-in)](#graph-layer-opt-in) for the build pipeline,
 cross-file resolution policy, inheritance edges, and costs.
 
+### Combined tools (always-on for codebase sources, new in v0.8)
+
+Every `codebase` source automatically gets **4 combined tools** that
+mix graph + search to answer questions a single tool can't:
+
+| Tool | Answers | Uses graph? |
+|---|---|---|
+| `find_definition_<src>(symbol)` | "Where is X defined?" | Yes when enabled (precise file+line from AST); BM25 fallback otherwise. |
+| `find_usages_<src>(symbol)` | "Who uses X?" — calls AND non-call refs (typeof, generics, decorators, doc mentions). | Yes when enabled (`get_callers` for structural callers); always also runs textual search to catch the rest. Deduped. |
+| `find_tests_for_<src>(symbol, test_path_pattern?)` | "Are there tests for X?" | No graph; search + regex filter on standard test paths (`/tests/`, `_test.py`, `.spec.js`, `*Test.cs`, ...). |
+| `find_similar_<src>(snippet, top_k?)` | "Is there code similar to this?" — semantic match on the snippet's embedding. | No graph; pure dense (BM25 ignored). Filters out byte-identical chunks. |
+
+And one MORE tool, conditional on `git_integration.enabled=true`:
+
+| Tool | Answers |
+|---|---|
+| `search_diff_<src>(query, base?, top_k?)` | "Search only in files I changed vs `main` (or whatever `base`)." Auto-detects `main` / `master` / `develop`; pass `base=` to override. Returns `{base, modified_files, hits}`. Killer for code review. |
+
+Sample call inside the AI client:
+
+```
+find_definition_myproject("PaymentGateway")
+→ Definitions of 'PaymentGateway':
+  • PaymentGateway  [class]  @ src/Billing/PaymentGateway.cs:L12-89  (graph)
+
+find_usages_myproject("ApplyDamage")
+→ Usages of 'ApplyDamage':
+  • HealthSystem.OnHit  @ src/Health/HealthSystem.cs:L94  (graph [calls])
+  • bullet_handler      @ src/Combat/BulletImpact.cs:L42  (search)
+  ...
+
+search_diff_myproject("validation logic")
+→ search_diff in 'myproject' vs base 'main':
+  Modified files (3): src/checkout/discount.py, src/checkout/order.py, src/checkout/tests/test_order.py
+  Hits (2):
+    • src/checkout/discount.py:L42-67  apply_discount  score=0.0245
+    • src/checkout/order.py:L120-138  validate_total  score=0.0198
+```
+
+Each result carries a `source` tag (`graph` / `search_bm25` / `search` /
+`search_dense` / `search+test_filter`) so the AI client can communicate
+confidence: a "graph" result is from the AST (precise); "search_bm25" is
+a best-effort guess when the graph layer isn't enabled.
+
 ---
 
 ## Get the most out of it: AI integration rules
@@ -1596,6 +1643,82 @@ a few thousand chunks the build takes about a second; query latency adds
 
 ---
 
+## Reranking (opt-in)
+
+Hybrid RRF fusion is fast and works well on average — but it ranks
+purely on *rank position* in each retriever (dense + sparse). It never
+actually inspects whether a chunk's content answers the query.
+
+A **cross-encoder reranker** takes the top-N RRF candidates and feeds
+each `(query, chunk_content)` pair through a small transformer model
+that DOES inspect both sides, producing a content-aware relevance
+score. This typically improves **precision@1 by 20-30% on ambiguous
+queries** with a one-time ~80MB model download and ~50ms of extra
+latency per query.
+
+### Enable it
+
+Add to `config.json`:
+
+```json
+"search": {
+  "reranker": {
+    "enabled": true,
+    "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "top_n_before_rerank": 30
+  }
+}
+```
+
+The model downloads from HuggingFace on the first query that needs it.
+After that, it's fully offline (same `HF_HUB_OFFLINE=1` policy as the
+embedding model).
+
+### How it integrates
+
+```
+query → dense + BM25 → RRF fusion → top_n candidates
+                                        ↓
+                                  cross-encoder rerank
+                                        ↓
+                                  top_k returned
+```
+
+Each result keeps every field it had before, plus:
+- `original_score` — the pre-rerank RRF score (for debugging /
+  comparison)
+- `reranked: true` — flag so the AI knows the score is on the
+  cross-encoder scale, not RRF
+
+### Cost
+
+| Item | Cost |
+|---|---|
+| First query after server boot | ~2-3 s (one-time model load) |
+| Every subsequent query | +30-100 ms on CPU |
+| RAM | ~150 MB while loaded |
+| Disk (HF cache) | ~80 MB |
+| First-ever launch | ~80 MB download from HF |
+
+Disable by setting `enabled: false` (or omit the block). Existing
+indexes are unaffected — reranker doesn't touch ChromaDB.
+
+### Other models
+
+Swap `model_name` for a different cross-encoder. Trade-offs:
+
+| Model | Size | Quality | Latency |
+|---|---|---|---|
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` (default) | ~80 MB | Good | ~50 ms / 30 docs |
+| `cross-encoder/ms-marco-MiniLM-L-12-v2` | ~140 MB | Better | ~90 ms / 30 docs |
+| `BAAI/bge-reranker-base` | ~280 MB | Best general-purpose | ~200 ms / 30 docs |
+| `BAAI/bge-reranker-large` | ~1.1 GB | Strongest | ~700 ms / 30 docs |
+
+For code search specifically, the MiniLM defaults are surprisingly
+competitive — try them first.
+
+---
+
 ## Graph layer (opt-in)
 
 Hybrid search excels at **"find me the code that does X"**. It struggles
@@ -1774,6 +1897,11 @@ currently only filters file-watcher events, not the indexing pipeline.
 |     get_neighbors_<name>, shortest_path_<name>,                    |
 |     architectural_overview_<name>, surprising_connections_<name>,  |
 |     graph_status_<name>                                            |
+|   - per-source combined tools (codebase only):                     |
+|     find_definition_<name>, find_usages_<name>,                    |
+|     find_tests_for_<name>, find_similar_<name>                     |
+|   - per-source diff tool (when git_integration.enabled=true):      |
+|     search_diff_<name>                                             |
 |   - global tools: list_sources / search_all_sources /              |
 |     deep_search_all_sources / update_source_index / get_rag_status |
 +----------------------------+---------------------------------------+
