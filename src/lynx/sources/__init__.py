@@ -14,13 +14,17 @@ Adding a new source type requires:
 from .base import SourceBackend
 from .codebase import CodebaseBackend
 from .webdoc import WebdocBackend
+from .pdf import PdfBackend
 
 
 SOURCE_BACKENDS = {
     CodebaseBackend.type_name: CodebaseBackend,
     WebdocBackend.type_name: WebdocBackend,
-    # "pdf": PdfBackend,   # future
+    PdfBackend.type_name: PdfBackend,
 }
 
 
-__all__ = ["SourceBackend", "CodebaseBackend", "WebdocBackend", "SOURCE_BACKENDS"]
+__all__ = [
+    "SourceBackend", "CodebaseBackend", "WebdocBackend", "PdfBackend",
+    "SOURCE_BACKENDS",
+]

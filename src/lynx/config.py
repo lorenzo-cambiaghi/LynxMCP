@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 
 
 CURRENT_CONFIG_VERSION = 2
-SUPPORTED_SOURCE_TYPES = ("codebase", "webdoc")  # "pdf" coming later
+SUPPORTED_SOURCE_TYPES = ("codebase", "webdoc", "pdf")
 
 # MCP tool names get the source name verbatim as a suffix. Restrict to a
 # conservative subset so the generated names like `search_<name>` are always
@@ -243,10 +243,98 @@ def _validate_webdoc_source(name: str, raw: dict, base_dir: Path) -> dict:
     }
 
 
+def _validate_pdf_source(name: str, raw: dict, base_dir: Path) -> dict:
+    """Validate and normalize a `type=pdf` source entry.
+
+    Required: `path` — directory containing the .pdf files to index.
+    Optional sub-block `extractor` (defaults applied per-field below).
+    Optional sub-block `watcher` — DISABLED by default for PDF sources
+    because re-extraction is expensive (10-30s per medium PDF) and PDFs
+    typically change much less often than source code.
+    """
+    path_raw = raw.get("path")
+    if not path_raw:
+        _config_error(f"source {name!r}: 'path' is required for type=pdf")
+    path = _resolve_path(path_raw, base_dir)
+    if not path.is_dir():
+        _config_error(
+            f"source {name!r}: path does not exist or is not a directory: {path}"
+        )
+
+    recursive = bool(raw.get("recursive", True))
+    file_glob = str(raw.get("file_glob", "**/*.pdf"))
+
+    extractor_raw = raw.get("extractor")
+    if extractor_raw is None:
+        extractor_raw = {}
+    elif not isinstance(extractor_raw, dict):
+        _config_error(
+            f"source {name!r}: 'extractor' must be an object like "
+            f"{{ \"backend\": \"auto\", \"max_file_mb\": 100, ... }}, got "
+            f"{type(extractor_raw).__name__} {extractor_raw!r}"
+        )
+
+    backend = str(extractor_raw.get("backend", "auto"))
+    if backend not in ("auto", "pypdf", "pymupdf"):
+        _config_error(
+            f"source {name!r}: extractor.backend must be one of "
+            f"'auto' | 'pypdf' | 'pymupdf', got {backend!r}"
+        )
+
+    def _opt_int(key, default, min_val, max_val):
+        val = int(extractor_raw.get(key, default))
+        if val < min_val:
+            _config_error(f"source {name!r}: extractor.{key} must be >= {min_val}, got {val}")
+        if val > max_val:
+            _config_error(f"source {name!r}: extractor.{key} must be <= {max_val}, got {val}")
+        return val
+
+    max_file_mb = _opt_int("max_file_mb", 100, 1, 2000)
+    max_pages_per_file = _opt_int("max_pages_per_file", 5000, 1, 100_000)
+
+    watcher_raw = raw.get("watcher") or {}
+    if not isinstance(watcher_raw, dict):
+        _config_error(
+            f"source {name!r}: 'watcher' must be an object like "
+            f"{{ \"enabled\": true }}, got {type(watcher_raw).__name__}"
+        )
+    watcher = {
+        "enabled": bool(watcher_raw.get("enabled", False)),  # OFF by default for PDFs
+        "debounce_seconds": float(watcher_raw.get("debounce_seconds", 5.0)),
+    }
+
+    # The graph layer is meaningful only for codebase sources (it needs
+    # AST). If the user enables it on a PDF source we don't error out
+    # (so they can flip type back and forth without re-editing the
+    # block) but we warn at boot and silently ignore the flag here.
+    graph_raw = raw.get("graph") or {}
+    if isinstance(graph_raw, dict) and graph_raw.get("enabled"):
+        print(
+            f"[config] warning: source {name!r} sets graph.enabled=true but "
+            f"graph layer is only supported for type=codebase. Ignoring.",
+            file=sys.stderr,
+        )
+
+    return {
+        "type": "pdf",
+        "path": path,
+        "recursive": recursive,
+        "file_glob": file_glob,
+        "extractor": {
+            "backend": backend,
+            "max_file_mb": max_file_mb,
+            "max_pages_per_file": max_pages_per_file,
+            "skip_password_protected": bool(extractor_raw.get("skip_password_protected", True)),
+            "skip_if_text_empty": bool(extractor_raw.get("skip_if_text_empty", True)),
+        },
+        "watcher": watcher,
+    }
+
+
 _TYPE_VALIDATORS = {
     "codebase": _validate_codebase_source,
     "webdoc": _validate_webdoc_source,
-    # "pdf": _validate_pdf_source,   # future
+    "pdf": _validate_pdf_source,
 }
 
 

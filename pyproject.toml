@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lynx"
-version = "0.6.0"
+version = "0.7.0"
 description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code AND library documentation (fetched from the web on demand). AST-aware chunking via tree-sitter, multi-source, 100% local except the explicit doc-fetch step. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -75,11 +75,23 @@ dependencies = [
                             # Windows where corporate/antivirus chains aren't
                             # in certifi's Mozilla bundle. Pure-stdlib wrapper,
                             # ~10KB. Falls back to certifi if unavailable.
+    # PDF source (type: "pdf"): pypdf is the default extractor.
+    # Pure Python, MIT, no system binaries. Coherent with the "100% local,
+    # zero external deps" promise. For richer extraction on multi-column
+    # PDFs see the optional `pdf-fast` extra below (pymupdf, AGPL).
+    "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
+    "reportlab>=4",  # used by the PDF test suite to generate synthetic PDFs
+]
+# Opt-in faster / higher-quality PDF extraction backend. PyMuPDF is AGPL,
+# so we don't make it a hard dependency. Activate with `pip install lynx[pdf-fast]`
+# when working with academic two-column papers or complex layouts.
+pdf-fast = [
+    "pymupdf>=1.24",
 ]
 
 [project.scripts]

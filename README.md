@@ -27,7 +27,8 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 
 1. **🔍 Semantic + lexical search** (always on) — *"find the code that handles X"*. AST-aware chunking (13 languages) + hybrid dense + BM25 + RRF fusion. Beats `grep` because it understands what code *does*, not just how it's spelled.
 2. **🌐 Library docs at hand** (always on) — point Lynx at a docs site (Unity, Avalonia, your in-house framework) and the AI searches the *real* current API instead of hallucinating one from its training data.
-3. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
+3. **📄 PDF documents** (always on, new in v0.7) — point Lynx at a folder of PDFs (manuals, RFCs, normative, white-papers) and it extracts the text page-by-page; results cite the source as `User Manual.pdf p.42`. Scanned PDFs and password-protected ones are auto-skipped with a clear warning.
+4. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
 
 ### 💡 See the Difference
 
@@ -42,6 +43,10 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 **Scenario 3: Refactoring a critical interface**
 * 🔴 **Without Lynx:** "I want to rename `IDamageable.ApplyDamage`. What breaks?" The AI grep-searches the name and misses callers that pass it through delegates, callbacks, or polymorphic dispatch.
 * 🟢 **With Lynx (graph layer enabled):** The AI calls `get_callers_myproject("ApplyDamage")` and `get_subclasses_myproject("IDamageable")`. It receives the complete dependency graph — every caller, every implementation, with file path + line number for each — and proposes a safe refactor with the full blast-radius in hand.
+
+**Scenario 4: Working from a 300-page hardware manual (PDF)**
+* 🔴 **Without Lynx:** "What's the I2C timing spec for this chip?" The AI either guesses or asks you to paste the relevant page. You scroll through 300 pages looking for "I²C".
+* 🟢 **With Lynx (PDF source enabled):** The AI calls `search_manuals("I2C timing parameters")` and gets the exact paragraphs back with citation `Datasheet.pdf p.142`. Works for any vendor PDF (manuals, datasheets, RFCs, normative documents) — born-digital PDFs only, scanned ones are auto-skipped.
 
 ### ✨ Why you'll love it
 * **🔒 100% Private & Local:** No code or queries ever leave your machine. No cloud, no API keys, no monthly fees.
@@ -68,25 +73,26 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 8. [Build the index for the first time](#build-the-index-for-the-first-time)
 9. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
 10. [Webdoc sources](#webdoc-sources)
-11. [Connect it to your AI client](#connect-it-to-your-ai-client)
+11. [PDF sources](#pdf-sources)
+12. [Connect it to your AI client](#connect-it-to-your-ai-client)
     - [Claude Code (CLI)](#claude-code-cli)
     - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
     - [Google Antigravity](#google-antigravity)
     - [Cursor](#cursor)
     - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-12. [Command-line interface](#command-line-interface)
-13. [Verify the integration works](#verify-the-integration-works)
-14. [The MCP tools you get](#the-mcp-tools-you-get)
-15. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
-16. [Keeping the index up to date](#keeping-the-index-up-to-date)
-17. [AST-aware chunking](#ast-aware-chunking)
-18. [Hybrid retrieval](#hybrid-retrieval)
-19. [Graph layer (opt-in)](#graph-layer-opt-in)
-20. [Config drift detection](#config-drift-detection)
-21. [Architecture](#architecture)
-22. [Troubleshooting](#troubleshooting)
-23. [Contributing](#contributing)
-24. [Privacy guarantees](#privacy-guarantees)
+13. [Command-line interface](#command-line-interface)
+14. [Verify the integration works](#verify-the-integration-works)
+15. [The MCP tools you get](#the-mcp-tools-you-get)
+16. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+17. [Keeping the index up to date](#keeping-the-index-up-to-date)
+18. [AST-aware chunking](#ast-aware-chunking)
+19. [Hybrid retrieval](#hybrid-retrieval)
+20. [Graph layer (opt-in)](#graph-layer-opt-in)
+21. [Config drift detection](#config-drift-detection)
+22. [Architecture](#architecture)
+23. [Troubleshooting](#troubleshooting)
+24. [Contributing](#contributing)
+25. [Privacy guarantees](#privacy-guarantees)
 
 ---
 
@@ -629,6 +635,107 @@ the question.
 
 ---
 
+## PDF sources
+
+`type: "pdf"` indexes a folder of `.pdf` files (manuals, RFCs, normative
+documents, white-papers, technical books). Lynx extracts text **page by
+page**, writes one Markdown file per page under `_dump/`, then indexes
+those via the same RAG pipeline used for codebases. Citations come back
+as `User Manual.pdf p.42` thanks to YAML frontmatter on each page dump.
+
+### Why a PDF source instead of converting upstream
+
+Doing `pdftotext` + putting the result in a codebase source works, but
+you lose page numbers, you have to re-convert manually whenever a PDF
+changes, and you get a single giant blob of text per document. The PDF
+source preserves page granularity, supports SHA-incremental refresh, and
+auto-detects + skips files that aren't suitable.
+
+### Configuration
+
+```json
+"sources": {
+  "manuals": {
+    "type": "pdf",
+    "path": "C:/path/to/your/pdfs",
+    "recursive": true,
+    "file_glob": "**/*.pdf",
+    "watcher": { "enabled": false, "debounce_seconds": 5.0 },
+    "extractor": {
+      "backend": "auto",
+      "max_file_mb": 100,
+      "max_pages_per_file": 5000,
+      "skip_password_protected": true,
+      "skip_if_text_empty": true
+    }
+  }
+}
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `path` | **required** | Absolute path of the folder containing the .pdf files. |
+| `recursive` | `true` | Walk sub-directories. Set `false` to limit to the top-level folder. |
+| `file_glob` | `"**/*.pdf"` | `pathlib.Path.glob` pattern relative to `path`. Use e.g. `"datasheets/*.pdf"` to scope. |
+| `watcher.enabled` | `false` | **OFF by default** because re-extracting a PDF is costly (10-30s) and PDFs change rarely. When `true`, watchdog observes the source folder; new / modified / deleted PDFs trigger an incremental re-extract. |
+| `extractor.backend` | `"auto"` | `"auto"` prefers `pymupdf` if installed, else `pypdf`. Force one with `"pypdf"` or `"pymupdf"`. |
+| `extractor.max_file_mb` | `100` | Skip PDFs larger than this. RAM-safety: pypdf loads the whole file at ~3-5× disk size. Raise carefully. |
+| `extractor.max_pages_per_file` | `5000` | Skip pathological documents (50k-page legal dumps generate millions of chunks). |
+| `extractor.skip_password_protected` | `true` | When `true` (only valid value today), encrypted PDFs are skipped with `status="skipped_password"` in the state file. |
+| `extractor.skip_if_text_empty` | `true` | When `true`, PDFs with less than 100 total extracted characters are skipped as "probably scanned" (Lynx has no OCR). |
+
+### What is supported
+
+| PDF type | Result | Notes |
+|---|---|---|
+| **Born-digital** (Word/LaTeX/web → PDF) | ✅ Works | ~90% of real-world technical PDFs. |
+| **Multi-column papers** (academic / IEEE) | ⚠️ OK with `pypdf`, **good with `pymupdf`** | Reading order can be wrong with the default. Install `lynx[pdf-fast]` for these. |
+| **Tables and forms** | ✅ Extracted as flattened text | Searchable but structure not preserved. |
+| **Password-protected** | ❌ Skipped | Status `skipped_password`. Decryption with a password store is out of scope (for now). |
+| **Scanned PDFs** (no text layer) | ❌ Skipped | Status `skipped_empty`. **No OCR support** — Tesseract would require system binaries + ~200 MB of models, incompatible with the "100% local zero-deps" promise. Convert externally if you need them. |
+| **Encrypted with DRM** | ⚠️ Sometimes works | DRM usually only blocks printing, not text extraction. Case-by-case. |
+| **Files > 100 MB** | ❌ Skipped | Raise `extractor.max_file_mb` if you really need a 500 MB PDF. |
+
+### Faster / better extraction (opt-in)
+
+```bash
+pip install lynx[pdf-fast]      # adds pymupdf (AGPL)
+```
+
+Then either let `extractor.backend: "auto"` pick it up, or pin it
+explicitly with `"pymupdf"`. PyMuPDF is roughly **4× faster** than pypdf
+and noticeably better on multi-column layouts. We keep it opt-in because
+its AGPL license is incompatible with Lynx's Apache 2.0 distribution.
+
+### Re-extracting
+
+Same UX as webdoc: explicit by default.
+
+```bash
+# Add / modify / remove PDFs in the folder, then:
+lynx build --source manuals
+```
+
+When `watcher.enabled=true`, the same logic runs automatically on every
+file-system event (debounced 5s by default). Look in
+`<storage>/manuals/_extract_state.json` for the SHA cache + per-file
+status (`ok`, `skipped_*`, `error`).
+
+### What you see in `lynx status`
+
+```
+$ lynx status --source manuals
+=== Source: manuals (type: pdf) ===
+  pdf_count:            42
+  skipped_count:         3   ← 2 password-protected, 1 scanned
+  total_pages_extracted: 8451
+  chunk_count:          9234
+  extractor_backend:    pypdf
+  last_extract_at:      2026-05-21T10:00:00
+```
+
+---
+
 ## Connect it to your AI client
 
 The server speaks **MCP over stdio** — every modern AI client supports this
@@ -925,6 +1032,10 @@ python -m tests.test_graph_analyzer      # god_nodes / communities / surprising
 python -m tests.test_graph_query         # get_callers / get_callees / shortest_path / ...
 python -m tests.test_graph_integration   # config → backend → manager pass-through
 python -m tests.test_graph_mcp_tools     # MCP tool registration end-to-end
+python -m tests.test_pdf_extractor       # PDF extractor on synthetic PDFs (pypdf)
+python -m tests.test_pdf_dump            # per-page Markdown writer + state cache
+python -m tests.test_pdf_config          # type=pdf source validator
+python -m tests.test_pdf_backend         # PdfBackend integration (stubbed CodebaseRAG)
 ```
 
 Or the end-to-end smoke tests (these need a real `config.json` pointing
@@ -1674,17 +1785,18 @@ currently only filters file-watcher events, not the indexing pipeline.
 |   - graph layer pass-through (raises if graph disabled)            |
 +----------+----------------------------+----------------------------+
            |                            |
-+----------v------------+      +--------v-----------------------+
-| sources/codebase.py   |      | sources/webdoc.py              |
-| CodebaseBackend       |      | WebdocBackend                  |
-|   - file watcher      |      |   - httpx crawler (BFS, polite)|
-|     (updates both     |      |   - trafilatura extraction     |
-|     RAG and graph)    |      |   - writes .md dump on fetch   |
-|   - holds CodebaseRAG |      |   - delegates to CodebaseRAG   |
-|   - holds GraphLayer  |      |     (no graph layer here)      |
-|     (opt-in)          |      |                                |
-+----+----------+-------+      +--------+-----------------------+
-     |          |                       |  reads from _dump/
++----------v------------+ +--------v---------+ +-------v-----------+
+| sources/codebase.py   | | sources/webdoc.py| | sources/pdf.py    |
+| CodebaseBackend       | | WebdocBackend    | | PdfBackend        |
+|   - file watcher      | |  - httpx crawler | |  - pypdf / pymupdf|
+|     (updates both     | |  - trafilatura   | |  - per-page .md   |
+|     RAG and graph)    | |    extraction    | |    dump + frontm. |
+|   - holds CodebaseRAG | |  - writes .md    | |  - SHA cache for  |
+|   - holds GraphLayer  | |    dump on fetch | |    incremental    |
+|     (opt-in)          | |  - delegates to  | |  - delegates to   |
+|                       | |    CodebaseRAG   | |    CodebaseRAG    |
++----+----------+-------+ +--------+---------+ +-------+-----------+
+     |          |                  |  reads from _dump/  |
      |          |                       |
      |          |                       |
      |   +------v--------+              |
@@ -1763,7 +1875,10 @@ lynx/
 │       │   ├── base.py        SourceBackend abstract base class
 │       │   ├── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher
 │       │   │                  + optional GraphLayer; 10 graph methods delegated)
-│       │   └── webdoc.py      WebdocBackend (crawl + extract + dump + reuse CodebaseRAG)
+│       │   ├── webdoc.py      WebdocBackend (crawl + extract + dump + reuse CodebaseRAG)
+│       │   ├── pdf.py         PdfBackend (extract PDFs page-by-page + dump + reuse CodebaseRAG)
+│       │   ├── pdf_extractor.py  pypdf / pymupdf backend selection, page-by-page extract
+│       │   └── pdf_dump.py    Per-page .md writer + SHA-state cache
 │       └── graph/             Opt-in knowledge graph layer (new in v0.5 / extended in v0.6)
 │           ├── __init__.py    Public API: GraphLayer + 7 query funcs + 3 analyzers
 │           ├── extractor.py   LangGraphRules + extract_file(): single-file walker,
@@ -1792,7 +1907,11 @@ lynx/
 │   ├── test_graph_analyzer.py      god_nodes / communities / surprising_connections
 │   ├── test_graph_query.py         get_callers / get_callees / shortest_path / ...
 │   ├── test_graph_integration.py   config → backend → manager pass-through (stubbed RAG)
-│   └── test_graph_mcp_tools.py     _register_graph_tools end-to-end via FastMCP
+│   ├── test_graph_mcp_tools.py     _register_graph_tools end-to-end via FastMCP
+│   ├── test_pdf_extractor.py       pypdf + reportlab synthetic PDFs (9 scenarios)
+│   ├── test_pdf_dump.py            per-page .md writer + state cache round-trip
+│   ├── test_pdf_config.py          type=pdf source validator
+│   └── test_pdf_backend.py         PdfBackend integration with stubbed CodebaseRAG (9 scenarios)
 └── rag_storage/                    ChromaDB collections, one subdir per source (gitignored)
     ├── myproject/                  (codebase source)
     │   ├── chroma.sqlite3          Vector store
@@ -1805,9 +1924,13 @@ lynx/
     │       ├── raw_inherits.json   Unresolved bases (re-resolved on update)
     │       ├── file_hashes.json    Graph-layer per-file SHA cache
     │       └── metadata.json       schema_version + last_update / last_full_rebuild
-    └── unityDoc/                   (webdoc source — same files as above PLUS:)
-        ├── _dump/                  One .md per crawled URL (YAML frontmatter)
-        └── _fetch_state.json       {url: {fetched_at, dump_file}}
+    ├── unityDoc/                   (webdoc source — same files as above PLUS:)
+    │   ├── _dump/                  One .md per crawled URL (YAML frontmatter)
+    │   └── _fetch_state.json       {url: {fetched_at, dump_file}}
+    └── manuals/                    (pdf source — same Chroma files as above PLUS:)
+        ├── _dump/                  One .md per extracted page, organised as
+        │                           <rel>/<pdf_stem>/page_NNNN.md
+        └── _extract_state.json     {pdf_abs_path: {sha256, n_pages, status, ...}}
 ```
 
 ### Key design decisions

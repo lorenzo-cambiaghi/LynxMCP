@@ -78,6 +78,24 @@
       "include_url_patterns": ["/docs/"],
       "exclude_url_patterns": ["/docs/legacy/"],
       "request_delay_seconds": 0.5
+    },
+    "examplePdfs_remove_or_replace": {
+      "_comment": "PDF example — point at a folder of .pdf files (manuals, RFCs, white-papers, ...). Lynx extracts text page-by-page and indexes one chunk per page; the AI client cites with `pdf_name p.42`. Scanned PDFs (no text layer) are auto-skipped; password-protected too. Watcher is OFF by default because re-extraction is costly; trigger refresh via `lynx build --source <name>`. For richer extraction on multi-column PDFs install pymupdf via `pip install lynx[pdf-fast]` and set extractor.backend=\"pymupdf\" (or leave \"auto\").",
+      "type": "pdf",
+      "path": "C:/path/to/your/pdfs",
+      "recursive": true,
+      "file_glob": "**/*.pdf",
+      "watcher": {
+        "enabled": false,
+        "debounce_seconds": 5.0
+      },
+      "extractor": {
+        "backend": "auto",
+        "max_file_mb": 100,
+        "max_pages_per_file": 5000,
+        "skip_password_protected": true,
+        "skip_if_text_empty": true
+      }
     }
   }
 }
