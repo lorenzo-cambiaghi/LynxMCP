@@ -1407,6 +1407,10 @@ their own pip packages — no runtime downloads, no network calls (the
 | `.go` | Go | functions, methods, type declarations |
 | `.rs` | Rust | functions, structs, enums, typedefs (inside impl / mod / trait) |
 | `.java` | Java | methods, constructors (inside class / interface / enum) |
+| `.rb` | Ruby | methods, singleton methods (qualified by module / class) |
+| `.php` | PHP | methods, free functions (qualified by namespace / class / interface / trait) |
+| `.kt`, `.kts` | Kotlin | functions, secondary constructors (qualified by class / object) |
+| `.swift` | Swift | functions, init, deinit, protocol-method signatures, property declarations (inside class / struct / extension / enum / protocol) |
 
 For anything else (`.md`, `.txt`, `.json`, `.yaml`, `.hlsl`, `.shader`,
 `.compute`, `.cginc`, …) Lynx falls back to a sentence-window splitter —
@@ -1431,8 +1435,9 @@ suffix.
 **`chunker_version` is in the drift snapshot.** Bumping the chunker logic
 in a way that changes boundaries or metadata triggers a CRITICAL drift on
 next start. The drift message lists `chunker_version: N -> M`; running
-`lynx build --source <name>` clears it. Upgrading from v0.2 to v0.3 will
-flag this automatically.
+`lynx build --source <name>` clears it. Upgrading from any earlier
+release to v0.5+ (where Ruby/PHP/Kotlin/Swift were added and
+`CHUNKER_VERSION` bumped 3 → 4) will flag this automatically.
 
 ---
 
