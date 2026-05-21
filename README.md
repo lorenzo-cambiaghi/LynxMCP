@@ -18,10 +18,16 @@
 
 ### 🚀 Supercharge Your AI Assistant with "Super Sight"
 
-Ever asked your AI assistant to fix a bug, only to watch it blindly guess because it can't "see" your entire project? 
+Ever asked your AI assistant to fix a bug, only to watch it blindly guess because it can't "see" your entire project?
 AI models are incredibly smart, but they suffer from **context limits**. They don't know your codebase, they haven't read the documentation for the latest version of your framework, and they often hallucinate the wrong APIs.
 
-**LynxMCP** fixes this. It acts as an ultra-fast, offline search engine that feeds your AI assistant the *exact* context it needs, precisely when it needs it. 
+**LynxMCP** fixes this. It runs locally as an MCP server and gives your AI assistant three ways to interrogate your project the moment a question shows up — without uploading a single byte to the cloud.
+
+### 🛠️ What you get
+
+1. **🔍 Semantic + lexical search** (always on) — *"find the code that handles X"*. AST-aware chunking (13 languages) + hybrid dense + BM25 + RRF fusion. Beats `grep` because it understands what code *does*, not just how it's spelled.
+2. **🌐 Library docs at hand** (always on) — point Lynx at a docs site (Unity, Avalonia, your in-house framework) and the AI searches the *real* current API instead of hallucinating one from its training data.
+3. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
 
 ### 💡 See the Difference
 
@@ -33,10 +39,16 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 * 🔴 **Without Lynx:** "Where is the payment processing logic?" The AI starts randomly reading files, wasting tokens and your time.
 * 🟢 **With Lynx:** The AI uses the Lynx tool to semantically search your code. It instantly finds `PaymentGateway.cs` deep in a folder it didn't know existed, reads the relevant chunks, and answers your question.
 
+**Scenario 3: Refactoring a critical interface**
+* 🔴 **Without Lynx:** "I want to rename `IDamageable.ApplyDamage`. What breaks?" The AI grep-searches the name and misses callers that pass it through delegates, callbacks, or polymorphic dispatch.
+* 🟢 **With Lynx (graph layer enabled):** The AI calls `get_callers_myproject("ApplyDamage")` and `get_subclasses_myproject("IDamageable")`. It receives the complete dependency graph — every caller, every implementation, with file path + line number for each — and proposes a safe refactor with the full blast-radius in hand.
+
 ### ✨ Why you'll love it
 * **🔒 100% Private & Local:** No code or queries ever leave your machine. No cloud, no API keys, no monthly fees.
 * **🤝 Universal:** Works out-of-the-box with Cursor, Claude Code, Google Antigravity, Continue.dev, Aider, and any MCP-compliant client.
-* **🧠 Smart:** It understands your code structure (AST-aware) rather than just cutting text randomly.
+* **🧠 Smart:** AST-aware chunking + hybrid retrieval. Optional graph layer adds call/inheritance/import edges so the AI can reason about *structure*, not just similarity.
+* **🌍 13 languages, one tool:** C#, Python, TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift — all parsed via tree-sitter (no LLM in the indexing pipeline).
+* **⚡ Live updates:** A file watcher keeps both the search index and the knowledge graph in sync as you edit (~2s after save).
 
 *(Ready to get technical? Read on to see [what this does](#what-this-does) and how it works under the hood 👇)*
 
@@ -74,6 +86,7 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 21. [Architecture](#architecture)
 22. [Troubleshooting](#troubleshooting)
 23. [Contributing](#contributing)
+24. [Privacy guarantees](#privacy-guarantees)
 
 ---
 
@@ -85,7 +98,11 @@ what it needs, or ask you. Neither is great.
 
 This server fixes that. You configure N **sources** in `config.json` (a
 codebase, a folder of library docs, a vendor reference dump, ...). For
-each source the server auto-generates two MCP tools at boot:
+each source the server auto-generates the right set of MCP tools at boot.
+
+### Always-on: semantic + lexical search
+
+For every source, two search tools:
 
 | Tool generated per source `<name>` | What it does |
 |---|---|
@@ -108,6 +125,29 @@ and gets back the top-K most relevant code snippets — across files,
 regardless of naming conventions — and answers your question with that
 context. With multiple sources, it picks the right tool based on the
 docstring of each `search_<name>`.
+
+### Opt-in: structural understanding (graph layer)
+
+Search tells you *where* something is. The optional **graph layer** tells
+you *how things are connected*. Add `graph: { enabled: true }` to a
+codebase source in `config.json` and 9 extra tools per source come online:
+
+| Graph tool per source `<name>` | What it answers |
+|---|---|
+| `get_callers_<name>(symbol)` | "Who calls X?" |
+| `get_callees_<name>(symbol)` | "What does X call?" |
+| `get_subclasses_<name>(symbol)` | "What concrete types extend / implement X?" |
+| `get_superclasses_<name>(symbol)` | "What does X inherit from?" |
+| `get_imports_<name>(file_or_symbol)` | "What does this file depend on?" |
+| `get_neighbors_<name>(symbol, ...)` | "Show me everything around X" (BFS, optional relation filter) |
+| `shortest_path_<name>(source, target)` | "How does A reach B in the call graph?" |
+| `architectural_overview_<name>()` | "What are the main abstractions?" (god nodes + community detection) |
+| `surprising_connections_<name>()` | Bridge edges between distant clusters (god-class antipatterns) |
+
+Plus `graph_status_<name>()` for diagnostics. None of these are registered
+when the flag is off — backward-compatible by default. See the [Graph
+layer](#graph-layer-opt-in) section for how cross-file resolution,
+inheritance edges, and persistence work.
 
 ## Why it exists
 
@@ -134,17 +174,33 @@ This project addresses all three:
 
 ## How it works (in 30 seconds)
 
+**Two layers run side-by-side on every codebase source:**
+
 ```
-Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
-                                                                   |
-Your question  --> embedded --> top-K cosine similarity  ----------+
-                                                                   |
-                                                                   v
+Search layer (always on):
+  Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
+                                                                     |
+  Your question  --> embedded --> top-K cosine similarity  ----------+
+                                                                     |
+                                                                     v
                                        Top-K relevant code snippets
                                        returned to the AI client via MCP
+
+Graph layer (opt-in, `graph: { enabled: true }`):
+  Your code  --> tree-sitter walk --> nodes (classes, functions)
+                                  --> edges (calls, inherits, imports, contains)
+                                                                     |
+  Your question (e.g. "who calls X?")  ------------------------------+
+                                                                     |
+                                                                     v
+                                       NetworkX query results
+                                       (callers, callees, subclasses, paths, ...)
 ```
 
-A file watcher keeps the index in sync as you edit (~2s after each save).
+Both layers parse the source files via the **same tree-sitter parsers**
+(13 languages, sharing the parser cache), and both are kept in sync by
+the same file watcher (~2s after each save). The graph layer is
+backward-compatible: leave it off and nothing changes.
 
 ---
 
@@ -733,17 +789,21 @@ A single `pip install` covers all of them.
 
 ## Command-line interface
 
-The same `lynx` command exposes four subcommands. Useful
-for debugging the index, scripting, or just querying the codebase without
-opening an AI assistant.
+The same `lynx` command exposes six subcommands. Useful for debugging the
+index, scripting, or just querying the codebase without opening an AI
+assistant.
 
 ```text
 lynx [--version] [-h] COMMAND ...
 
-  serve   Run the MCP server (default if no command is given)
-  build   Force a full rebuild of the index
-  search  Run an ad-hoc search query (no MCP client needed)
-  status  Show RAG status: git state, last update, config drift
+  serve         Run the MCP server (default if no command is given)
+  build         Force a full rebuild of a source's index (search + graph)
+  search        Run an ad-hoc search query (no MCP client needed)
+  status        Show RAG status: git state, last update, config drift
+  list-sources  Enumerate configured sources
+  graph         Manage the per-source knowledge graph layer
+                  graph build   Rebuild graph for a source
+                  graph status  Show node / edge counts, by language / kind
 ```
 
 > Every example in this section can be invoked equivalently as
@@ -802,6 +862,45 @@ Last update:  2026-05-10T13:45:27.492806
 No config drift detected.
 ```
 
+### `graph`
+
+Manage the per-source knowledge graph layer (only meaningful when the
+source has `graph: { enabled: true }` in `config.json`). Two
+sub-commands:
+
+```bash
+# Rebuild the graph for a single source. --force wipes state first;
+# without --force it does an SHA-incremental rebuild.
+lynx graph build --source myproject
+lynx graph build --source myproject --force
+
+# Show counts and metadata. Without --source, shows every source that
+# has the graph layer enabled.
+lynx graph status
+lynx graph status --source myproject
+```
+
+`lynx graph status` output:
+
+```
+=== Graph status: myproject ===
+  schema_version:    2
+  nodes:             8421
+  edges:             14732
+  files_indexed:     1284
+  raw_calls_pending: 562
+  last_update:       2026-05-21T09:14:02
+  last_full_rebuild: 2026-05-20T18:02:11
+  by_language:       {'c_sharp': 7912, 'python': 484, 'external': 25}
+  by_kind:           {'function': 6201, 'class': 1992, 'file': 203, 'external': 25}
+  by_relation:       {'contains': 6201, 'calls': 7488, 'inherits': 612, 'imports': 431}
+```
+
+Day-to-day you don't need this — the file watcher keeps the graph live
+the same way it does for the search index, and `lynx build` rebuilds
+both. Use `lynx graph build --force` after a graph schema bump or when
+you suspect stale edges.
+
 ---
 
 ## Verify the integration works
@@ -814,7 +913,22 @@ After connecting the server to your client, ask the AI assistant:
 You should see it invoke the appropriate `search_<name>` tool for your
 source and return relevant snippets.
 
-To verify directly without an AI client, run either smoke test:
+To verify directly without an AI client, run any of the unit tests
+(they need no config, only the venv):
+
+```bash
+# Self-contained unit tests (no real codebase needed, ~5 seconds each)
+python -m tests.test_tree_sitter         # AST chunker, 13 languages
+python -m tests.test_graph_extractor     # single-file graph extraction
+python -m tests.test_graph_builder       # build + persist + SHA cache + cross-file
+python -m tests.test_graph_analyzer      # god_nodes / communities / surprising
+python -m tests.test_graph_query         # get_callers / get_callees / shortest_path / ...
+python -m tests.test_graph_integration   # config → backend → manager pass-through
+python -m tests.test_graph_mcp_tools     # MCP tool registration end-to-end
+```
+
+Or the end-to-end smoke tests (these need a real `config.json` pointing
+at a real codebase):
 
 ```bash
 python tests/test_watch.py    # end-to-end test for the file watcher
@@ -844,11 +958,13 @@ real index is left untouched. Expected ending:
 ## The MCP tools you get
 
 For each source `<name>` configured in `config.json`, the server
-auto-registers **two tools** at boot. Add three sources → six per-source
-tools. Plus the five globals. The AI client sees the whole set in its tool
-list and picks based on the docstrings.
+auto-registers **two search tools** at boot. If the source also has
+`graph: { enabled: true }`, **10 graph tools** are registered too. Add
+three sources with graph enabled → 36 per-source tools. Plus the five
+globals. The AI client sees the whole set in its tool list and picks
+based on the docstrings.
 
-### Per-source tools (auto-generated)
+### Per-source search tools (always on, auto-generated)
 
 #### `search_<name>(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
 
@@ -964,6 +1080,50 @@ Report state of the RAG index. Pass `source="<name>"` to inspect one;
 omit to get the status of every source. Reports git state, last update
 time, and config drift.
 
+### Graph tools (opt-in, per source)
+
+When a codebase source has `graph: { enabled: true }`, the server
+auto-registers **10 extra tools** for it (9 query tools + 1 status tool).
+Names follow the same `<verb>_<source>` convention as the search tools so
+the AI client picks the right one from its tool list:
+
+| Tool | Answers | When to call |
+|---|---|---|
+| `get_callers_<name>(symbol, limit?)` | "Who calls X?" | Refactoring: blast-radius of a rename / signature change. |
+| `get_callees_<name>(symbol, limit?)` | "What does X call?" | Understanding what a function actually does. |
+| `get_subclasses_<name>(symbol, limit?)` | "What concrete types extend / implement X?" | Adding an interface method: which implementations need updating. |
+| `get_superclasses_<name>(symbol, limit?)` | "What does X inherit from?" | Tracing where a method or field comes from. |
+| `get_imports_<name>(file_or_symbol, limit?)` | "What does this file depend on?" | "Are we already using package Y?" |
+| `get_neighbors_<name>(symbol, relation_filter?, depth?, limit?)` | Everything around X within N hops | When you don't yet know which direction matters. |
+| `shortest_path_<name>(source, target, max_hops?)` | "How does A reach B?" | "Why does the checkout flow end up touching the audit logger?" |
+| `architectural_overview_<name>(top_n_gods?, min_community_size?)` | God-nodes + communities + stats | Start an unfamiliar session: get a high-level map first. |
+| `surprising_connections_<name>(top_n?)` | Top bridge edges by edge betweenness | Spot god-class / hidden-coupling antipatterns. |
+
+Plus `graph_status_<name>()` for diagnostics (node / edge counts, by
+language, by relation, last update timestamp).
+
+Symbols are matched **fuzzy** (case-insensitive). Exact-leaf match wins
+when one exists; otherwise substring matches are returned. Each result
+includes `file`, `start_line`, `end_line` and a `confidence` flag
+(`extracted` for intra-file, `resolved` / `ambiguous` for cross-file)
+so the AI client can cite the source precisely.
+
+Sample call inside the AI client:
+
+```
+get_callers_myproject("ApplyDamage")
+→ Callers of 'ApplyDamage' in 'myproject':
+    • HealthSystem.OnHit      [function] @ src/Health/HealthSystem.cs:L88-103
+        --calls [resolved]--> IDamageable.ApplyDamage  [function] @ src/Damage/IDamageable.cs:L7
+          at src/Health/HealthSystem.cs:L94
+    • BulletImpact.Process    [function] @ src/Combat/BulletImpact.cs:L42-61
+        --calls [resolved]--> IDamageable.ApplyDamage  [function] @ src/Damage/IDamageable.cs:L7
+          at src/Combat/BulletImpact.cs:L55
+```
+
+See [Graph layer (opt-in)](#graph-layer-opt-in) for the build pipeline,
+cross-file resolution policy, inheritance edges, and costs.
+
 ---
 
 ## Get the most out of it: AI integration rules
@@ -1008,6 +1168,42 @@ library APIs.
 When in doubt about *which* source has the answer, call
 `search_all_sources(query)` once. It fuses results across every source
 with RRF and tags each hit with its source.
+
+## When to use the graph layer instead of search
+
+If the source `<myproject>` has `graph: { enabled: true }` in
+`config.json`, you also have 9 structural tools available
+(`get_callers_<myproject>`, `get_callees_<myproject>`,
+`get_subclasses_<myproject>`, `get_superclasses_<myproject>`,
+`get_imports_<myproject>`, `get_neighbors_<myproject>`,
+`shortest_path_<myproject>`, `architectural_overview_<myproject>`,
+`surprising_connections_<myproject>`).
+
+The rule of thumb: **search finds files; the graph finds relationships.**
+
+- Use **search** to answer "WHERE is the code that does X?".
+- Use the **graph** to answer "WHO calls X?", "WHAT does X depend on?",
+  "WHICH classes implement X?", "HOW does A reach B?".
+
+Specifically:
+
+- Before a refactor of `Foo.bar`: call `get_callers_<myproject>("bar")`
+  to see the blast-radius before proposing changes.
+- Before adding a method to an interface: call
+  `get_subclasses_<myproject>("IFoo")` to find every implementation
+  that will need updating.
+- When starting an unfamiliar session: call
+  `architectural_overview_<myproject>()` once to get god-nodes +
+  communities + stats in one shot.
+- When the user asks "what depends on this?" or "what uses this?": call
+  the graph, NOT a fuzzy text search.
+
+The graph is best-effort, not whole-program type inference. Each result
+carries a `confidence` flag:
+- `extracted` — intra-file, deterministic.
+- `resolved` — single cross-file candidate, high confidence.
+- `ambiguous` — multiple candidates with the same name; surface all of
+  them to the user.
 
 ## When to search first
 
@@ -1295,8 +1491,9 @@ queries, not similarity queries.
 The graph layer answers them. It's an **opt-in** companion to the vector
 store: when enabled on a `codebase` source, Lynx parses the same files
 already chunked for retrieval and builds a small knowledge graph of
-classes, functions, imports, and calls. The graph lives in memory and
-persists to JSON next to the ChromaDB collection.
+classes, functions, imports, calls, and inheritance relationships
+(`extends` / `implements`). The graph lives in memory and persists to
+JSON next to the ChromaDB collection.
 
 ### Enable it
 
@@ -1326,10 +1523,11 @@ TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java, Ruby, PHP, Kotlin,
 Swift**. Unsupported file types (markdown, shaders, JSON) are silently
 skipped — they don't contribute to the graph but still feed search.
 
-### The 9 MCP tools you get per source
+### The 10 MCP tools you get per source
 
 When `graph.enabled=true` on source `myproject`, Lynx auto-registers these
-extra tools on top of the usual `search_*` / `deep_search_*`:
+extra tools on top of the usual `search_*` / `deep_search_*` (9 query
+tools plus `graph_status_myproject()` for diagnostics):
 
 | Tool | Answers |
 |------|---------|
@@ -1392,7 +1590,7 @@ edges to both get `confidence="ambiguous"` so the AI client can flag it).
 ### Disabling it
 
 Drop the `graph` block (or set `enabled: false`) and restart the server:
-the 9 graph tools simply aren't registered. Search and deep_search work
+the 10 graph tools simply aren't registered. Search and deep_search work
 exactly as before — the layer is genuinely optional.
 
 ---
@@ -1453,8 +1651,13 @@ currently only filters file-watcher events, not the indexing pipeline.
                              | MCP / JSON-RPC over stdio
 +----------------------------v---------------------------------------+
 | server.py  (FastMCP)                                               |
-|   - dynamically registers `search_<name>` / `deep_search_<name>`   |
-|     for every entry in config.sources                              |
+|   - per-source search tools: search_<name> / deep_search_<name>    |
+|   - per-source graph tools (opt-in): get_callers_<name>,           |
+|     get_callees_<name>, get_subclasses_<name>,                     |
+|     get_superclasses_<name>, get_imports_<name>,                   |
+|     get_neighbors_<name>, shortest_path_<name>,                    |
+|     architectural_overview_<name>, surprising_connections_<name>,  |
+|     graph_status_<name>                                            |
 |   - global tools: list_sources / search_all_sources /              |
 |     deep_search_all_sources / update_source_index / get_rag_status |
 +----------------------------+---------------------------------------+
@@ -1463,46 +1666,67 @@ currently only filters file-watcher events, not the indexing pipeline.
 | source_manager.py  (SourceManager)                                 |
 |   - per-source dispatch (KeyError on unknown source)               |
 |   - cross-source RRF fusion for *_all_sources                      |
+|   - graph layer pass-through (raises if graph disabled)            |
 +----------+----------------------------+----------------------------+
            |                            |
 +----------v------------+      +--------v-----------------------+
 | sources/codebase.py   |      | sources/webdoc.py              |
 | CodebaseBackend       |      | WebdocBackend                  |
 |   - file watcher      |      |   - httpx crawler (BFS, polite)|
-|     (incremental)     |      |   - trafilatura extraction     |
-|   - delegates to      |      |   - writes .md dump on fetch   |
-|     CodebaseRAG       |      |   - delegates to CodebaseRAG   |
-+----------+------------+      +--------+-----------------------+
-           |  reads from path           |  reads from _dump/
-           |                            |
-           +-------------+--------------+
-                         |
-+------------------------v-------------------------------------------+
-| rag_manager.py  (CodebaseRAG)                                      |
-|   - chunking.chunk_file: tree-sitter for 9 langs + fallback        |
-|     (one chunk per function/method/class, with qualified           |
-|      symbol_name + 1-based line ranges as metadata)                |
-|   - HuggingFaceEmbedding (BAAI/bge-small-en-v1.5, CPU, offline)    |
-|   - dense + BM25 + RRF fusion (hybrid retrieval)                   |
-|   - per-file SHA-256 cache for incremental rebuilds                |
-|   - drift detection (with chunker_version) + deep_search ladder    |
-|   - update_file / remove_file (called by codebase watcher)         |
-+------------------------+-------------------------------------------+
-                         |
-+------------------------v-------------------------------------------+
-| Per-source ChromaDB collection + metadata                          |
-|   rag_storage/<source_name>/                                       |
-|     chroma.sqlite3        vectors                                  |
-|     metadata.json         drift snapshot                           |
-|     file_hashes.json      SHA-256 per file                         |
-|     _dump/                (webdoc only) one .md per crawled URL    |
-|     _fetch_state.json     (webdoc only) url -> fetched_at          |
-+------------------------+-------------------------------------------+
-                         ^
-                         | scanned + watched (codebase) OR fetched (webdoc)
-+------------------------+-------------------------------------------+
-| Your sources: local directory tree, or public docs site URL        |
-+--------------------------------------------------------------------+
+|     (updates both     |      |   - trafilatura extraction     |
+|     RAG and graph)    |      |   - writes .md dump on fetch   |
+|   - holds CodebaseRAG |      |   - delegates to CodebaseRAG   |
+|   - holds GraphLayer  |      |     (no graph layer here)      |
+|     (opt-in)          |      |                                |
++----+----------+-------+      +--------+-----------------------+
+     |          |                       |  reads from _dump/
+     |          |                       |
+     |          |                       |
+     |   +------v--------+              |
+     |   | graph/ layer  |              |
+     |   | (opt-in)      |              |
+     |   |               |              |
+     |   | extractor.py  | tree-sitter walk: classes, functions,
+     |   |               | calls, inherits, imports, contains.
+     |   |               | 13 langs, reuses chunking._get_parser.
+     |   |               |
+     |   | builder.py    | GraphLayer: nx.DiGraph in RAM + JSON on
+     |   |               | disk. SHA-incremental rebuild. Cross-file
+     |   |               | resolution against global symbol index.
+     |   |               |
+     |   | analyzer.py   | god_nodes (degree), communities
+     |   |               | (greedy_modularity), surprising_connections
+     |   |               | (edge_betweenness).
+     |   |               |
+     |   | query.py      | get_callers / get_callees / get_imports /
+     |   |               | get_subclasses / get_superclasses /
+     |   |               | get_neighbors / shortest_path.
+     |   +------+--------+              |
+     |          |                       |
+     |  reads from path                 |
+     +----+-----+----------+------------+
+          |                |
++---------v----+    +------v-------------+
+| Codebase RAG |    | Per-source ChromaDB collection + metadata     |
+| pipeline:    |    | rag_storage/<source_name>/                    |
+|              |    |   chroma.sqlite3       vectors                |
+| chunking.    |--->|   metadata.json        drift snapshot         |
+| chunk_file:  |    |   file_hashes.json     SHA-256 per file       |
+| tree-sitter  |    |   graph/               (only if graph.enabled)|
+| 13 langs +   |    |     nodes.json         all nodes              |
+| SentenceSplit|    |     edges.json         all edges              |
+|              |    |     raw_calls.json     unresolved calls       |
+| HF embeddings|    |     raw_inherits.json  unresolved bases       |
+| (BGE-small,  |    |     file_hashes.json   SHA-256 per file       |
+|  CPU,offline)|    |     metadata.json      schema_version + ts    |
+| ChromaDB,    |    |   _dump/               (webdoc only) .md      |
+| BM25, RRF    |    |   _fetch_state.json    (webdoc only) state    |
++--------------+    +-----------------------------------------------+
+                                ^
+                                | scanned + watched (codebase) OR fetched (webdoc)
+                +------------------------+
+                | Your sources: local dir, or public docs site URL  |
+                +------------------------+
 ```
 
 Repository layout:
@@ -1518,38 +1742,67 @@ lynx/
 │   └── lynx/
 │       ├── __init__.py        Package version
 │       ├── __main__.py        Enables `python -m lynx`
-│       ├── cli.py             argparse-based CLI dispatcher (incl. migrate-config)
+│       ├── cli.py             argparse-based CLI dispatcher (incl. graph + migrate-config)
 │       ├── server.py          FastMCP server, dynamic per-source tool registration
+│       │                      (search + deep_search + 10 graph tools when opt-in)
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
+│       │                      + graph layer pass-through
 │       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
 │       │                      per-file SHA-256 incremental cache
-│       ├── chunking.py        AST-aware chunker (tree-sitter for 9 languages +
-│       │                      SentenceSplitter fallback) with CHUNKER_VERSION
+│       ├── chunking.py        AST-aware chunker (tree-sitter for 13 languages +
+│       │                      SentenceSplitter fallback) with CHUNKER_VERSION,
+│       │                      exposes `parse_file()` shared with graph layer
 │       ├── config.py          v2 config loader with per-type validation
-│       └── sources/           Per-type source backends
-│           ├── __init__.py    SOURCE_BACKENDS registry
-│           ├── base.py        SourceBackend abstract base class
-│           ├── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher)
-│           └── webdoc.py      WebdocBackend (crawl + extract + dump + reuse CodebaseRAG)
+│       ├── sources/           Per-type source backends
+│       │   ├── __init__.py    SOURCE_BACKENDS registry
+│       │   ├── base.py        SourceBackend abstract base class
+│       │   ├── codebase.py    CodebaseBackend (wraps CodebaseRAG + watcher
+│       │   │                  + optional GraphLayer; 10 graph methods delegated)
+│       │   └── webdoc.py      WebdocBackend (crawl + extract + dump + reuse CodebaseRAG)
+│       └── graph/             Opt-in knowledge graph layer (new in v0.5 / extended in v0.6)
+│           ├── __init__.py    Public API: GraphLayer + 7 query funcs + 3 analyzers
+│           ├── extractor.py   LangGraphRules + extract_file(): single-file walker,
+│           │                  13 langs, classes / functions / imports / calls /
+│           │                  base-lists (inherits)
+│           ├── builder.py     GraphLayer: SHA cache, cross-file resolution,
+│           │                  atomic JSON persistence, watcher sync, bootstrap
+│           ├── analyzer.py    god_nodes, communities (greedy_modularity),
+│           │                  surprising_connections (edge_betweenness)
+│           └── query.py       get_callers, get_callees, get_subclasses,
+│                              get_superclasses, get_imports, get_neighbors,
+│                              shortest_path (fuzzy symbol matching)
 ├── tests/
-│   ├── conftest.py            pytest path shim + per-source RAG helper
-│   ├── test_watch.py          End-to-end smoke test for the watcher
-│   ├── test_drift.py          End-to-end smoke test for drift detection
-│   ├── test_filters.py        Smoke test for search-filter parameters
-│   ├── test_deep_search.py    Smoke test for the deep_search fallback ladder
-│   ├── test_multi_source.py   Smoke test for multi-source dispatch + isolation
-│   ├── test_sha_incremental.py  Smoke test for the per-file SHA rebuild cache
-│   ├── test_tree_sitter.py    Unit tests for the AST chunker (per-language)
-│   ├── test_webdoc.py         Webdoc backend (crawl + extract) with mocked HTTP
-│   └── test_hybrid_vs_dense.py  Side-by-side dense vs hybrid benchmark
-└── rag_storage/               ChromaDB collections, one subdir per source (gitignored)
-    ├── myproject/             (codebase source)
-    │   ├── chroma.sqlite3     Vector store
-    │   ├── metadata.json      Drift snapshot (config_snapshot + last_update)
-    │   └── file_hashes.json   Per-file SHA-256 cache for incremental rebuilds
-    └── unityDoc/              (webdoc source — same files as above PLUS:)
-        ├── _dump/             One .md per crawled URL (YAML frontmatter)
-        └── _fetch_state.json  {url: {fetched_at, dump_file}}
+│   ├── conftest.py                 pytest path shim + per-source RAG helper
+│   ├── test_watch.py               End-to-end smoke test for the watcher
+│   ├── test_drift.py               End-to-end smoke test for drift detection
+│   ├── test_filters.py             Smoke test for search-filter parameters
+│   ├── test_deep_search.py         Smoke test for the deep_search fallback ladder
+│   ├── test_multi_source.py        Smoke test for multi-source dispatch + isolation
+│   ├── test_sha_incremental.py     Smoke test for the per-file SHA rebuild cache
+│   ├── test_tree_sitter.py         Unit tests for the AST chunker (13 languages)
+│   ├── test_webdoc.py              Webdoc backend (crawl + extract) with mocked HTTP
+│   ├── test_hybrid_vs_dense.py     Side-by-side dense vs hybrid benchmark
+│   ├── test_graph_extractor.py     Graph extractor unit tests (10 scenarios, 13 langs)
+│   ├── test_graph_builder.py       GraphLayer build / persist / SHA / cross-file
+│   ├── test_graph_analyzer.py      god_nodes / communities / surprising_connections
+│   ├── test_graph_query.py         get_callers / get_callees / shortest_path / ...
+│   ├── test_graph_integration.py   config → backend → manager pass-through (stubbed RAG)
+│   └── test_graph_mcp_tools.py     _register_graph_tools end-to-end via FastMCP
+└── rag_storage/                    ChromaDB collections, one subdir per source (gitignored)
+    ├── myproject/                  (codebase source)
+    │   ├── chroma.sqlite3          Vector store
+    │   ├── metadata.json           Drift snapshot (config_snapshot + last_update)
+    │   ├── file_hashes.json        Per-file SHA-256 cache for incremental rebuilds
+    │   └── graph/                  Knowledge graph (only when graph.enabled=true)
+    │       ├── nodes.json          One entry per class / function / file / external
+    │       ├── edges.json          calls / inherits / imports / contains
+    │       ├── raw_calls.json      Unresolved calls (re-resolved on update)
+    │       ├── raw_inherits.json   Unresolved bases (re-resolved on update)
+    │       ├── file_hashes.json    Graph-layer per-file SHA cache
+    │       └── metadata.json       schema_version + last_update / last_full_rebuild
+    └── unityDoc/                   (webdoc source — same files as above PLUS:)
+        ├── _dump/                  One .md per crawled URL (YAML frontmatter)
+        └── _fetch_state.json       {url: {fetched_at, dump_file}}
 ```
 
 ### Key design decisions
@@ -1570,7 +1823,7 @@ lynx/
   is the explicit `webdoc` fetch, which the user triggers themselves —
   there is no implicit egress for `codebase` sources.
 - **AST chunking, not token windows.** Code is split at function / method /
-  class boundaries via tree-sitter (9 languages supported); other text falls
+  class boundaries via tree-sitter (13 languages supported); other text falls
   back to the legacy sentence-window splitter. Each chunk carries a
   qualified `symbol_name` and a 1-based `start_line`/`end_line` range so the
   AI can cite precisely (`Container.cs:L555-580`). Bumping `CHUNKER_VERSION`
