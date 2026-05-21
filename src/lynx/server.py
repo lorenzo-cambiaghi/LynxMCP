@@ -446,21 +446,31 @@ def _format_edge_lines(edges: list, header: str) -> str:
         src, tgt = e.get("source", {}), e.get("target", {})
         conf = e.get("confidence")
         rel = e.get("relation", "?")
+        # Inheritance edges carry an extra base_kind (extends / implements /
+        # extends_or_implements); surface it alongside the relation label so
+        # the AI client knows whether a base was a class extension or interface.
+        kind_part = ""
+        if rel == "inherits" and e.get("base_kind"):
+            kind_part = f"({e['base_kind']})"
         conf_part = f" [{conf}]" if conf else ""
         out.append(f"  • {_format_node_brief(src)}")
-        out.append(f"      --{rel}{conf_part}--> {_format_node_brief(tgt)}")
+        out.append(f"      --{rel}{kind_part}{conf_part}--> {_format_node_brief(tgt)}")
         if e.get("from_file"):
             out.append(f"        at {e['from_file']}:L{e.get('from_line') or '?'}")
     return "\n".join(out)
 
 
 def _register_graph_tools(mcp, manager, source_name: str):
-    """Register 7 graph-layer MCP tools, namespaced as `<verb>_<source_name>`.
+    """Register 9 graph-layer MCP tools, namespaced as `<verb>_<source_name>`.
 
     The naming mirrors `search_<source>` / `deep_search_<source>` so the AI
     client sees a consistent per-source toolset. Tools are only registered
     when `backend.graph` is not None; the manager itself raises ValueError
     if a call slips through to a source whose graph is disabled.
+
+    Tools registered: get_callers, get_callees, get_subclasses, get_superclasses,
+    get_imports, get_neighbors, shortest_path, architectural_overview,
+    surprising_connections, graph_status.
     """
 
     # NOTE on descriptions: we pass them via @mcp.tool(description=...)
@@ -496,6 +506,40 @@ def _register_graph_tools(mcp, manager, source_name: str):
         try:
             edges = manager.get_callees(source_name, symbol, limit=limit)
             return _format_edge_lines(edges, f"Callees of {symbol!r} in {source_name!r}:")
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_get_subclasses = (
+        f"List concrete types that INHERIT FROM `symbol` in source {source_name!r}. "
+        f"Use when the user asks 'what are the concrete subclasses of X?', "
+        f"'who implements interface X?', 'who derives from base class X?'. "
+        f"Works for `extends`, `implements`, and language-specific bases "
+        f"(C# `:`, Python multiple-bases, Rust `impl Trait for Type`, ...). "
+        f"Each edge carries `base_kind` (extends/implements/extends_or_implements) "
+        f"when the language exposes the distinction. "
+        f"Args: symbol (class/interface name); limit (max edges, default 50)."
+    )
+
+    @mcp.tool(name=f"get_subclasses_{source_name}", description=_desc_get_subclasses)
+    def _get_subclasses(symbol: str, limit: int = 50) -> str:
+        try:
+            edges = manager.get_subclasses(source_name, symbol, limit=limit)
+            return _format_edge_lines(edges, f"Subclasses of {symbol!r} in {source_name!r}:")
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_get_superclasses = (
+        f"List the types that `symbol` INHERITS FROM in source {source_name!r}. "
+        f"Use when the user asks 'what does X extend?', 'which interfaces does X implement?', "
+        f"'what's the base class of X?'. Returns the out-edge mirror of get_subclasses. "
+        f"Args: symbol (class/interface name); limit (max edges, default 50)."
+    )
+
+    @mcp.tool(name=f"get_superclasses_{source_name}", description=_desc_get_superclasses)
+    def _get_superclasses(symbol: str, limit: int = 50) -> str:
+        try:
+            edges = manager.get_superclasses(source_name, symbol, limit=limit)
+            return _format_edge_lines(edges, f"Superclasses of {symbol!r} in {source_name!r}:")
         except Exception as e:
             return f"Error: {e}"
 
@@ -638,6 +682,7 @@ def _register_graph_tools(mcp, manager, source_name: str):
             lines.append(f"Edges:             {st['edges']}")
             lines.append(f"Files indexed:     {st['files_indexed']}")
             lines.append(f"Raw calls pending: {st['raw_calls_pending']}")
+            lines.append(f"Raw inherits pending: {st.get('raw_inherits_pending', 0)}")
             lines.append(f"Last update:       {st['last_update']}")
             lines.append(f"Last full rebuild: {st['last_full_rebuild']}")
             lines.append(f"By language: {st['by_language']}")

@@ -64,7 +64,8 @@ def _log(msg: str) -> None:
 #
 # History:
 #   1 — initial release (Lynx 0.5.0)
-GRAPH_SCHEMA_VERSION = 1
+#   2 — adds `inherits` edges + raw_inherits.json persistence (Lynx 0.6.0)
+GRAPH_SCHEMA_VERSION = 2
 
 # SHA-256 read buffer (1 MiB — same value as rag_manager).
 _HASH_READ_CHUNK_BYTES = 1 << 20
@@ -123,6 +124,7 @@ class GraphLayer:
         self.nodes_file = self.storage_dir / "nodes.json"
         self.edges_file = self.storage_dir / "edges.json"
         self.raw_calls_file = self.storage_dir / "raw_calls.json"
+        self.raw_inherits_file = self.storage_dir / "raw_inherits.json"
         self.hashes_file = self.storage_dir / "file_hashes.json"
         self.metadata_file = self.storage_dir / "metadata.json"
 
@@ -131,6 +133,7 @@ class GraphLayer:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._nodes_by_id: dict = {}
         self._raw_calls_by_file: dict = {}  # abs_path -> list[raw_call dict]
+        self._raw_inherits_by_file: dict = {}  # abs_path -> list[raw_inherit dict]
         self._symbol_index: dict = {}       # symbol_name.lower() -> [node_id, ...]
         self._file_hashes: dict = {}        # abs_path -> {sha256, last_indexed_at}
         self._metadata: dict = {
@@ -205,6 +208,14 @@ class GraphLayer:
             except (OSError, json.JSONDecodeError) as e:
                 _log(f"[graph] raw_calls.json unreadable ({e}); resetting raw_calls only.")
                 raw_calls = {}
+        # Raw inherits (keyed by file)
+        raw_inherits: dict = {}
+        if self.raw_inherits_file.exists():
+            try:
+                raw_inherits = json.loads(self.raw_inherits_file.read_text("utf-8")) or {}
+            except (OSError, json.JSONDecodeError) as e:
+                _log(f"[graph] raw_inherits.json unreadable ({e}); resetting raw_inherits only.")
+                raw_inherits = {}
         # File hashes
         hashes: dict = {}
         if self.hashes_file.exists():
@@ -229,12 +240,14 @@ class GraphLayer:
                 # still want them in the graph for "imports" queries.
                 self._add_edge_inplace(e, register_external=True)
         self._raw_calls_by_file = raw_calls
+        self._raw_inherits_by_file = raw_inherits
         self._file_hashes = hashes
 
     def _reset_state(self) -> None:
         self._graph = nx.DiGraph()
         self._nodes_by_id = {}
         self._raw_calls_by_file = {}
+        self._raw_inherits_by_file = {}
         self._symbol_index = {}
         self._file_hashes = {}
         self._metadata = {
@@ -252,6 +265,7 @@ class GraphLayer:
         _atomic_write_json(self.nodes_file, nodes)
         _atomic_write_json(self.edges_file, edges)
         _atomic_write_json(self.raw_calls_file, self._raw_calls_by_file)
+        _atomic_write_json(self.raw_inherits_file, self._raw_inherits_by_file)
         _atomic_write_json(self.hashes_file, self._file_hashes)
         _atomic_write_json(self.metadata_file, self._metadata)
 
@@ -307,8 +321,9 @@ class GraphLayer:
                     del self._symbol_index[leaf]
             self._graph.remove_node(nid)
             del self._nodes_by_id[nid]
-        # Clear raw_calls bucketed under this file.
+        # Clear raw_calls + raw_inherits bucketed under this file.
         self._raw_calls_by_file.pop(abs_path, None)
+        self._raw_inherits_by_file.pop(abs_path, None)
         # Drop the SHA so the next walk re-processes it.
         self._file_hashes.pop(abs_path, None)
 
@@ -397,15 +412,53 @@ class GraphLayer:
         return added
 
     def _clear_resolved_and_ambiguous(self) -> None:
-        """Remove all calls edges whose confidence is 'resolved' or
-        'ambiguous' (these are derived from raw_calls and must be redone
-        whenever the symbol index changes)."""
+        """Remove derived edges (calls + inherits) whose confidence is
+        'resolved' or 'ambiguous'. These come from raw_calls / raw_inherits
+        and must be re-emitted whenever the symbol index changes."""
         to_drop = [
             (u, v) for u, v, d in self._graph.edges(data=True)
-            if d.get("relation") == "calls" and d.get("confidence") in ("resolved", "ambiguous")
+            if d.get("relation") in ("calls", "inherits")
+            and d.get("confidence") in ("resolved", "ambiguous")
         ]
         for u, v in to_drop:
             self._graph.remove_edge(u, v)
+
+    def _resolve_raw_inherits(self) -> int:
+        """Walk every raw_inherit and emit `inherits` edges using the same
+        cross-file resolution policy as raw_calls.
+
+        Returns the number of edges added.
+        Policy mirrors _resolve_raw_calls:
+          - 1 candidate                       → confidence="resolved"
+          - >1 candidates                     → all, confidence="ambiguous"
+          - 0 candidates                      → skip silently
+
+        We never apply the "member call" carve-out here because inheritance
+        bases are always direct identifiers (no `obj.foo()` ambiguity).
+        """
+        added = 0
+        for file_path, items in self._raw_inherits_by_file.items():
+            for ri in items:
+                key = ri["base_name"].lower()
+                candidates = self._symbol_index.get(key) or []
+                if not candidates:
+                    continue
+                confidence = "resolved" if len(candidates) == 1 else "ambiguous"
+                for target in candidates:
+                    if self._graph.has_edge(ri["child"], target):
+                        continue
+                    edge = {
+                        "source": ri["child"],
+                        "target": target,
+                        "relation": "inherits",
+                        "confidence": confidence,
+                        "base_kind": ri.get("base_kind", "extends_or_implements"),
+                        "from_file": file_path,
+                        "from_line": ri.get("line"),
+                    }
+                    self._add_edge_inplace(edge)
+                    added += 1
+        return added
 
     # ------------------------------------------------------------------
     # Public API
@@ -474,12 +527,15 @@ class GraphLayer:
                     extracted_edges += 1
                 if res["raw_calls"]:
                     self._raw_calls_by_file[p] = res["raw_calls"]
+                if res.get("raw_inherits"):
+                    self._raw_inherits_by_file[p] = res["raw_inherits"]
 
             # Cross-file resolution: always re-do from scratch on the
             # current symbol index. The intra-file "extracted" calls are
             # left alone; we only clear resolved/ambiguous.
             self._clear_resolved_and_ambiguous()
-            resolved = self._resolve_raw_calls()
+            resolved_calls = self._resolve_raw_calls()
+            resolved_inherits = self._resolve_raw_inherits()
 
             now = datetime.now().isoformat()
             self._metadata["last_update"] = now
@@ -498,7 +554,8 @@ class GraphLayer:
                 "edges_total": self._graph.number_of_edges(),
                 "extracted_nodes": extracted_nodes,
                 "extracted_edges": extracted_edges,
-                "resolved_cross_file": resolved,
+                "resolved_cross_file": resolved_calls,
+                "resolved_inherits": resolved_inherits,
             }
 
     def update_file(self, abs_path: str) -> bool:
@@ -534,9 +591,12 @@ class GraphLayer:
                     self._add_edge_inplace(e, register_external=True)
                 if res["raw_calls"]:
                     self._raw_calls_by_file[abs_norm] = res["raw_calls"]
-            # Re-resolve cross-file calls (the symbol index moved).
+                if res.get("raw_inherits"):
+                    self._raw_inherits_by_file[abs_norm] = res["raw_inherits"]
+            # Re-resolve cross-file calls + inherits (the symbol index moved).
             self._clear_resolved_and_ambiguous()
             self._resolve_raw_calls()
+            self._resolve_raw_inherits()
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True
@@ -551,6 +611,7 @@ class GraphLayer:
             self._drop_file(abs_norm)
             self._clear_resolved_and_ambiguous()
             self._resolve_raw_calls()
+            self._resolve_raw_inherits()
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True
@@ -576,6 +637,7 @@ class GraphLayer:
                 "edges": self._graph.number_of_edges(),
                 "files_indexed": len(self._file_hashes),
                 "raw_calls_pending": sum(len(v) for v in self._raw_calls_by_file.values()),
+                "raw_inherits_pending": sum(len(v) for v in self._raw_inherits_by_file.values()),
                 "by_language": lang_counts,
                 "by_kind": kind_counts,
                 "by_relation": relation_counts,

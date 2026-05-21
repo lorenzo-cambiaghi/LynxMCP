@@ -144,24 +144,66 @@ def main() -> int:
     # ============================================================
     path = shortest_path(G, "go", "helper")
     if path is None:
-        print(f"[test] FAIL [6/6]: shortest_path go->helper returned None")
+        print(f"[test] FAIL [6/7]: shortest_path go->helper returned None")
         return 6
     if path["hops"] != 2:
-        print(f"[test] FAIL [6/6]: expected 2 hops (go->srv->helper), got {path}")
+        print(f"[test] FAIL [6/7]: expected 2 hops (go->srv->helper), got {path}")
         return 6
     node_ids = [n["id"] for n in path["nodes"]]
     if node_ids != ["go", "srv", "helper"]:
-        print(f"[test] FAIL [6/6]: path nodes wrong: {node_ids}")
+        print(f"[test] FAIL [6/7]: path nodes wrong: {node_ids}")
         return 6
     # No path: other → go (reverse direction, no edge)
     if shortest_path(G, "other", "go") is not None:
-        print(f"[test] FAIL [6/6]: shortest_path other->go should be None (no directed path)")
+        print(f"[test] FAIL [6/7]: shortest_path other->go should be None (no directed path)")
         return 6
     # Unknown symbol
     if shortest_path(G, "nonexistent", "helper") is not None:
-        print(f"[test] FAIL [6/6]: shortest_path with unknown source must be None")
+        print(f"[test] FAIL [6/7]: shortest_path with unknown source must be None")
         return 6
-    print(f"[test] OK [6/6] shortest_path: go->helper in 2 hops, unreachable/unknown handled")
+    print(f"[test] OK [6/7] shortest_path: go->helper in 2 hops, unreachable/unknown handled")
+
+    # ============================================================
+    # 7. get_subclasses / get_superclasses
+    # ============================================================
+    from lynx.graph import get_subclasses, get_superclasses
+
+    # Build a small inheritance graph: Base <- DerivedA, DerivedB; DerivedA <- Leaf.
+    H = nx.DiGraph()
+    H.add_node("base",   kind="class", label="Base",     file="/x/base.py",     start_line=1, end_line=3,  lang_key="python")
+    H.add_node("derA",   kind="class", label="DerivedA", file="/x/derA.py",     start_line=1, end_line=3,  lang_key="python")
+    H.add_node("derB",   kind="class", label="DerivedB", file="/x/derB.py",     start_line=1, end_line=3,  lang_key="python")
+    H.add_node("leaf",   kind="class", label="Leaf",     file="/x/leaf.py",     start_line=1, end_line=3,  lang_key="python")
+    H.add_edge("derA", "base", relation="inherits", confidence="resolved", base_kind="extends")
+    H.add_edge("derB", "base", relation="inherits", confidence="resolved", base_kind="extends")
+    H.add_edge("leaf", "derA", relation="inherits", confidence="resolved", base_kind="extends")
+
+    subs = get_subclasses(H, "Base")
+    sub_labels = sorted(e["source"]["label"] for e in subs)
+    if sub_labels != ["DerivedA", "DerivedB"]:
+        print(f"[test] FAIL [7/7]: get_subclasses('Base') = {sub_labels}, expected DerivedA + DerivedB")
+        return 7
+    # Each edge should expose the inherits relation + base_kind.
+    if any(e["relation"] != "inherits" for e in subs):
+        print(f"[test] FAIL [7/7]: get_subclasses returned non-'inherits' edges: {subs}")
+        return 7
+    if any(e.get("base_kind") != "extends" for e in subs):
+        print(f"[test] FAIL [7/7]: get_subclasses missing base_kind: {subs}")
+        return 7
+
+    # Superclasses of Leaf: just DerivedA (one hop).
+    sups = get_superclasses(H, "Leaf")
+    sup_labels = [e["target"]["label"] for e in sups]
+    if sup_labels != ["DerivedA"]:
+        print(f"[test] FAIL [7/7]: get_superclasses('Leaf') = {sup_labels}, expected ['DerivedA']")
+        return 7
+
+    # Unknown symbol → []
+    if get_subclasses(H, "nonexistent") != []:
+        print(f"[test] FAIL [7/7]: unknown symbol should return [], got {get_subclasses(H, 'nonexistent')}")
+        return 7
+
+    print(f"[test] OK [7/7] get_subclasses + get_superclasses traverse inherits edges correctly")
 
     print("\n[test] === SUCCESS: graph query API works as expected ===")
     return 0

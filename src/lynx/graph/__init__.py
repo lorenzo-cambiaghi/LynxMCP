@@ -24,7 +24,7 @@ from .builder import GraphLayer, GRAPH_SCHEMA_VERSION
 from .analyzer import god_nodes, communities, surprising_connections
 from .query import (
     get_callers, get_callees, get_imports, get_neighbors, shortest_path,
-    find_symbols,
+    find_symbols, get_subclasses, get_superclasses,
 )
 
 __all__ = [
@@ -37,4 +37,5 @@ __all__ = [
     # query
     "get_callers", "get_callees", "get_imports", "get_neighbors",
     "shortest_path", "find_symbols",
+    "get_subclasses", "get_superclasses",
 ]

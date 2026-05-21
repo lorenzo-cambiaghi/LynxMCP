@@ -38,7 +38,7 @@ def _node_to_dict(G: nx.DiGraph, nid: str) -> dict:
 def _edge_to_dict(G: nx.DiGraph, u: str, v: str, data: dict) -> dict:
     src = _node_to_dict(G, u)
     tgt = _node_to_dict(G, v)
-    return {
+    out = {
         "source": src,
         "target": tgt,
         "relation": data.get("relation"),
@@ -47,6 +47,10 @@ def _edge_to_dict(G: nx.DiGraph, u: str, v: str, data: dict) -> dict:
         "from_file": data.get("from_file"),
         "from_line": data.get("from_line"),
     }
+    # `inherits` edges carry an extra hint when the language exposed it.
+    if "base_kind" in data:
+        out["base_kind"] = data.get("base_kind")
+    return out
 
 
 def find_symbols(G: nx.DiGraph, symbol: str) -> list:
@@ -113,6 +117,59 @@ def get_callees(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
     for nid in seeds:
         for _src, tgt, data in G.out_edges(nid, data=True):
             if data.get("relation") != "calls":
+                continue
+            out.append(_edge_to_dict(G, nid, tgt, data))
+            if len(out) >= limit:
+                return out
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Inheritance (subclasses / superclasses)
+# ---------------------------------------------------------------------------
+#
+# Same edge_to_dict shape as callers/callees. The extra `base_kind` attribute
+# on the inheritance edge tells whether the language semantically saw an
+# `extends` vs `implements` (Java, TS) or just an undifferentiated base list
+# (C#, C++).
+
+
+def get_subclasses(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
+    """Classes / interfaces / structs that inherit FROM `symbol`.
+
+    Returns the in-edges of every node matching `symbol` whose relation is
+    "inherits". Answers "what concrete types extend or implement X?".
+    Useful when X is an abstract base class or an interface — the typical
+    discovery question structural search cannot reliably answer.
+    """
+    seeds = find_symbols(G, symbol)
+    if not seeds:
+        return []
+    out = []
+    for nid in seeds:
+        for src, _tgt, data in G.in_edges(nid, data=True):
+            if data.get("relation") != "inherits":
+                continue
+            out.append(_edge_to_dict(G, src, nid, data))
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def get_superclasses(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
+    """Types that `symbol` inherits from. Out-edge mirror of get_subclasses.
+
+    For languages that distinguish them (Java, TypeScript), each edge's
+    `base_kind` attribute is `"extends"` for the concrete superclass and
+    `"implements"` for interfaces.
+    """
+    seeds = find_symbols(G, symbol)
+    if not seeds:
+        return []
+    out = []
+    for nid in seeds:
+        for _src, tgt, data in G.out_edges(nid, data=True):
+            if data.get("relation") != "inherits":
                 continue
             out.append(_edge_to_dict(G, nid, tgt, data))
             if len(out) >= limit:

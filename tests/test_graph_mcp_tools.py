@@ -1,6 +1,6 @@
-"""Verifies that `_register_graph_tools` exposes exactly the 8 tools we
-promise (7 query + 1 status), namespaced with the source name, and that
-each one calls through to the underlying SourceManager / GraphLayer.
+"""Verifies that `_register_graph_tools` exposes the 10 tools we promise
+(9 query + 1 status), namespaced with the source name, and that each one
+calls through to the underlying SourceManager / GraphLayer.
 
 Reuses the stubbed-RAG trick from test_graph_integration so we don't
 have to load the HuggingFace embedding model.
@@ -53,12 +53,17 @@ def main() -> int:
     try:
         code = tmp / "code"
         code.mkdir()
+        # Codebase: util.py defines `helper` + an inheritance chain
+        # (Base <- Derived) used to exercise get_subclasses / get_superclasses.
         _make_codebase(code, {
-            "util.py": "def helper(x):\n    return x + 1\n",
+            "util.py": (
+                "def helper(x):\n    return x + 1\n"
+                "class Base:\n    pass\n"
+            ),
             "main.py": (
-                "from util import helper\n"
-                "def go():\n"
-                "    return helper(1)\n"
+                "from util import helper, Base\n"
+                "def go():\n    return helper(1)\n"
+                "class Derived(Base):\n    pass\n"
             ),
         })
 
@@ -99,6 +104,8 @@ def main() -> int:
         expected = {
             "get_callers_demo",
             "get_callees_demo",
+            "get_subclasses_demo",
+            "get_superclasses_demo",
             "get_imports_demo",
             "get_neighbors_demo",
             "shortest_path_demo",
@@ -108,7 +115,7 @@ def main() -> int:
         }
         missing = expected - set(registered)
         if missing:
-            print(f"[test] FAIL [1/4]: missing tools: {missing}; got {registered}")
+            print(f"[test] FAIL [1/5]: missing tools: {missing}; got {registered}")
             return 1
         # Each tool MUST have a non-empty description — without it the AI
         # client has no idea when to call which tool. F-string "docstrings"
@@ -116,12 +123,12 @@ def main() -> int:
         for name in expected:
             desc = mcp._tool_manager._tools[name].description
             if not desc or len(desc) < 30:
-                print(f"[test] FAIL [1/4]: tool {name!r} has empty/tiny description: {desc!r}")
+                print(f"[test] FAIL [1/5]: tool {name!r} has empty/tiny description: {desc!r}")
                 return 1
             if "demo" not in desc:
-                print(f"[test] FAIL [1/4]: tool {name!r} description does not mention source name: {desc!r}")
+                print(f"[test] FAIL [1/5]: tool {name!r} description does not mention source name: {desc!r}")
                 return 1
-        print(f"[test] OK [1/4] all 8 graph tools registered with `_demo` suffix AND non-empty descriptions")
+        print(f"[test] OK [1/5] all 10 graph tools registered with `_demo` suffix AND non-empty descriptions")
 
         # ============================================================
         # 2. Call get_callers_demo, verify it returns formatted text
@@ -129,12 +136,12 @@ def main() -> int:
         tool = mcp._tool_manager._tools["get_callers_demo"]
         out = tool.fn(symbol="helper")
         if "Callers of 'helper'" not in out:
-            print(f"[test] FAIL [2/4]: get_callers_demo output unexpected: {out!r}")
+            print(f"[test] FAIL [2/5]: get_callers_demo output unexpected: {out!r}")
             return 2
         if "helper" not in out:
-            print(f"[test] FAIL [2/4]: get_callers_demo missing helper in output: {out!r}")
+            print(f"[test] FAIL [2/5]: get_callers_demo missing helper in output: {out!r}")
             return 2
-        print(f"[test] OK [2/4] get_callers_demo returned formatted caller list")
+        print(f"[test] OK [2/5] get_callers_demo returned formatted caller list")
 
         # ============================================================
         # 3. architectural_overview_demo
@@ -142,12 +149,12 @@ def main() -> int:
         tool = mcp._tool_manager._tools["architectural_overview_demo"]
         out = tool.fn(top_n_gods=5, min_community_size=2)
         if "Architectural overview" not in out:
-            print(f"[test] FAIL [3/4]: architectural_overview header missing: {out!r}")
+            print(f"[test] FAIL [3/5]: architectural_overview header missing: {out!r}")
             return 3
         if "God nodes" not in out or "Communities" not in out:
-            print(f"[test] FAIL [3/4]: architectural_overview sections missing: {out!r}")
+            print(f"[test] FAIL [3/5]: architectural_overview sections missing: {out!r}")
             return 3
-        print(f"[test] OK [3/4] architectural_overview_demo returned overview")
+        print(f"[test] OK [3/5] architectural_overview_demo returned overview")
 
         # ============================================================
         # 4. shortest_path_demo with no path returns user-friendly text
@@ -155,17 +162,43 @@ def main() -> int:
         tool = mcp._tool_manager._tools["shortest_path_demo"]
         out = tool.fn(source="helper", target="nonexistent", max_hops=5)
         if "No directed path" not in out and "Error" not in out:
-            print(f"[test] FAIL [4/4]: shortest_path_demo unexpected on missing path: {out!r}")
+            print(f"[test] FAIL [4/5]: shortest_path_demo unexpected on missing path: {out!r}")
             return 4
         # Real path
         out = tool.fn(source="go", target="helper", max_hops=5)
         if "Path from 'go'" not in out:
-            print(f"[test] FAIL [4/4]: shortest_path_demo missing path output: {out!r}")
+            print(f"[test] FAIL [4/5]: shortest_path_demo missing path output: {out!r}")
             return 4
         if "helper" not in out:
-            print(f"[test] FAIL [4/4]: shortest_path_demo missing 'helper' in path: {out!r}")
+            print(f"[test] FAIL [4/5]: shortest_path_demo missing 'helper' in path: {out!r}")
             return 4
-        print(f"[test] OK [4/4] shortest_path_demo handles both no-path and real path")
+        print(f"[test] OK [4/5] shortest_path_demo handles both no-path and real path")
+
+        # ============================================================
+        # 5. get_subclasses_demo + get_superclasses_demo end-to-end
+        # ============================================================
+        sub_tool = mcp._tool_manager._tools["get_subclasses_demo"]
+        sup_tool = mcp._tool_manager._tools["get_superclasses_demo"]
+
+        out = sub_tool.fn(symbol="Base")
+        if "Subclasses of 'Base'" not in out:
+            print(f"[test] FAIL [5/5]: get_subclasses_demo header missing: {out!r}")
+            return 5
+        if "Derived" not in out:
+            print(f"[test] FAIL [5/5]: get_subclasses_demo did not surface 'Derived' in cross-file scenario: {out!r}")
+            return 5
+        if "inherits" not in out:
+            print(f"[test] FAIL [5/5]: get_subclasses_demo missing 'inherits' relation label: {out!r}")
+            return 5
+
+        out = sup_tool.fn(symbol="Derived")
+        if "Superclasses of 'Derived'" not in out:
+            print(f"[test] FAIL [5/5]: get_superclasses_demo header missing: {out!r}")
+            return 5
+        if "Base" not in out:
+            print(f"[test] FAIL [5/5]: get_superclasses_demo did not return 'Base' as parent: {out!r}")
+            return 5
+        print(f"[test] OK [5/5] get_subclasses / get_superclasses resolve cross-file inheritance and format edges")
 
         print("\n[test] === SUCCESS: MCP graph tools registered and working ===")
         return 0

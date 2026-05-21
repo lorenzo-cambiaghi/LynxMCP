@@ -125,6 +125,18 @@ class LangGraphRules:
     # partial graph (functions + intra-file calls).
     import_handler: Optional[Callable] = None
 
+    # Custom inheritance extractor. Signature:
+    #   handler(container_node, source: bytes, container_id: str,
+    #           file_path: str, raw_inherits: list)
+    # Each handler appends entries to raw_inherits with shape:
+    #   {"child": container_id, "base_name": "<name>",
+    #    "base_kind": "extends"|"implements"|"extends_or_implements",
+    #    "file": file_path, "line": int}
+    # The builder later resolves base_name against the global symbol index
+    # and emits `inherits` edges with the same confidence policy as calls.
+    # Languages without a class-extension model (C, Go) leave this None.
+    inheritance_handler: Optional[Callable] = None
+
     # Custom container-scan hook for languages where containers can show up
     # under unusual wrappers (e.g. C# file-scoped namespace). Optional.
     extra_container_hook: Optional[Callable] = None
@@ -441,6 +453,459 @@ def _handle_swift_import(node, source: bytes, file_id: str, edges: list, file_pa
 
 
 # ---------------------------------------------------------------------------
+# Inheritance handlers (one per language family)
+# ---------------------------------------------------------------------------
+#
+# Each handler is called by the walker once for every container node (class /
+# interface / struct / trait / ...). It appends entries to `raw_inherits` for
+# every base type listed on the declaration; the builder resolves the names
+# cross-file with the same policy as calls (1 match → resolved, N → ambiguous,
+# 0 → drop). The single relation emitted on resolved edges is "inherits"; the
+# distinction between extends-a-class vs implements-an-interface (when the
+# language exposes it) is preserved in the edge attribute `base_kind`.
+#
+# Conservative behavior across grammars: we extract the *innermost identifier*
+# of each base expression (so generics like `List<T>` resolve as `List`, and
+# qualified names like `System.Collections.IList` resolve as `IList`). Better
+# than nothing; the global symbol index handles the rest.
+
+
+def _innermost_identifier(node, source: bytes) -> Optional[str]:
+    """Walk a base-type expression down to its innermost identifier.
+
+    Handles `List<T>` (returns `List`), `System.Foo.Bar` (returns `Bar`),
+    `Container[int]` (returns `Container`), `a::b::C` (returns `C`).
+    Returns None when no usable name can be extracted.
+    """
+    # Direct leaf identifier types.
+    if node.type in ("identifier", "type_identifier", "simple_identifier",
+                     "constant", "name", "property_identifier"):
+        text = _text(node, source).strip()
+        return text or None
+
+    # Try a `name` field first — common across grammars.
+    name_field = node.child_by_field_name("name")
+    if name_field is not None and name_field is not node:
+        out = _innermost_identifier(name_field, source)
+        if out:
+            return out
+
+    # Qualified/scoped/attribute access: the rightmost child is the leaf name.
+    if node.type in (
+        "qualified_name", "scoped_identifier", "scoped_type_identifier",
+        "attribute", "member_expression", "navigation_expression",
+        "qualified_identifier",
+    ):
+        named = [c for c in node.children if c.is_named]
+        if named:
+            out = _innermost_identifier(named[-1], source)
+            if out:
+                return out
+
+    # Generic / subscript wrappers: prefer the first identifier-ish child.
+    if node.type in ("generic_name", "generic_type", "subscript",
+                     "parameterized_type"):
+        named = [c for c in node.children if c.is_named]
+        if named:
+            out = _innermost_identifier(named[0], source)
+            if out:
+                return out
+
+    # Last-resort: walk children once looking for any direct identifier.
+    for c in node.children:
+        if c.is_named and c.type in (
+            "identifier", "type_identifier", "simple_identifier",
+            "constant", "name", "property_identifier",
+        ):
+            text = _text(c, source).strip()
+            if text:
+                return text
+    return None
+
+
+def _handle_csharp_inheritance(container_node, source: bytes,
+                               container_id: str, file_path: str,
+                               raw_inherits: list) -> None:
+    """C#: `class Foo : Bar, IBaz, Generic<T> { ... }`. The base list is a
+    `base_list` child of the class/struct/interface declaration. The grammar
+    does not distinguish a class extension from interface implementation
+    syntactically, so we emit every entry with `base_kind="extends_or_implements"`.
+    """
+    if container_node.type not in (
+        "class_declaration", "struct_declaration", "interface_declaration",
+        "record_declaration",
+    ):
+        return
+    base_list = None
+    for c in container_node.children:
+        if c.type == "base_list":
+            base_list = c
+            break
+    if base_list is None:
+        return
+    for c in base_list.children:
+        if not c.is_named:
+            continue
+        name = _innermost_identifier(c, source)
+        if not name:
+            continue
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": "extends_or_implements",
+            "file": file_path,
+            "line": c.start_point[0] + 1,
+        })
+
+
+def _handle_python_inheritance(container_node, source: bytes,
+                               container_id: str, file_path: str,
+                               raw_inherits: list) -> None:
+    """Python: `class Foo(Base, Mixin, generic.Container[int]):`. The bases
+    are inside an `argument_list` named child. Python has no formal
+    distinction between extends and implements (duck typing); everything is
+    `base_kind="extends"`.
+    """
+    if container_node.type != "class_definition":
+        return
+    args = None
+    for c in container_node.children:
+        if c.type == "argument_list":
+            args = c
+            break
+    if args is None:
+        return
+    for c in args.children:
+        if not c.is_named:
+            continue
+        if c.type == "keyword_argument":
+            # `metaclass=X` or similar — not a base class.
+            continue
+        name = _innermost_identifier(c, source)
+        if not name:
+            continue
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": "extends",
+            "file": file_path,
+            "line": c.start_point[0] + 1,
+        })
+
+
+def _handle_java_inheritance(container_node, source: bytes,
+                             container_id: str, file_path: str,
+                             raw_inherits: list) -> None:
+    """Java separates `extends` (one superclass) from `implements` (N
+    interfaces) at the grammar level: fields `superclass` and `super_interfaces`.
+    """
+    if container_node.type not in ("class_declaration", "interface_declaration",
+                                   "enum_declaration"):
+        return
+    # superclass: extends X
+    for c in container_node.children:
+        if c.type == "superclass":
+            for sub in c.children:
+                if sub.is_named and sub.type in (
+                    "type_identifier", "scoped_type_identifier",
+                    "generic_type",
+                ):
+                    name = _innermost_identifier(sub, source)
+                    if name:
+                        raw_inherits.append({
+                            "child": container_id,
+                            "base_name": name,
+                            "base_kind": "extends",
+                            "file": file_path,
+                            "line": sub.start_point[0] + 1,
+                        })
+        elif c.type in ("super_interfaces", "extends_interfaces"):
+            # Both wrap a `type_list` of interface names.
+            for sub in c.children:
+                if sub.type == "type_list":
+                    for t in sub.children:
+                        if not t.is_named:
+                            continue
+                        name = _innermost_identifier(t, source)
+                        if name:
+                            raw_inherits.append({
+                                "child": container_id,
+                                "base_name": name,
+                                "base_kind": "implements",
+                                "file": file_path,
+                                "line": t.start_point[0] + 1,
+                            })
+
+
+def _handle_ts_inheritance(container_node, source: bytes,
+                           container_id: str, file_path: str,
+                           raw_inherits: list) -> None:
+    """TypeScript / TSX / JavaScript: `class_heritage > {extends_clause,
+    implements_clause}`. JavaScript only has `extends` (no implements).
+    Also handles `abstract_class_declaration`."""
+    if container_node.type not in (
+        "class_declaration", "abstract_class_declaration",
+        "interface_declaration",
+    ):
+        return
+    heritage = None
+    for c in container_node.children:
+        if c.type == "class_heritage":
+            heritage = c
+            break
+        if c.type == "extends_type_clause":
+            # interface_declaration in TS uses a flat extends_type_clause sibling
+            heritage = container_node  # treat container itself as heritage source
+            break
+    bases = []
+    if heritage is None:
+        return
+    if heritage is container_node:
+        # Interface case: iterate the container's own extends_type_clause(s)
+        for c in container_node.children:
+            if c.type == "extends_type_clause":
+                for sub in c.children:
+                    if sub.is_named and sub.type in (
+                        "type_identifier", "nested_type_identifier",
+                        "generic_type", "identifier",
+                    ):
+                        name = _innermost_identifier(sub, source)
+                        if name:
+                            bases.append((name, "extends", sub))
+    else:
+        for clause in heritage.children:
+            if clause.type == "extends_clause":
+                kind = "extends"
+            elif clause.type == "implements_clause":
+                kind = "implements"
+            else:
+                continue
+            for sub in clause.children:
+                if not sub.is_named:
+                    continue
+                # Skip the literal 'extends'/'implements' keywords.
+                if sub.type in ("extends", "implements"):
+                    continue
+                if sub.type in (
+                    "identifier", "type_identifier", "nested_type_identifier",
+                    "generic_type", "member_expression",
+                ):
+                    name = _innermost_identifier(sub, source)
+                    if name:
+                        bases.append((name, kind, sub))
+    for name, kind, node in bases:
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": kind,
+            "file": file_path,
+            "line": node.start_point[0] + 1,
+        })
+
+
+def _handle_cpp_inheritance(container_node, source: bytes,
+                            container_id: str, file_path: str,
+                            raw_inherits: list) -> None:
+    """C++: `class Foo : public Bar, protected Baz { ... }`. The bases live
+    in a `base_class_clause` child."""
+    if container_node.type not in ("class_specifier", "struct_specifier"):
+        return
+    base_clause = None
+    for c in container_node.children:
+        if c.type == "base_class_clause":
+            base_clause = c
+            break
+    if base_clause is None:
+        return
+    for c in base_clause.children:
+        if not c.is_named:
+            continue
+        # Each base may be wrapped or be a direct identifier/qualified_identifier.
+        name = _innermost_identifier(c, source)
+        if not name:
+            continue
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": "extends_or_implements",  # C++ doesn't formally split
+            "file": file_path,
+            "line": c.start_point[0] + 1,
+        })
+
+
+def _handle_kotlin_inheritance(container_node, source: bytes,
+                               container_id: str, file_path: str,
+                               raw_inherits: list) -> None:
+    """Kotlin: `class Foo : Bar(), IBaz { ... }`. Bases live in a
+    `delegation_specifier` list under the class_declaration."""
+    if container_node.type not in ("class_declaration", "object_declaration"):
+        return
+    # tree-sitter-kotlin uses `delegation_specifiers` wrapper sometimes; iterate.
+    for c in container_node.children:
+        if c.type in ("delegation_specifier", "user_type", "constructor_invocation"):
+            name = _innermost_identifier(c, source)
+            if name:
+                raw_inherits.append({
+                    "child": container_id,
+                    "base_name": name,
+                    "base_kind": "extends_or_implements",
+                    "file": file_path,
+                    "line": c.start_point[0] + 1,
+                })
+        elif c.type == "delegation_specifiers":
+            for sub in c.children:
+                if sub.is_named:
+                    name = _innermost_identifier(sub, source)
+                    if name:
+                        raw_inherits.append({
+                            "child": container_id,
+                            "base_name": name,
+                            "base_kind": "extends_or_implements",
+                            "file": file_path,
+                            "line": sub.start_point[0] + 1,
+                        })
+
+
+def _handle_swift_inheritance(container_node, source: bytes,
+                              container_id: str, file_path: str,
+                              raw_inherits: list) -> None:
+    """Swift: `class Foo: Bar, ProtocolP { ... }`. The list of base types
+    is exposed as `inheritance_specifier` children."""
+    if container_node.type not in ("class_declaration", "protocol_declaration"):
+        return
+    for c in container_node.children:
+        if c.type in ("inheritance_specifier", "user_type", "type_inheritance_clause"):
+            # type_inheritance_clause wraps inheritance_specifier list
+            if c.type == "type_inheritance_clause":
+                for sub in c.children:
+                    if sub.is_named:
+                        name = _innermost_identifier(sub, source)
+                        if name:
+                            raw_inherits.append({
+                                "child": container_id,
+                                "base_name": name,
+                                "base_kind": "extends_or_implements",
+                                "file": file_path,
+                                "line": sub.start_point[0] + 1,
+                            })
+            else:
+                name = _innermost_identifier(c, source)
+                if name:
+                    raw_inherits.append({
+                        "child": container_id,
+                        "base_name": name,
+                        "base_kind": "extends_or_implements",
+                        "file": file_path,
+                        "line": c.start_point[0] + 1,
+                    })
+
+
+def _handle_php_inheritance(container_node, source: bytes,
+                            container_id: str, file_path: str,
+                            raw_inherits: list) -> None:
+    """PHP: `class Foo extends Bar implements IBaz, IQux`. The base class
+    is in `base_clause` and interfaces in `class_interface_clause`."""
+    if container_node.type not in ("class_declaration", "interface_declaration",
+                                   "trait_declaration"):
+        return
+    for c in container_node.children:
+        if c.type == "base_clause":
+            for sub in c.children:
+                if sub.is_named and sub.type in ("name", "qualified_name"):
+                    name = _innermost_identifier(sub, source)
+                    if name:
+                        raw_inherits.append({
+                            "child": container_id,
+                            "base_name": name,
+                            "base_kind": "extends",
+                            "file": file_path,
+                            "line": sub.start_point[0] + 1,
+                        })
+        elif c.type == "class_interface_clause":
+            for sub in c.children:
+                if sub.is_named and sub.type in ("name", "qualified_name"):
+                    name = _innermost_identifier(sub, source)
+                    if name:
+                        raw_inherits.append({
+                            "child": container_id,
+                            "base_name": name,
+                            "base_kind": "implements",
+                            "file": file_path,
+                            "line": sub.start_point[0] + 1,
+                        })
+
+
+def _handle_ruby_inheritance(container_node, source: bytes,
+                             container_id: str, file_path: str,
+                             raw_inherits: list) -> None:
+    """Ruby: `class Foo < Bar`. Single superclass via the `superclass` field."""
+    if container_node.type != "class":
+        return
+    sup = container_node.child_by_field_name("superclass")
+    if sup is None:
+        return
+    # superclass node wraps a constant / scope_resolution.
+    for c in sup.children:
+        if c.is_named:
+            name = _innermost_identifier(c, source)
+            if name:
+                raw_inherits.append({
+                    "child": container_id,
+                    "base_name": name,
+                    "base_kind": "extends",
+                    "file": file_path,
+                    "line": c.start_point[0] + 1,
+                })
+                return
+    name = _innermost_identifier(sup, source)
+    if name:
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": "extends",
+            "file": file_path,
+            "line": sup.start_point[0] + 1,
+        })
+
+
+def _handle_rust_inheritance(container_node, source: bytes,
+                             container_id: str, file_path: str,
+                             raw_inherits: list) -> None:
+    """Rust: trait implementation `impl Trait for Type { ... }`. The
+    container_types for Rust include `impl_item`, which has a `trait` field
+    and a `type` field. We emit an `implements` edge from the *type* to the
+    *trait* — i.e. Type-implements-Trait. That's the analog of "Type is a
+    concrete realization of Trait" that callers want.
+    """
+    if container_node.type != "impl_item":
+        return
+    trait = container_node.child_by_field_name("trait")
+    type_node = container_node.child_by_field_name("type")
+    if trait is None or type_node is None:
+        return
+    trait_name = _innermost_identifier(trait, source)
+    if not trait_name:
+        return
+    # Important: the `child` of the inherits relation should be the concrete
+    # *type* (the implementer), not the impl block itself. The walker
+    # registered the impl block as `container_id` though, and at the symbol
+    # index level the type may or may not be defined in the same file.
+    # Practical compromise: emit the edge with `child=container_id` (the impl
+    # block, named `impl_<TraitName>_<TypeName>` via _name_of fallback).
+    # Cross-file resolution via the type name as a separate `_inherits` base.
+    type_name = _innermost_identifier(type_node, source)
+    raw_inherits.append({
+        "child": container_id,
+        "base_name": trait_name,
+        "base_kind": "implements",
+        "file": file_path,
+        "line": container_node.start_point[0] + 1,
+        # Annotate with the impl's own type so queries can map back.
+        "impl_target_type": type_name,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Rules table
 # ---------------------------------------------------------------------------
 #
@@ -460,6 +925,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="attribute",
         function_boundary_types=frozenset({"function_definition"}),
         import_handler=_handle_python_import,
+        inheritance_handler=_handle_python_inheritance,
     ),
     "javascript": LangGraphRules(
         container_types=frozenset({"class_declaration"}),
@@ -471,9 +937,11 @@ GRAPH_RULES: dict = {
         call_accessor_field="property",
         function_boundary_types=frozenset({"function_declaration", "method_definition", "arrow_function", "function_expression"}),
         import_handler=_handle_js_import,
+        inheritance_handler=_handle_ts_inheritance,  # same class_heritage shape
     ),
     "typescript": LangGraphRules(
-        container_types=frozenset({"class_declaration", "interface_declaration", "namespace_declaration", "module"}),
+        container_types=frozenset({"class_declaration", "abstract_class_declaration",
+                                   "interface_declaration", "namespace_declaration", "module"}),
         function_types=frozenset({"function_declaration", "method_definition", "abstract_method_signature"}),
         import_types=frozenset({"import_statement"}),
         call_types=frozenset({"call_expression"}),
@@ -482,9 +950,11 @@ GRAPH_RULES: dict = {
         call_accessor_field="property",
         function_boundary_types=frozenset({"function_declaration", "method_definition", "arrow_function", "function_expression"}),
         import_handler=_handle_js_import,
+        inheritance_handler=_handle_ts_inheritance,
     ),
     "tsx": LangGraphRules(
-        container_types=frozenset({"class_declaration", "interface_declaration", "namespace_declaration"}),
+        container_types=frozenset({"class_declaration", "abstract_class_declaration",
+                                   "interface_declaration", "namespace_declaration"}),
         function_types=frozenset({"function_declaration", "method_definition"}),
         import_types=frozenset({"import_statement"}),
         call_types=frozenset({"call_expression"}),
@@ -493,6 +963,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="property",
         function_boundary_types=frozenset({"function_declaration", "method_definition", "arrow_function", "function_expression"}),
         import_handler=_handle_js_import,
+        inheritance_handler=_handle_ts_inheritance,
     ),
     "c_sharp": LangGraphRules(
         container_types=frozenset({
@@ -511,6 +982,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="name",
         function_boundary_types=frozenset({"method_declaration", "constructor_declaration", "local_function_statement"}),
         import_handler=_handle_csharp_import,
+        inheritance_handler=_handle_csharp_inheritance,
     ),
     "java": LangGraphRules(
         container_types=frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
@@ -522,6 +994,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="name",
         function_boundary_types=frozenset({"method_declaration", "constructor_declaration"}),
         import_handler=_handle_java_import,
+        inheritance_handler=_handle_java_inheritance,
     ),
     "go": LangGraphRules(
         container_types=frozenset(),
@@ -546,6 +1019,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="field",
         function_boundary_types=frozenset({"function_item", "closure_expression"}),
         import_handler=_handle_rust_import,
+        inheritance_handler=_handle_rust_inheritance,
     ),
     "c": LangGraphRules(
         container_types=frozenset(),
@@ -568,6 +1042,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="field",
         function_boundary_types=frozenset({"function_definition", "lambda_expression"}),
         import_handler=_handle_c_include,
+        inheritance_handler=_handle_cpp_inheritance,
     ),
     "ruby": LangGraphRules(
         container_types=frozenset({"class", "module"}),
@@ -582,6 +1057,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="method",
         function_boundary_types=frozenset({"method", "singleton_method"}),
         import_handler=_handle_ruby_require,
+        inheritance_handler=_handle_ruby_inheritance,
     ),
     "php": LangGraphRules(
         container_types=frozenset({
@@ -602,6 +1078,7 @@ GRAPH_RULES: dict = {
         direct_member_call_field="name",
         function_boundary_types=frozenset({"method_declaration", "function_definition"}),
         import_handler=_handle_php_use,
+        inheritance_handler=_handle_php_inheritance,
     ),
     "kotlin": LangGraphRules(
         container_types=frozenset({"class_declaration", "object_declaration"}),
@@ -613,6 +1090,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="name",
         function_boundary_types=frozenset({"function_declaration", "lambda_literal"}),
         import_handler=_handle_kotlin_import,
+        inheritance_handler=_handle_kotlin_inheritance,
     ),
     "swift": LangGraphRules(
         container_types=frozenset({"class_declaration", "protocol_declaration"}),
@@ -627,6 +1105,7 @@ GRAPH_RULES: dict = {
         call_accessor_field="suffix",
         function_boundary_types=frozenset({"function_declaration", "init_declaration", "closure_expression"}),
         import_handler=_handle_swift_import,
+        inheritance_handler=_handle_swift_inheritance,
     ),
 }
 
@@ -750,9 +1229,9 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
 def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: str,
                        file_id: str, stem: str, container_path: list,
                        nodes: list, edges: list, local_index: dict,
-                       function_bodies: list) -> None:
+                       function_bodies: list, raw_inherits: list) -> None:
     """First pass: collect class/function nodes, contains edges, imports,
-    and a list of (function_id, body_node) pairs for the call walker.
+    inheritance, and a list of (function_id, body_node) pairs for the call walker.
     """
     for child in node.children:
         if child.type in rules.import_types:
@@ -806,10 +1285,18 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
                 "lang_key": None,
             })
             local_index[cname.lower()] = container_id
+            # Inheritance: collect raw_inherits BEFORE recursing into the
+            # container's body — the handler reads the same `child` node
+            # for its base list / heritage clause.
+            if rules.inheritance_handler is not None:
+                rules.inheritance_handler(
+                    child, source, container_id, file_path, raw_inherits,
+                )
             # Recurse to find nested classes / methods.
             _walk_declarations(
                 child, rules, source, file_path, file_id, stem,
-                container_path + [cname], nodes, edges, local_index, function_bodies,
+                container_path + [cname], nodes, edges, local_index,
+                function_bodies, raw_inherits,
             )
             continue
         # Generic recursion for wrapper nodes (decorated_definition,
@@ -818,6 +1305,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         _walk_declarations(
             child, rules, source, file_path, file_id, stem,
             container_path, nodes, edges, local_index, function_bodies,
+            raw_inherits,
         )
 
 
@@ -853,6 +1341,7 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     edges: list = []
     local_index: dict = {}
     function_bodies: list = []
+    raw_inherits: list = []
 
     # The file is itself a graph node — gives us something to attach imports to.
     nodes.append({
@@ -870,6 +1359,7 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
         tree.root_node, rules, source, abs_path_norm, file_id, stem,
         container_path=[], nodes=nodes, edges=edges,
         local_index=local_index, function_bodies=function_bodies,
+        raw_inherits=raw_inherits,
     )
 
     # Fill in lang_key on every node we created.
@@ -889,4 +1379,5 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
         "nodes": nodes,
         "edges": edges,
         "raw_calls": raw_calls,
+        "raw_inherits": raw_inherits,
     }

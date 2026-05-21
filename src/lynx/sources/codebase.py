@@ -284,6 +284,14 @@ class CodebaseBackend(SourceBackend):
         from ..graph import get_callees as _q
         return _q(self.graph.graph, symbol, limit=limit)
 
+    def get_subclasses(self, symbol: str, limit: int = 50) -> list:
+        from ..graph import get_subclasses as _q
+        return _q(self.graph.graph, symbol, limit=limit)
+
+    def get_superclasses(self, symbol: str, limit: int = 50) -> list:
+        from ..graph import get_superclasses as _q
+        return _q(self.graph.graph, symbol, limit=limit)
+
     def get_imports(self, file_or_symbol: str, limit: int = 100) -> list:
         from ..graph import get_imports as _q
         return _q(self.graph.graph, file_or_symbol, limit=limit)

@@ -128,10 +128,14 @@ def main() -> int:
         if labels2.keys() != labels.keys():
             print(f"[test] FAIL [2/7]: label sets differ after reload")
             return 2
-        # Verify on-disk schema_version
+        # Verify on-disk schema_version tracks the current constant in the
+        # builder (so bumps don't silently leave the test hardcoded to an
+        # older value).
+        from lynx.graph import GRAPH_SCHEMA_VERSION
         meta = json.loads((storage / "graph" / "metadata.json").read_text())
-        if meta.get("schema_version") != 1:
-            print(f"[test] FAIL [2/7]: metadata.schema_version != 1: {meta}")
+        if meta.get("schema_version") != GRAPH_SCHEMA_VERSION:
+            print(f"[test] FAIL [2/7]: metadata.schema_version != "
+                  f"{GRAPH_SCHEMA_VERSION}: {meta}")
             return 2
         print(f"[test] OK [2/7] persistence round-trip: same nodes/edges/labels after reload")
 
@@ -229,6 +233,60 @@ def main() -> int:
             print(f"[test] FAIL [7/7]: vendor_func should be filtered out: {sorted(labels_f)}")
             return 7
         print(f"[test] OK [7/7] ignored_path_fragments: /vendor/ excluded")
+
+        # ========================================================
+        # 8. Cross-file inheritance resolution
+        # ========================================================
+        # Layout: base.py defines an abstract Base; concrete.py declares
+        # `Derived(Base)`. We expect a resolved `inherits` edge from Derived
+        # to Base across files (the very capability missing from schema v1).
+        inh_root = tmp / "inh_code"
+        inh_root.mkdir()
+        _make_codebase(inh_root, {
+            "base.py": "class Base:\n    def run(self): pass\n",
+            "concrete.py": (
+                "from base import Base\n"
+                "class DerivedA(Base):\n    pass\n"
+                "class DerivedB(Base):\n    pass\n"
+            ),
+        })
+        layer_inh = _make_layer(inh_root, storage / "inh_test")
+        summary_inh = layer_inh.rebuild(force=True)
+        if summary_inh.get("resolved_inherits", 0) < 2:
+            print(f"[test] FAIL [8/8]: expected >=2 resolved inherits, got {summary_inh}")
+            return 8
+        labels_inh = _labels(layer_inh)
+        base_id = labels_inh.get("Base")
+        if base_id is None:
+            print(f"[test] FAIL [8/8]: Base node missing")
+            return 8
+        # Both Derived classes should have an `inherits` edge to Base.
+        inh_edges = [
+            (u, v, d) for u, v, d in layer_inh.graph.edges(data=True)
+            if d.get("relation") == "inherits" and v == base_id
+        ]
+        if len(inh_edges) < 2:
+            print(f"[test] FAIL [8/8]: expected at least 2 inherit edges to Base, got {inh_edges}")
+            return 8
+        # Confidence must be 'resolved' because Base is unique across the index.
+        if any(d.get("confidence") != "resolved" for _, _, d in inh_edges):
+            print(f"[test] FAIL [8/8]: inherit edges should all be 'resolved': {inh_edges}")
+            return 8
+        # base_kind should be 'extends' (Python).
+        if any(d.get("base_kind") != "extends" for _, _, d in inh_edges):
+            print(f"[test] FAIL [8/8]: Python inherits should be 'extends' kind: {inh_edges}")
+            return 8
+        # Persistence: reload from disk and recheck.
+        layer_inh2 = _make_layer(inh_root, storage / "inh_test")
+        inh_edges_2 = [
+            (u, v, d) for u, v, d in layer_inh2.graph.edges(data=True)
+            if d.get("relation") == "inherits"
+        ]
+        if len(inh_edges_2) != len(inh_edges):
+            print(f"[test] FAIL [8/8]: persisted inherits count mismatch on reload: "
+                  f"{len(inh_edges_2)} vs {len(inh_edges)}")
+            return 8
+        print(f"[test] OK [8/8] cross-file inherits: {len(inh_edges)} resolved edges + persist round-trip")
 
         print("\n[test] === SUCCESS: graph builder works as expected ===")
         return 0

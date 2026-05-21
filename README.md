@@ -1326,7 +1326,7 @@ TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java, Ruby, PHP, Kotlin,
 Swift**. Unsupported file types (markdown, shaders, JSON) are silently
 skipped — they don't contribute to the graph but still feed search.
 
-### The 7 MCP tools you get per source
+### The 9 MCP tools you get per source
 
 When `graph.enabled=true` on source `myproject`, Lynx auto-registers these
 extra tools on top of the usual `search_*` / `deep_search_*`:
@@ -1335,6 +1335,8 @@ extra tools on top of the usual `search_*` / `deep_search_*`:
 |------|---------|
 | `get_callers_myproject(symbol)` | "Who calls X?" |
 | `get_callees_myproject(symbol)` | "What does X call?" |
+| `get_subclasses_myproject(symbol)` | "What concrete types extend / implement X?" |
+| `get_superclasses_myproject(symbol)` | "What does X inherit from?" |
 | `get_imports_myproject(file_or_symbol)` | "What does this file depend on?" |
 | `get_neighbors_myproject(symbol, relation_filter, depth)` | "Show me everything around X" |
 | `shortest_path_myproject(source, target)` | "How does A reach B?" |
@@ -1343,7 +1345,7 @@ extra tools on top of the usual `search_*` / `deep_search_*`:
 
 Plus `graph_status_myproject()` for diagnostics.
 
-### How cross-file calls are resolved
+### How cross-file calls and inheritance are resolved
 
 Within a file, a call like `helper(x)` resolves immediately to the
 locally-defined `def helper(...)`. Across files, the builder builds a
@@ -1354,9 +1356,24 @@ locally-defined `def helper(...)`. Across files, the builder builds a
 - **>1 matches + member call (`obj.foo()`)** → skipped (too noisy without type info)
 - **0 matches** → skipped (external / stdlib / dynamic call)
 
+Inheritance bases (`class Foo : Bar`, `class Foo(Bar)`, `class Foo extends
+Bar`, ...) use the same index with the same policy, minus the member-call
+carve-out (base lists are always direct identifiers). Each `inherits`
+edge also carries a `base_kind` attribute:
+
+- `"extends"` — concrete superclass (Java/TS distinguish this at the AST level;
+  Python uses it for every base by convention).
+- `"implements"` — interface implementation, when the language exposes the
+  distinction (Java `super_interfaces`, TS `implements_clause`, PHP
+  `class_interface_clause`, Rust `impl Trait for Type`).
+- `"extends_or_implements"` — language can't tell statically (C#, C++,
+  Kotlin, Swift). Filter client-side by naming convention (`I*`) if needed.
+
 This is best-effort, not whole-program type inference. The trade-off:
 fast (sub-second on thousands of files), zero false negatives on simple
-direct calls, controlled false positives on common names.
+direct calls / single-class hierarchies, controlled false positives on
+common names (e.g. two unrelated classes both called `BulletBase` — the
+edges to both get `confidence="ambiguous"` so the AI client can flag it).
 
 ### What it costs
 
@@ -1375,7 +1392,7 @@ direct calls, controlled false positives on common names.
 ### Disabling it
 
 Drop the `graph` block (or set `enabled: false`) and restart the server:
-the 7 graph tools simply aren't registered. Search and deep_search work
+the 9 graph tools simply aren't registered. Search and deep_search work
 exactly as before — the layer is genuinely optional.
 
 ---

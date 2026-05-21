@@ -386,9 +386,87 @@ class Greeter: IFoo {
     # ============================================================
     r = extract_file("readme.md", "# Hello\n")
     if r is not None:
-        print(f"[test] FAIL [10/10]: extract_file should return None for .md, got {type(r)}")
+        print(f"[test] FAIL [10/11]: extract_file should return None for .md, got {type(r)}")
         return 10
-    print(f"[test] OK [10/10] unsupported file: returns None (markdown)")
+    print(f"[test] OK [10/11] unsupported file: returns None (markdown)")
+
+    # ============================================================
+    # 11. Inheritance extraction — raw_inherits across language families
+    # ============================================================
+    # C#: undifferentiated base list (grammar can't tell extends from implements).
+    cs_src = """namespace Foo {
+  public class Base {}
+  public interface IFoo {}
+  public class Derived : Base, IFoo {}
+  public class Generic<T> : System.Collections.Generic.List<T>, IFoo where T : struct {}
+}
+"""
+    r = extract_file("foo.cs", cs_src)
+    if r is None or "raw_inherits" not in r:
+        print(f"[test] FAIL [11/11]: C# extractor missing raw_inherits")
+        return 11
+    ri_cs = r["raw_inherits"]
+    cs_pairs = {(x["base_name"], x["base_kind"]) for x in ri_cs}
+    if not {("Base", "extends_or_implements"), ("IFoo", "extends_or_implements")}.issubset(cs_pairs):
+        print(f"[test] FAIL [11/11]: C# raw_inherits missing Base/IFoo: {cs_pairs}")
+        return 11
+    if not any(x["base_name"] == "List" for x in ri_cs):
+        print(f"[test] FAIL [11/11]: C# generic List<T> base did not collapse to 'List': {cs_pairs}")
+        return 11
+
+    # Python: every base is `extends`, generic `Container[int]` -> `Container`.
+    py_src2 = """class Base: pass
+class Mixin: pass
+class Derived(Base, Mixin, generic.Container[int]): pass
+"""
+    r = extract_file("foo.py", py_src2)
+    ri_py = r["raw_inherits"]
+    py_names = sorted(x["base_name"] for x in ri_py)
+    if py_names != ["Base", "Container", "Mixin"]:
+        print(f"[test] FAIL [11/11]: Python bases unexpected: {py_names}")
+        return 11
+    if any(x["base_kind"] != "extends" for x in ri_py):
+        print(f"[test] FAIL [11/11]: Python should mark all bases as 'extends': {ri_py}")
+        return 11
+
+    # TypeScript: extends vs implements distinguished.
+    ts_src2 = """abstract class Base {}
+interface IFoo { foo(): void; }
+class Derived extends Base implements IFoo { foo(): void {} }
+"""
+    r = extract_file("foo.ts", ts_src2)
+    ri_ts = r["raw_inherits"]
+    kinds_by_name = {x["base_name"]: x["base_kind"] for x in ri_ts}
+    if kinds_by_name.get("Base") != "extends":
+        print(f"[test] FAIL [11/11]: TS Base should be 'extends', got {kinds_by_name}")
+        return 11
+    if kinds_by_name.get("IFoo") != "implements":
+        print(f"[test] FAIL [11/11]: TS IFoo should be 'implements', got {kinds_by_name}")
+        return 11
+
+    # Java: superclass (extends) + super_interfaces (implements).
+    java_src2 = """package x;
+class Base {}
+interface IFoo {}
+class Derived extends Base implements IFoo, Runnable {}
+"""
+    r = extract_file("foo.java", java_src2)
+    ri_java = r["raw_inherits"]
+    java_kinds = {x["base_name"]: x["base_kind"] for x in ri_java}
+    if java_kinds.get("Base") != "extends":
+        print(f"[test] FAIL [11/11]: Java Base should be 'extends', got {java_kinds}")
+        return 11
+    if java_kinds.get("IFoo") != "implements" or java_kinds.get("Runnable") != "implements":
+        print(f"[test] FAIL [11/11]: Java interfaces should be 'implements', got {java_kinds}")
+        return 11
+
+    # Class with no base list should produce zero raw_inherits.
+    r = extract_file("none.py", "class Solo:\n    pass\n")
+    if r["raw_inherits"]:
+        print(f"[test] FAIL [11/11]: class with no bases should not emit raw_inherits: {r['raw_inherits']}")
+        return 11
+
+    print(f"[test] OK [11/11] inheritance extracted: C#({len(ri_cs)}), Python({len(ri_py)}), TS({len(ri_ts)}), Java({len(ri_java)})")
 
     print("\n[test] === SUCCESS: graph extractor works as expected ===")
     return 0
