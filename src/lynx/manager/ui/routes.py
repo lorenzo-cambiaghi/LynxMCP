@@ -205,6 +205,11 @@ def register(app) -> None:
     # in `_err` keeps the per-tool handlers focused on dispatch + render.
     _register_playground_routes(app)
 
+    # ------------------------------------------------------------------
+    # Phase 7: build trigger + job polling
+    # ------------------------------------------------------------------
+    _register_build_routes(app)
+
 
 def _html_escape(s) -> str:
     """Minimal HTML escape so search results can include user code safely."""
@@ -613,3 +618,152 @@ def _render_arch_overview(payload) -> str:
         return ('<div class="p-3 bg-slate-50 border border-slate-200 rounded '
                 'text-sm text-slate-500">Graph layer returned empty result.</div>')
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: source detail build endpoints
+# ---------------------------------------------------------------------------
+
+
+def _render_job_widget(job, source_name: str) -> str:
+    """Render a job's current state as an HTML fragment.
+
+    When the job is still running, the fragment includes an HTMX
+    `hx-trigger="every 1s"` so the browser self-polls. When it's
+    terminal (done/failed), polling stops naturally because the new
+    fragment has no `hx-trigger`.
+    """
+    state = job.state
+    duration = ""
+    if job.started_at:
+        end = job.ended_at or time.time()
+        secs = end - job.started_at
+        duration = f"{secs:.1f}s"
+
+    if state == "running" or state == "queued":
+        color = "bg-blue-50 border-blue-200 text-blue-900"
+        icon = "⏳"
+        msg = f"{state.capitalize()}… ({duration})"
+        poll_attrs = (
+            f'hx-get="/api/jobs/{job.id}/widget?source={_html_escape(source_name)}" '
+            f'hx-trigger="every 1s" hx-swap="outerHTML"'
+        )
+    elif state == "done":
+        color = "bg-green-50 border-green-200 text-green-900"
+        icon = "✓"
+        msg = f"Build complete in {duration}."
+        poll_attrs = ""
+    else:  # failed
+        color = "bg-red-50 border-red-200 text-red-900"
+        icon = "❌"
+        msg = f"Build failed: {_html_escape(job.error or 'unknown error')}"
+        poll_attrs = ""
+
+    log_html = ""
+    if job.log:
+        log_html = (
+            f'<details class="mt-2"><summary class="text-xs cursor-pointer">'
+            f'Log ({len(job.log)} chars)</summary>'
+            f'<pre class="mt-1 text-xs bg-white border border-slate-200 rounded p-2 '
+            f'overflow-x-auto max-h-64">{_html_escape(job.log)}</pre>'
+            f'</details>'
+        )
+
+    return (
+        f'<div id="build-status" class="p-3 border rounded text-sm {color}" {poll_attrs}>'
+        f'  <div class="flex items-center justify-between">'
+        f'    <div>{icon} <strong>{_html_escape(msg)}</strong></div>'
+        f'    <div class="text-xs opacity-70">job {job.id}</div>'
+        f'  </div>'
+        f'  {log_html}'
+        f'</div>'
+    )
+
+
+def _register_build_routes(app) -> None:
+    """POST /api/sources/{name}/build and the job polling endpoints."""
+    from fastapi import HTTPException
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    from .app import _get_manager as _gm
+    from . import jobs as jobs_mod
+    from . import lock as lock_mod
+
+    @app.post("/api/sources/{name}/build")
+    def api_source_build(name: str):
+        mgr = _gm(app)
+        if mgr is None:
+            return _err(app.state.manager_error or "Manager not initialized.",
+                        status=503)
+        # Reject before kicking off the thread if another process holds
+        # the SQLite write lock — two writers will corrupt the DB.
+        try:
+            backend = mgr.get(name)
+        except KeyError:
+            return _err(f"source {name!r} not found", status=404)
+
+        from pathlib import Path
+        storage_path = Path(mgr.config.storage_path) / name
+        # Force a fresh probe — the 30s cache could be stale right after
+        # the user shut down `lynx serve` and tried to build immediately.
+        lock_mod.invalidate_cache(storage_path)
+        if lock_mod.is_storage_locked(storage_path):
+            return HTMLResponse(
+                '<div id="build-status" class="p-3 border rounded text-sm '
+                'bg-amber-50 border-amber-200 text-amber-900">'
+                '🔒 <strong>Locked.</strong> Another process is writing to this '
+                f'source. Stop <code>lynx serve</code> first, then retry.'
+                '</div>',
+                status_code=409,
+            )
+        # Also guard against double-clicking the button — refuse if we
+        # already have a build job in flight for this source.
+        existing = jobs_mod.has_running_job_for(f"build:{name}")
+        if existing is not None:
+            return HTMLResponse(
+                _render_job_widget(existing, name),
+                status_code=200,
+            )
+
+        # Kick off in a daemon thread. update() is blocking but typically
+        # fast (seconds → minutes for big repos); the UI polls while it runs.
+        jobs_mod.cleanup_old(max_age_sec=3600)
+
+        def _target():
+            mgr.update(name, force=True)
+            # Invalidate the lock cache after a successful build so the
+            # next dashboard render reflects the freshly-released lock.
+            lock_mod.invalidate_cache(storage_path)
+
+        job = jobs_mod.create_job(
+            _target,
+            label=f"build {name}",
+            group=f"build:{name}",
+            metadata={"source": name},
+        )
+        return HTMLResponse(_render_job_widget(job, name))
+
+    @app.get("/api/jobs/{job_id}")
+    def api_job_status(job_id: str):
+        """JSON view of a job — for external callers / debugging."""
+        j = jobs_mod.get_job(job_id)
+        if j is None:
+            raise HTTPException(status_code=404, detail=f"job {job_id!r} not found")
+        return jobs_mod.job_to_dict(j)
+
+    @app.get("/api/jobs/{job_id}/widget")
+    def api_job_widget(job_id: str, source: str = ""):
+        """HTMX-friendly HTML view used by the source detail page polling."""
+        j = jobs_mod.get_job(job_id)
+        if j is None:
+            return HTMLResponse(
+                '<div id="build-status" class="p-3 border rounded text-sm '
+                'bg-slate-50 border-slate-200 text-slate-500">'
+                f'Job {_html_escape(job_id)} no longer in memory.</div>',
+                status_code=404,
+            )
+        return HTMLResponse(_render_job_widget(j, source or (j.metadata.get("source") or "")))
+
+
+# Hoist `time` so _render_job_widget can use it without re-importing per call.
+import time  # noqa: E402  — bottom of file so module top stays focused

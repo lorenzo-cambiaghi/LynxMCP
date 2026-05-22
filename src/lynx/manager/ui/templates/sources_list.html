@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Sources — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-bold text-slate-900">Sources</h1>
+  <div class="text-sm text-slate-500">
+    {{ sources|length }} source{{ '' if sources|length == 1 else 's' }} configured
+  </div>
+</div>
+
+{% if not sources %}
+  <div class="p-6 bg-white border border-dashed border-slate-300 rounded text-slate-500 text-sm">
+    No sources yet. Add one in the
+    <a href="/config" class="text-indigo-600 hover:underline">Config editor</a>
+    or run <code class="bg-slate-100 px-1 rounded">lynx manager init</code>.
+  </div>
+{% else %}
+  <div class="space-y-2">
+    {% for s in sources %}
+      <a href="/sources/{{ s.name }}"
+         class="block p-4 bg-white border border-slate-200 rounded hover:border-indigo-400 hover:shadow-sm transition">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="font-semibold text-slate-900">{{ s.name }}</div>
+            <div class="text-xs text-slate-500 mt-0.5">
+              type: {{ s.type }}
+              {% if s.path %} · {{ s.path }}{% endif %}
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            {% if s.locked %}
+              <span class="badge bg-amber-100 text-amber-800" title="ChromaDB locked by another process">🔒 locked</span>
+            {% endif %}
+            {% if s.drift_severity == "critical" %}
+              <span class="badge bg-red-100 text-red-800">drift: critical</span>
+            {% elif s.drift_severity == "warning" %}
+              <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+            {% endif %}
+            {% if s.chunk_count is not none %}
+              <span class="text-sm text-slate-600">{{ s.chunk_count }} chunks</span>
+            {% endif %}
+            <span class="text-slate-400">→</span>
+          </div>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% endblock %}

@@ -130,9 +130,53 @@ def register(app) -> None:
             },
         )
 
+    # Phase 7: sources list + per-source detail page (status + build).
+    @app.get("/sources", response_class=HTMLResponse)
+    def sources_index(request: Request):
+        mgr = _get_manager(app)
+        sources_data: list = []
+        if mgr is not None:
+            from . import lock as lock_mod
+            for st in mgr.list_sources():
+                storage_path = Path(mgr.config.storage_path) / st["name"]
+                st["locked"] = lock_mod.is_storage_locked(storage_path)
+                sources_data.append(st)
+        return app.state.templates.TemplateResponse(
+            request, "sources_list.html",
+            {
+                "sources": sources_data,
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
+    @app.get("/sources/{name}", response_class=HTMLResponse)
+    def source_detail(request: Request, name: str):
+        from fastapi import HTTPException
+        mgr = _get_manager(app)
+        if mgr is None:
+            raise HTTPException(
+                status_code=503,
+                detail=app.state.manager_error or "manager not initialized",
+            )
+        try:
+            backend = mgr.get(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"source {name!r} not found")
+        st = backend.status()
+        from . import lock as lock_mod
+        storage_path = Path(mgr.config.storage_path) / name
+        st["locked"] = lock_mod.is_storage_locked(storage_path)
+        return app.state.templates.TemplateResponse(
+            request, "source_detail.html",
+            {
+                "source": st,
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
     _PLACEHOLDERS = [
-        ("/sources",       "Sources",       "Phase 7",
-         "lynx status --source NAME"),
         ("/integrations",  "Integrations",  "Phase 8",
          "see README section 'Connect it to your AI client'"),
         ("/doctor",        "Doctor",        "Phase 5",

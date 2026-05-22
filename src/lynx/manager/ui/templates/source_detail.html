@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}{{ source.name }} — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <div>
+    <div class="text-xs text-slate-500 mb-1">
+      <a href="/sources" class="hover:underline">← All sources</a>
+    </div>
+    <h1 class="text-2xl font-bold text-slate-900">{{ source.name }}</h1>
+    <div class="text-sm text-slate-500 mt-0.5">type: {{ source.type }}</div>
+  </div>
+  <div class="flex items-center gap-2">
+    {% if source.locked %}
+      <span class="badge bg-amber-100 text-amber-800" title="Another process is writing to this source's ChromaDB">🔒 locked</span>
+    {% endif %}
+    {% if source.drift_severity == "critical" %}
+      <span class="badge bg-red-100 text-red-800">drift: critical</span>
+    {% elif source.drift_severity == "warning" %}
+      <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Status panel -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+
+  <div class="p-4 bg-white border border-slate-200 rounded">
+    <div class="font-semibold text-slate-800 text-sm mb-3">Status</div>
+    <dl class="text-sm space-y-1.5">
+      {% if source.path %}
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Path</dt>
+          <dd class="font-mono text-xs truncate" title="{{ source.path }}">{{ source.path }}</dd>
+        </div>
+      {% endif %}
+      {% if source.chunk_count is not none %}
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Chunks</dt>
+          <dd>{{ source.chunk_count }}</dd>
+        </div>
+      {% endif %}
+      {% if source.last_commit %}
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Last commit</dt>
+          <dd class="font-mono text-xs">{{ source.last_commit[:12] }}</dd>
+        </div>
+      {% endif %}
+      {% if source.last_update %}
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Last update</dt>
+          <dd class="text-xs">{{ source.last_update }}</dd>
+        </div>
+      {% endif %}
+      <div class="flex justify-between gap-3">
+        <dt class="text-slate-500">Drift</dt>
+        <dd class="text-xs">
+          {% if source.drift_severity %}
+            {{ source.drift_severity }}
+          {% else %}
+            <span class="text-slate-400">none</span>
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+  </div>
+
+  {% if source.graph %}
+    <div class="p-4 bg-white border border-slate-200 rounded">
+      <div class="font-semibold text-slate-800 text-sm mb-3">Graph layer</div>
+      <dl class="text-sm space-y-1.5">
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Nodes</dt>
+          <dd>{{ source.graph.nodes }}</dd>
+        </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">Edges</dt>
+          <dd>{{ source.graph.edges }}</dd>
+        </div>
+        {% if source.graph.files_indexed is not none %}
+          <div class="flex justify-between gap-3">
+            <dt class="text-slate-500">Files indexed</dt>
+            <dd>{{ source.graph.files_indexed }}</dd>
+          </div>
+        {% endif %}
+        {% if source.graph.last_update %}
+          <div class="flex justify-between gap-3">
+            <dt class="text-slate-500">Last graph update</dt>
+            <dd class="text-xs">{{ source.graph.last_update }}</dd>
+          </div>
+        {% endif %}
+      </dl>
+    </div>
+  {% else %}
+    <div class="p-4 bg-white border border-dashed border-slate-300 rounded text-sm text-slate-500">
+      Graph layer not enabled. Set
+      <code class="bg-slate-100 px-1 rounded">graph.enabled = true</code>
+      in the source config to activate call/import graph tools.
+    </div>
+  {% endif %}
+
+</div>
+
+<!-- Build trigger -->
+<div class="p-4 bg-white border border-slate-200 rounded mb-4">
+  <div class="flex items-baseline justify-between mb-2">
+    <div class="font-semibold text-slate-800 text-sm">Rebuild index</div>
+    <div class="text-xs text-slate-500">
+      Runs <code class="bg-slate-100 px-1 rounded">manager.update("{{ source.name }}", force=True)</code>
+    </div>
+  </div>
+
+  {% if source.locked %}
+    <div class="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900 mb-3">
+      ⚠ Another process is writing to this source's ChromaDB (probably
+      <code class="bg-amber-100 px-1 rounded">lynx serve</code>).
+      Stop it before triggering a build from the UI — concurrent writers
+      will corrupt the index.
+    </div>
+  {% endif %}
+
+  <form hx-post="/api/sources/{{ source.name }}/build"
+        hx-target="#build-status"
+        hx-swap="innerHTML">
+    <button type="submit"
+            {% if source.locked %}disabled
+              class="px-4 py-2 bg-slate-300 text-slate-500 rounded text-sm cursor-not-allowed"
+            {% else %}
+              class="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700"
+            {% endif %}>
+      {% if source.locked %}🔒 Locked — can't build{% else %}Rebuild index{% endif %}
+    </button>
+  </form>
+
+  <div id="build-status" class="mt-3"></div>
+</div>
+
+{% endblock %}
