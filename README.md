@@ -388,13 +388,19 @@ python -m lynx manager ui --config C:\Users\you\projects\myrepo\config.json
 > If your config sits elsewhere, point at it explicitly:
 > `lynx manager ui --config /full/path/to/config.json`
 >
-> The first line of the terminal output tells you exactly which config
-> file was picked up — useful for catching "I thought I was in the
-> right folder" mistakes:
+> The terminal output tells you exactly which config file was picked
+> up AND when the embedding model is finished loading — useful for
+> catching "I thought I was in the right folder" mistakes and for
+> understanding the brief startup pause on first launch:
 > ```text
 > [ui] using config: /home/you/myrepo/config.json
+> [ui] loading embedding model + opening source collections (first launch can take 30s)...
+> [ui] manager ready in 4.2s (2 sources).
 > 🦌 Lynx UI ready at http://127.0.0.1:8765
 > ```
+> The browser only opens **after** the manager is ready — so the page
+> loads instantly instead of hanging on a white screen while
+> `BAAI/bge-small-en-v1.5` warms up in the background.
 
 You'll see something like this in the terminal:
 

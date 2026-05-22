@@ -188,7 +188,38 @@ def run_ui(args) -> int:
     app = create_app(config_path)
     url = f"http://{host}:{port}"
 
-    # Open browser on a delay so uvicorn has time to start listening.
+    # Pre-warm the SourceManager BEFORE uvicorn starts listening.
+    # Without this the first GET / blocks for 5-30s while we load the
+    # HuggingFace embedding model and open ChromaDB collections, and
+    # the browser sits on a white page the whole time. Doing it here
+    # means the terminal shows progress and the browser only opens
+    # when the dashboard can actually render.
+    if config_path.is_file():
+        print(
+            "[ui] loading embedding model + opening source collections "
+            "(first launch can take 30s)...",
+            file=sys.stderr,
+        )
+        t0 = time.time()
+        _get_manager(app)
+        elapsed = time.time() - t0
+        if app.state.manager_error:
+            print(f"[ui] WARNING: {app.state.manager_error}", file=sys.stderr)
+            print(
+                "[ui] the UI will still open, but the dashboard will show "
+                "this error until you fix the config.",
+                file=sys.stderr,
+            )
+        else:
+            n_sources = len(app.state.manager.backends)
+            print(
+                f"[ui] manager ready in {elapsed:.1f}s "
+                f"({n_sources} source{'' if n_sources == 1 else 's'}).",
+                file=sys.stderr,
+            )
+
+    # Open browser only AFTER pre-warm completes. Still on a small
+    # delay so uvicorn's bind has a moment to take effect.
     if open_browser:
         def _open_later():
             time.sleep(0.6)
