@@ -210,6 +210,54 @@ def register(app) -> None:
     # ------------------------------------------------------------------
     _register_build_routes(app)
 
+    # ------------------------------------------------------------------
+    # Phase 8: integrations — MCP snippet + AI rules-file download
+    # ------------------------------------------------------------------
+    @app.get("/api/integrations/{client}/rules")
+    def api_integrations_rules(client: str):
+        """Return the generated rules-file content as a file download.
+
+        Filename comes from the client's `rules_file` (CLAUDE.md /
+        AGENTS.md / .cursor/rules/lynx.md), so the browser saves it
+        with the right name out of the box.
+        """
+        from fastapi.responses import PlainTextResponse
+        from . import integrations as integ
+        c = integ.get_client(client)
+        if c is None:
+            raise HTTPException(status_code=404, detail=f"unknown client {client!r}")
+        if not c.get("rules_file"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"client {client!r} doesn't have a recommended rules file",
+            )
+        mgr = _get_manager(app)
+        source_names: list = []
+        has_graph = False
+        has_git = False
+        if mgr is not None:
+            try:
+                for name, sc in mgr.config.sources.items():
+                    source_names.append(name)
+                    if (sc.get("graph") or {}).get("enabled"):
+                        has_graph = True
+                    if (sc.get("git_integration") or {}).get("enabled"):
+                        has_git = True
+            except Exception:
+                pass
+        content = integ.render_rules_for_sources(source_names, has_graph, has_git)
+        # Use just the basename so the browser doesn't try to save
+        # nested directories (`.cursor/rules/lynx.md` → `lynx.md`).
+        from pathlib import Path
+        filename = Path(c["rules_file"]).name
+        return PlainTextResponse(
+            content,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+            media_type="text/markdown",
+        )
+
 
 def _html_escape(s) -> str:
     """Minimal HTML escape so search results can include user code safely."""

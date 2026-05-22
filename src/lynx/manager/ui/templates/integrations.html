@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Integrations — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-bold text-slate-900">Integrations</h1>
+  <div class="text-sm text-slate-500">Wire Lynx into your AI client</div>
+</div>
+
+<div class="mb-6 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
+  💡 Each card below has a snippet pre-populated with <strong>your</strong> Python
+  interpreter and <strong>your</strong> config path — just copy and paste it into
+  the matching file. Then restart the client so it picks up the new MCP server.
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+  {% for c in clients %}
+    <div class="p-4 bg-white border border-slate-200 rounded">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <div class="font-semibold text-slate-900">{{ c.label }}</div>
+          <div class="text-xs text-slate-500 mt-0.5">
+            Paste into <code class="bg-slate-100 px-1 rounded">{{ c.config_file }}</code>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button type="button"
+                  class="copy-btn px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                  data-target="snippet-{{ c.key }}">
+            Copy snippet
+          </button>
+          {% if c.rules_file %}
+            <a href="/api/integrations/{{ c.key }}/rules"
+               class="px-3 py-1.5 text-xs border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+              Download {{ c.rules_file.split('/')[-1] }}
+            </a>
+          {% endif %}
+        </div>
+      </div>
+      <pre id="snippet-{{ c.key }}"
+           class="text-xs bg-slate-50 border border-slate-200 rounded p-3 overflow-x-auto whitespace-pre-wrap">{{ c.snippet }}</pre>
+      {% if c.notes %}
+        <div class="mt-2 text-xs text-slate-500">{{ c.notes }}</div>
+      {% endif %}
+    </div>
+  {% endfor %}
+</div>
+
+<!-- Rules file preview / download -->
+{% if rules_preview %}
+  <h2 class="text-lg font-semibold text-slate-900 mb-2">Rules file preview</h2>
+  <div class="text-sm text-slate-600 mb-2">
+    Auto-generated from your configured sources ({{ source_names|join(', ') }}).
+    Lives at the path the chosen client expects (CLAUDE.md, AGENTS.md, ...).
+  </div>
+  <pre class="text-xs bg-white border border-slate-200 rounded p-3 max-h-96 overflow-auto whitespace-pre-wrap">{{ rules_preview }}</pre>
+{% endif %}
+
+<script>
+  // Vanilla clipboard copy. navigator.clipboard works on localhost without
+  // HTTPS — the spec carves out 127.0.0.1 as a secure context.
+  document.querySelectorAll('.copy-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const targetId = btn.dataset.target;
+      const text = document.getElementById(targetId).textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = btn.textContent;
+        btn.textContent = '✓ Copied';
+        btn.classList.add('bg-green-600');
+        btn.classList.remove('bg-indigo-600');
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.classList.remove('bg-green-600');
+          btn.classList.add('bg-indigo-600');
+        }, 1500);
+      } catch (err) {
+        btn.textContent = '✗ Failed';
+        setTimeout(() => btn.textContent = 'Copy snippet', 1500);
+      }
+    });
+  });
+</script>
+
+{% endblock %}

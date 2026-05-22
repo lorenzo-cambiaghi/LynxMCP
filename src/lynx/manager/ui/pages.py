@@ -176,9 +176,50 @@ def register(app) -> None:
             },
         )
 
+    # Phase 8: integrations snippets — wires Lynx into the user's AI client.
+    @app.get("/integrations", response_class=HTMLResponse)
+    def integrations_page(request: Request):
+        from . import integrations as integ
+        config_path = (
+            Path(app.state.config_path) if app.state.config_path else None
+        )
+        mgr = _get_manager(app)
+
+        # Derive source names + capability flags from the live manager so
+        # the rules preview reflects what's actually configured.
+        source_names: list[str] = []
+        has_graph = False
+        has_git = False
+        if mgr is not None:
+            try:
+                cfg = mgr.config
+                for name, sc in cfg.sources.items():
+                    source_names.append(name)
+                    if (sc.get("graph") or {}).get("enabled"):
+                        has_graph = True
+                    if (sc.get("git_integration") or {}).get("enabled"):
+                        has_git = True
+            except Exception:
+                # Best-effort — never let the preview crash the page.
+                pass
+
+        rules_preview = (
+            integ.render_rules_for_sources(source_names, has_graph, has_git)
+            if source_names else None
+        )
+
+        return app.state.templates.TemplateResponse(
+            request, "integrations.html",
+            {
+                "clients": integ.build_integrations(config_path),
+                "rules_preview": rules_preview,
+                "source_names": source_names,
+                "manager_error": app.state.manager_error,
+                "config_path": str(config_path) if config_path else None,
+            },
+        )
+
     _PLACEHOLDERS = [
-        ("/integrations",  "Integrations",  "Phase 8",
-         "see README section 'Connect it to your AI client'"),
         ("/doctor",        "Doctor",        "Phase 5",
          "lynx manager doctor"),
     ]
