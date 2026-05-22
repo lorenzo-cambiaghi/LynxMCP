@@ -417,7 +417,23 @@ before wiring it into your AI client.
 
 #### Step 1 — launch it
 
-Open a terminal in the folder where your `config.json` lives, and type:
+**The fastest way: double-click the launcher in the repo.**
+
+- **macOS**: double-click `LynxManager.command` in Finder. (First time
+  only: right-click → Open → Open to clear the Gatekeeper warning, since
+  the file isn't notarized.)
+- **Windows**: double-click `LynxManager.bat` in Explorer. (First time
+  only: SmartScreen may prompt — click "More info" → "Run anyway".)
+
+A console window opens, the UI boots, and your browser is pointed at
+`http://127.0.0.1:8765`. To stop it, press `Ctrl+C` in the console
+window (or just close the window).
+
+The launcher detects whichever install style you used (`pipx`, `uv tool`,
+local `.venv`, or `python -m lynx`) and runs the matching one — so the
+same file works for end-users and developers.
+
+**Or, from a terminal in the folder where your `config.json` lives:**
 
 ```bash
 lynx manager ui
