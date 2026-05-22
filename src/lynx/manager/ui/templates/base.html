@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en" class="bg-slate-50">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}LynxManager{% endblock %}</title>
+  <script src="{{ request.url_for('static', path='tailwind.min.js') }}"></script>
+  <script src="{{ request.url_for('static', path='htmx.min.js') }}"></script>
+  <style>
+    /* Subtle touches that aren't worth a full Tailwind config */
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .badge { @apply inline-block px-2 py-0.5 text-xs font-medium rounded; }
+    /* Stop FOUC on the side-nav active state */
+    a[data-active="true"] { background-color: rgb(99 102 241 / 0.1); color: rgb(67 56 202); }
+  </style>
+</head>
+<body class="text-slate-800">
+
+<div class="flex min-h-screen">
+
+  <!-- Sidebar -->
+  <aside class="w-56 shrink-0 border-r border-slate-200 bg-white">
+    <div class="flex items-center gap-2 px-4 py-4 border-b border-slate-200">
+      <span class="text-2xl">🦌</span>
+      <div>
+        <div class="font-bold text-slate-900">LynxManager</div>
+        <div class="text-xs text-slate-500">v{{ request.app.version }}</div>
+      </div>
+    </div>
+    <nav class="px-2 py-3 space-y-1 text-sm">
+      <a href="/" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/' else 'false' }}">
+        <span class="inline-block w-5">🏠</span> Dashboard
+      </a>
+      <a href="/sources" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path.startswith('/sources') else 'false' }}">
+        <span class="inline-block w-5">📚</span> Sources
+      </a>
+      <a href="/playground" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/playground' else 'false' }}">
+        <span class="inline-block w-5">🔎</span> Playground
+      </a>
+      <a href="/config" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/config' else 'false' }}">
+        <span class="inline-block w-5">⚙️</span> Config
+      </a>
+      <a href="/integrations" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/integrations' else 'false' }}">
+        <span class="inline-block w-5">🔌</span> Integrations
+      </a>
+      <a href="/doctor" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/doctor' else 'false' }}">
+        <span class="inline-block w-5">🩺</span> Doctor
+      </a>
+    </nav>
+
+    <div class="px-4 py-3 mt-auto border-t border-slate-200 text-xs text-slate-500">
+      {% if config_path %}
+        <div title="{{ config_path }}">📄 {{ config_path.split('/')[-1] }}</div>
+      {% else %}
+        <div class="text-amber-600">No config loaded</div>
+      {% endif %}
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="flex-1 px-8 py-6">
+
+    {% if manager_error %}
+      <div class="mb-6 p-4 border border-amber-300 bg-amber-50 rounded text-amber-900">
+        <div class="font-medium mb-1">⚠ Manager not initialized</div>
+        <div class="text-sm">{{ manager_error }}</div>
+      </div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+
+  </main>
+
+</div>
+
+<!-- Toasts (HTMX target zone for action feedback) -->
+<div id="toasts" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
+
+</body>
+</html>

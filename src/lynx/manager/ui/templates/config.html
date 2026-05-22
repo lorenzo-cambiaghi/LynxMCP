@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Config — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-bold text-slate-900">Config editor</h1>
+  <div class="text-sm text-slate-500 font-mono">{{ config_path }}</div>
+</div>
+
+<div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
+  💡 Edit the JSON below and click <strong>Save</strong>.
+  The server validates with the same loader Lynx uses on startup — invalid
+  configs are rejected without overwriting the file. A backup of the
+  previous content is kept at <code>{{ config_path }}.bak</code> after every save.
+</div>
+
+<form id="config-form"
+      hx-put="/api/config"
+      hx-ext="json-enc"
+      hx-trigger="submit"
+      hx-target="#config-result"
+      hx-swap="innerHTML">
+  <textarea
+    id="config-content"
+    name="content"
+    rows="32"
+    class="w-full font-mono text-sm p-3 border border-slate-300 rounded bg-white
+           focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+    spellcheck="false">{{ config_content }}</textarea>
+
+  <div class="mt-3 flex items-center justify-between">
+    <div class="text-xs text-slate-500">
+      Lines: <span id="line-count">—</span> · Characters: <span id="char-count">—</span>
+    </div>
+    <div class="flex gap-2">
+      <button type="button"
+              onclick="document.getElementById('config-content').value=initialContent; updateCounts()"
+              class="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+        Reset to disk
+      </button>
+      <button type="submit"
+              class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+        Save
+      </button>
+    </div>
+  </div>
+</form>
+
+<div id="config-result" class="mt-4"></div>
+
+<script>
+  // Capture the initial content so the Reset button can restore it.
+  const initialContent = document.getElementById('config-content').value;
+
+  function updateCounts() {
+    const ta = document.getElementById('config-content');
+    const text = ta.value;
+    const lines = text.split('\n').length;
+    const chars = text.length;
+    document.getElementById('line-count').textContent = lines;
+    document.getElementById('char-count').textContent = chars;
+  }
+  updateCounts();
+  document.getElementById('config-content').addEventListener('input', updateCounts);
+
+  // Intercept form submit so we send a JSON body (HTMX's default is form-encoded).
+  document.getElementById('config-form').addEventListener('htmx:configRequest', function(evt) {
+    const text = document.getElementById('config-content').value;
+    evt.detail.headers['Content-Type'] = 'application/json';
+    evt.detail.parameters = {}; // clear default form params
+    evt.detail.body = JSON.stringify({content: text});
+  });
+</script>
+
+{% endblock %}

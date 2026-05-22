@@ -85,6 +85,11 @@ dependencies = [
     # llama-index-embeddings-huggingface, but we pin it explicitly so the
     # reranker feature has a documented baseline.
     "sentence-transformers>=2.7",
+    # LynxManager web UI (`lynx manager ui`). uvicorn/starlette/jinja2 are
+    # already pulled in by `mcp`; FastAPI is the only direct add — it gives
+    # us routing decorators, dependency injection, and request validation
+    # on top of starlette for ~10 lines of code we'd otherwise hand-write.
+    "fastapi>=0.110",
 ]
 
 [project.optional-dependencies]
@@ -109,3 +114,13 @@ Issues = "https://github.com/lorenzo-cambiaghi/LynxMCP/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ship the HTML templates and static assets (Tailwind JIT + HTMX) with
+# the wheel. Without this they're left out of the install and the web UI
+# fires up but returns 500s when serving the dashboard.
+[tool.setuptools.package-data]
+"lynx.manager.ui" = [
+    "templates/*.html",
+    "static/*.js",
+    "static/*.css",
+]

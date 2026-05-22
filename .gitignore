@@ -35,8 +35,15 @@ env/
 # Project: persistent vector store (rebuild from source)
 rag_storage/
 
+# Project: smoke-test residues — tests sometimes write ChromaDB / graph
+# dumps under tests/_rag_storage_* (e.g. the LynxManager UI smoke runs
+# that point at src/lynx itself). Big binary files, never source of truth.
+tests/_rag_storage*/
+
 # Project: user-local config (use config.example.json as template)
 config.json
+# Backup written by the web UI config editor on every save.
+config.json.bak
 
 # Project: smoke test artifact
 _test_watch_stderr.log

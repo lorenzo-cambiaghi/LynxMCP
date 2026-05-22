@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold text-slate-900">Dashboard</h1>
+  <div class="text-sm text-slate-500">
+    {{ total_sources }} source{{ '' if total_sources == 1 else 's' }},
+    {{ total_chunks }} chunks indexed
+  </div>
+</div>
+
+<!-- Doctor summary card -->
+<div class="mb-6 p-4 bg-white border border-slate-200 rounded shadow-sm">
+  <div class="flex items-center justify-between mb-2">
+    <div class="font-semibold text-slate-900">Health check</div>
+    <a href="/doctor" class="text-xs text-indigo-600 hover:underline">View full report →</a>
+  </div>
+  <div class="flex gap-4 text-sm">
+    <div class="flex items-center gap-1">
+      <span class="text-green-600 font-bold">✓</span>
+      <span>{{ doctor_counts.ok }} ok</span>
+    </div>
+    {% if doctor_counts.warn %}
+      <div class="flex items-center gap-1">
+        <span class="text-amber-600 font-bold">⚠</span>
+        <span>{{ doctor_counts.warn }} warning{{ '' if doctor_counts.warn == 1 else 's' }}</span>
+      </div>
+    {% endif %}
+    {% if doctor_counts.error %}
+      <div class="flex items-center gap-1">
+        <span class="text-red-600 font-bold">✗</span>
+        <span>{{ doctor_counts.error }} error{{ '' if doctor_counts.error == 1 else 's' }}</span>
+      </div>
+    {% endif %}
+  </div>
+  <div class="mt-2 text-xs">
+    {% if doctor_worst == "ok" %}
+      <span class="text-green-700">All checks passing — Lynx is healthy.</span>
+    {% elif doctor_worst == "warn" %}
+      <span class="text-amber-700">Some warnings — review the Doctor page.</span>
+    {% else %}
+      <span class="text-red-700">Errors detected — fix them via the Doctor page.</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Sources grid -->
+<h2 class="text-lg font-semibold text-slate-900 mb-3">Sources</h2>
+
+{% if not sources %}
+  <div class="p-6 bg-white border border-dashed border-slate-300 rounded text-slate-500 text-sm">
+    No sources configured yet.
+    {% if not manager_error %}
+      Add one in the <a href="/config" class="text-indigo-600 hover:underline">Config editor</a>
+      or run <code class="bg-slate-100 px-1 rounded">lynx manager init</code> in a terminal.
+    {% endif %}
+  </div>
+{% else %}
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+  {% for s in sources %}
+    <div class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <a href="/sources/{{ s.name }}" class="font-semibold text-slate-900 hover:text-indigo-600">{{ s.name }}</a>
+          <div class="text-xs text-slate-500 mt-0.5">type: {{ s.type }}</div>
+        </div>
+        <div class="space-y-1 text-right">
+          {% if s.locked %}
+            <span class="badge bg-amber-100 text-amber-800" title="ChromaDB locked by another process (likely `lynx serve` is running)">🔒 locked</span>
+          {% endif %}
+          {% if s.drift_severity == "critical" %}
+            <span class="badge bg-red-100 text-red-800">drift: critical</span>
+          {% elif s.drift_severity == "warning" %}
+            <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <dl class="text-sm space-y-1">
+        {% if s.path %}
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-500">Path</dt>
+            <dd class="font-mono text-xs truncate" title="{{ s.path }}">{{ s.path }}</dd>
+          </div>
+        {% endif %}
+        {% if s.chunk_count is not none %}
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-500">Chunks</dt>
+            <dd>{{ s.chunk_count }}</dd>
+          </div>
+        {% endif %}
+        {% if s.last_update %}
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-500">Last update</dt>
+            <dd class="text-xs">{{ s.last_update.split('T')[0] }}</dd>
+          </div>
+        {% endif %}
+        {% if s.graph %}
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-500">Graph</dt>
+            <dd class="text-xs">{{ s.graph.nodes }} nodes, {{ s.graph.edges }} edges</dd>
+          </div>
+        {% endif %}
+      </dl>
+    </div>
+  {% endfor %}
+  </div>
+{% endif %}
+
+{% endblock %}
