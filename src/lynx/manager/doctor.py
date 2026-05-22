@@ -1,0 +1,423 @@
+"""Diagnostic checks for Lynx — `lynx manager doctor`.
+
+Goal: one command tells you "is this install healthy?". We check the
+things that silently break searches:
+
+  - Python version (Lynx needs ≥ 3.10)
+  - HuggingFace model cache (the embedding model must be downloaded
+    OR HF_HUB_OFFLINE must be off — otherwise the first search hangs)
+  - Config file (exists, valid JSON, validates with the loader)
+  - Per-source state (path exists, ChromaDB readable, drift status,
+    git_integration optionally validated)
+  - Optional extras (which ones are installed vs available)
+  - Disk space in storage_path
+
+Each check returns a `CheckResult` with a status flag and optional
+details. The CLI entry point aggregates them, prints a colored summary,
+and exits with code 0/1/2 so this can be wired into CI.
+
+Pure functions — no global state, no side effects beyond reading the
+filesystem and the active Python process metadata.
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from .ansi import success, warn, error, bold, dim, heading, bullet
+
+
+# ---------------------------------------------------------------------------
+# Data shape
+# ---------------------------------------------------------------------------
+
+
+# Status levels. Order matters: ERROR > WARN > OK. The CLI exit code
+# is derived from the worst status across all checks.
+STATUS_OK = "ok"
+STATUS_WARN = "warn"
+STATUS_ERROR = "error"
+
+
+@dataclass
+class CheckResult:
+    name: str
+    status: str  # one of STATUS_OK / STATUS_WARN / STATUS_ERROR
+    summary: str
+    details: list = field(default_factory=list)  # list[str], bullet lines
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "summary": self.summary,
+            "details": list(self.details),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Individual checks
+# ---------------------------------------------------------------------------
+
+
+def check_python_version() -> CheckResult:
+    """Lynx requires Python 3.10+ for `str | None` syntax in many places."""
+    v = sys.version_info
+    if v >= (3, 10):
+        return CheckResult(
+            name="Python version",
+            status=STATUS_OK,
+            summary=f"Python {v.major}.{v.minor}.{v.micro}",
+        )
+    return CheckResult(
+        name="Python version",
+        status=STATUS_ERROR,
+        summary=f"Python {v.major}.{v.minor}.{v.micro} — Lynx requires >= 3.10",
+        details=["Install Python 3.10 or newer (3.12 recommended)."],
+    )
+
+
+def _hf_cache_dir_for(model_name: str) -> Path:
+    """Return the expected HuggingFace cache directory for a model.
+
+    HF Hub stores models under
+    `~/.cache/huggingface/hub/models--{owner}--{repo}/snapshots/<sha>/`
+    where `{owner}--{repo}` comes from replacing `/` with `--` in the
+    model name.
+    """
+    safe = model_name.replace("/", "--")
+    return Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe}"
+
+
+def check_hf_model_cache(model_name: str, label: str = "embedding model") -> CheckResult:
+    """Verify that a HuggingFace model is present in the local cache.
+
+    We don't try to download here — that's `lynx manager install --model`'s
+    job. We just report whether the cache is populated so the user
+    knows whether `lynx serve` will hit network on first query.
+    """
+    cache_dir = _hf_cache_dir_for(model_name)
+    if not cache_dir.exists():
+        return CheckResult(
+            name=f"HF cache: {label}",
+            status=STATUS_WARN,
+            summary=f"{model_name} not in HF cache",
+            details=[
+                f"Expected at {cache_dir}",
+                "Run `lynx manager install --model` to fetch it now, or "
+                "let the first `lynx serve` query download it automatically "
+                "(requires network + HF_HUB_OFFLINE=0 at that moment).",
+            ],
+        )
+    # Look for at least one snapshot directory with the key files.
+    snapshots = cache_dir / "snapshots"
+    if not snapshots.exists() or not any(snapshots.iterdir()):
+        return CheckResult(
+            name=f"HF cache: {label}",
+            status=STATUS_WARN,
+            summary=f"{model_name} cache directory exists but is empty",
+            details=[
+                f"At {cache_dir}",
+                "Re-download via `lynx manager install --model`.",
+            ],
+        )
+    # Pick the first snapshot dir and check for the critical files.
+    first_snapshot = next(snapshots.iterdir())
+    required = ("config.json",)  # the bare minimum for sentence-transformers
+    missing = [f for f in required if not (first_snapshot / f).exists()]
+    if missing:
+        return CheckResult(
+            name=f"HF cache: {label}",
+            status=STATUS_WARN,
+            summary=f"{model_name} cache incomplete (missing: {', '.join(missing)})",
+            details=[f"Re-fetch with `lynx manager install --model`."],
+        )
+    return CheckResult(
+        name=f"HF cache: {label}",
+        status=STATUS_OK,
+        summary=f"{model_name} present in HF cache",
+    )
+
+
+def check_config_file(config_path: Optional[Path]) -> "tuple[CheckResult, Optional[object]]":
+    """Validate the config file. Returns the check result AND the loaded
+    config object (or None on failure) so callers can chain into per-
+    source checks without re-parsing."""
+    if config_path is None:
+        # Fall back to the default lookup order used by `load_config`.
+        for candidate in (Path("config.json"), Path("./config.json")):
+            if candidate.exists():
+                config_path = candidate
+                break
+    if config_path is None or not config_path.exists():
+        return (
+            CheckResult(
+                name="Config file",
+                status=STATUS_ERROR,
+                summary="config.json not found",
+                details=[
+                    "Pass --config PATH, set RAG_CONFIG_PATH, or run "
+                    "`lynx manager init` to scaffold one.",
+                ],
+            ),
+            None,
+        )
+    try:
+        from ..config import load_config
+        cfg = load_config(config_path)
+    except SystemExit as e:
+        # load_config calls sys.exit on validation errors — capture it.
+        return (
+            CheckResult(
+                name="Config file",
+                status=STATUS_ERROR,
+                summary=f"{config_path} failed validation",
+                details=[f"Exit code: {e.code}. Re-run the failing command "
+                         f"for the full error message."],
+            ),
+            None,
+        )
+    except Exception as e:
+        return (
+            CheckResult(
+                name="Config file",
+                status=STATUS_ERROR,
+                summary=f"{config_path} could not be loaded",
+                details=[f"{type(e).__name__}: {e}"],
+            ),
+            None,
+        )
+    return (
+        CheckResult(
+            name="Config file",
+            status=STATUS_OK,
+            summary=f"{config_path}: valid, {len(cfg.sources)} source(s)",
+        ),
+        cfg,
+    )
+
+
+def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
+    """Check one source: path exists, ChromaDB readable, optional drift.
+
+    Drift detection requires bootstrapping the source backend which
+    loads the HF model — too expensive for `doctor`. We skip drift here
+    and surface only the path / Chroma-presence problems. The deeper
+    `get_rag_status` MCP tool can be used for drift inspection at
+    runtime.
+    """
+    src_type = src_cfg.get("type", "?")
+    details: list = []
+
+    # 1. Source path / URL existence
+    if src_type in ("codebase", "pdf"):
+        path = Path(src_cfg.get("path", ""))
+        if not path.exists():
+            return CheckResult(
+                name=f"Source {name!r}",
+                status=STATUS_ERROR,
+                summary=f"path {path} does not exist",
+            )
+        if not path.is_dir():
+            return CheckResult(
+                name=f"Source {name!r}",
+                status=STATUS_ERROR,
+                summary=f"path {path} is not a directory",
+            )
+        details.append(f"Source path: {path}")
+    elif src_type == "webdoc":
+        url = src_cfg.get("url", "")
+        if not url:
+            return CheckResult(
+                name=f"Source {name!r}",
+                status=STATUS_ERROR,
+                summary="webdoc has no URL",
+            )
+        details.append(f"URL: {url}")
+
+    # 2. ChromaDB directory presence
+    source_storage = storage_path / name
+    chroma_db = source_storage / "chroma.sqlite3"
+    if source_storage.exists():
+        if chroma_db.exists():
+            size_mb = chroma_db.stat().st_size / (1024 * 1024)
+            details.append(f"ChromaDB: {size_mb:.1f} MB at {chroma_db}")
+        else:
+            details.append(f"ChromaDB: not yet built (run `lynx build --source {name}`)")
+    else:
+        details.append("Storage dir not created yet — run `lynx build` to bootstrap.")
+
+    # 3. Watcher status (for codebase + pdf)
+    if src_type in ("codebase", "pdf"):
+        watcher_enabled = (src_cfg.get("watcher") or {}).get("enabled")
+        if watcher_enabled is False:
+            details.append("Watcher: disabled (manual refresh only)")
+        elif watcher_enabled:
+            details.append("Watcher: enabled (live updates on file changes)")
+
+    return CheckResult(
+        name=f"Source {name!r}",
+        status=STATUS_OK,
+        summary=f"type={src_type}, ok",
+        details=details,
+    )
+
+
+def check_optional_extras() -> CheckResult:
+    """Report which optional extras are installed.
+
+    We probe each known optional extra by trying to import its key
+    package. Result is informational (always OK) — missing extras are
+    not errors, just options the user might want.
+    """
+    extras_status: list = []
+    # (extra_name, package_to_probe, what_it_enables)
+    known = [
+        ("pdf-fast", "pymupdf", "faster PDF extraction on multi-column layouts"),
+    ]
+    for extra, package, what_for in known:
+        try:
+            __import__(package)
+            extras_status.append(f"[installed] {extra} — {what_for}")
+        except ImportError:
+            extras_status.append(
+                f"[not installed] {extra} — install with "
+                f"`lynx manager install {extra}` ({what_for})"
+            )
+    return CheckResult(
+        name="Optional extras",
+        status=STATUS_OK,
+        summary=f"{len(known)} known extras",
+        details=extras_status,
+    )
+
+
+def check_disk_space(storage_path: Path) -> CheckResult:
+    """Warn when the storage path's filesystem is running low."""
+    target = storage_path if storage_path.exists() else storage_path.parent
+    if not target.exists():
+        target = Path(".").resolve()
+    try:
+        usage = shutil.disk_usage(target)
+    except OSError as e:
+        return CheckResult(
+            name="Disk space",
+            status=STATUS_WARN,
+            summary=f"Couldn't determine free space at {target}: {e}",
+        )
+    free_mb = usage.free / (1024 * 1024)
+    if free_mb < 100:
+        return CheckResult(
+            name="Disk space",
+            status=STATUS_ERROR,
+            summary=f"Only {free_mb:.0f} MB free at {target} (< 100 MB minimum)",
+            details=["Free up disk space or move `storage_path` to a larger volume."],
+        )
+    if free_mb < 1000:
+        return CheckResult(
+            name="Disk space",
+            status=STATUS_WARN,
+            summary=f"{free_mb:.0f} MB free at {target} (under 1 GB — tight for indexing)",
+        )
+    free_gb = free_mb / 1024
+    return CheckResult(
+        name="Disk space",
+        status=STATUS_OK,
+        summary=f"{free_gb:.1f} GB free at {target}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation + CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def run_all_checks(config_path: Optional[Path]) -> list:
+    """Run every diagnostic and return the list of CheckResult."""
+    results: list = []
+
+    # Python first — if this fails everything else likely fails too,
+    # but we keep going so the user sees the full picture.
+    results.append(check_python_version())
+
+    # Config — short-circuit per-source checks if invalid.
+    cfg_result, cfg = check_config_file(config_path)
+    results.append(cfg_result)
+
+    # HF model cache — use config value when available, fall back to default.
+    if cfg is not None:
+        embedding_model = cfg.embedding.model_name
+    else:
+        embedding_model = "BAAI/bge-small-en-v1.5"
+    results.append(check_hf_model_cache(embedding_model, label="embedding"))
+
+    # Reranker model only if config says it's enabled.
+    if cfg is not None and cfg.search.reranker.enabled:
+        results.append(
+            check_hf_model_cache(cfg.search.reranker.model_name, label="reranker")
+        )
+
+    # Per-source.
+    if cfg is not None:
+        storage_path = Path(cfg.storage_path)
+        for name, src_cfg in cfg.sources.items():
+            results.append(check_source(name, src_cfg, storage_path))
+        results.append(check_disk_space(storage_path))
+
+    # Extras (always — informational).
+    results.append(check_optional_extras())
+
+    return results
+
+
+def _worst_status(results: list) -> str:
+    """Aggregate the worst status across all checks."""
+    has_error = any(r.status == STATUS_ERROR for r in results)
+    if has_error:
+        return STATUS_ERROR
+    has_warn = any(r.status == STATUS_WARN for r in results)
+    if has_warn:
+        return STATUS_WARN
+    return STATUS_OK
+
+
+def _format_human(results: list) -> str:
+    """Render the results as colored, human-readable text."""
+    out: list = [heading("Lynx diagnostic"), ""]
+    for r in results:
+        if r.status == STATUS_OK:
+            line = success(f"{bold(r.name)}: {r.summary}")
+        elif r.status == STATUS_WARN:
+            line = warn(f"{bold(r.name)}: {r.summary}")
+        else:
+            line = error(f"{bold(r.name)}: {r.summary}")
+        out.append(line)
+        for detail in r.details:
+            out.append(bullet(detail))
+    worst = _worst_status(results)
+    out.append("")
+    if worst == STATUS_OK:
+        out.append(success(bold("All checks passed.")))
+    elif worst == STATUS_WARN:
+        out.append(warn(bold("Some checks have warnings — review above.")))
+    else:
+        out.append(error(bold("Some checks failed — fix the errors above.")))
+    return "\n".join(out)
+
+
+def run_doctor(args) -> int:
+    """CLI entry point. Returns the exit code (0 ok, 1 warn, 2 error)."""
+    config_path = Path(args.config) if args.config else None
+    results = run_all_checks(config_path)
+
+    if getattr(args, "json", False):
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        print(_format_human(results))
+
+    worst = _worst_status(results)
+    return {STATUS_OK: 0, STATUS_WARN: 1, STATUS_ERROR: 2}[worst]

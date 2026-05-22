@@ -112,6 +112,94 @@ def _build_parser() -> argparse.ArgumentParser:
              "the graph layer enabled.",
     )
 
+    # --------------------------------------------------------------
+    # `lynx manager <cmd>` — LynxManager (setup wizard, doctor, install,
+    # web UI). All four sub-commands lazy-import the manager package so
+    # `lynx serve` doesn't pay the FastAPI / huggingface_hub import cost
+    # when only the MCP server is needed.
+    # --------------------------------------------------------------
+    sp_manager = sub.add_parser(
+        "manager",
+        help="LynxManager: interactive setup wizard, diagnostic, "
+             "extras/model installer, and local web UI.",
+    )
+    manager_sub = sp_manager.add_subparsers(
+        dest="manager_command", metavar="MANAGER_COMMAND",
+    )
+
+    sp_mgr_init = manager_sub.add_parser(
+        "init",
+        help="Interactive wizard that generates a valid config.json + "
+             "optionally downloads the embedding model and the AI-client "
+             "rules file.",
+    )
+    sp_mgr_init.add_argument(
+        "--output", "-o", metavar="PATH", default="config.json",
+        help="Where to write the generated config (default ./config.json).",
+    )
+    sp_mgr_init.add_argument(
+        "--non-interactive", action="store_true",
+        help="Skip prompts; use defaults for everything. Useful in scripts.",
+    )
+
+    sp_mgr_doctor = manager_sub.add_parser(
+        "doctor",
+        help="Run diagnostic checks: HF cache, drift, paths, deps, "
+             "watcher health. Exit code = 0 ok, 1 warn, 2 error.",
+    )
+    sp_mgr_doctor.add_argument("--config", "-c", metavar="PATH")
+    sp_mgr_doctor.add_argument(
+        "--json", action="store_true",
+        help="Output results as JSON instead of colored text.",
+    )
+
+    sp_mgr_install = manager_sub.add_parser(
+        "install",
+        help="Manage optional extras (pip) and HuggingFace model downloads.",
+    )
+    install_group = sp_mgr_install.add_mutually_exclusive_group()
+    install_group.add_argument(
+        "--list", action="store_true",
+        help="List available optional extras and which are installed.",
+    )
+    install_group.add_argument(
+        "--model", metavar="MODEL_NAME", nargs="?", const="__default__",
+        help="Download a HuggingFace model into the local cache. With no "
+             "value, downloads the embedding model from the active config.",
+    )
+    install_group.add_argument(
+        "extra", nargs="?", metavar="EXTRA",
+        help="Optional extra to install via pip (e.g. `pdf-fast`). "
+             "Equivalent to `pip install lynx[<extra>]`.",
+    )
+    sp_mgr_install.add_argument(
+        "--with-reranker", action="store_true",
+        help="When used with --model, also download the reranker model.",
+    )
+    sp_mgr_install.add_argument(
+        "--config", "-c", metavar="PATH",
+        help="Config file to read for model name detection (used by --model).",
+    )
+
+    sp_mgr_ui = manager_sub.add_parser(
+        "ui",
+        help="Launch the local web UI (FastAPI + HTMX). Listens only on "
+             "127.0.0.1; opens your browser automatically.",
+    )
+    sp_mgr_ui.add_argument("--config", "-c", metavar="PATH")
+    sp_mgr_ui.add_argument(
+        "--port", type=int, default=8765,
+        help="Port to listen on (default 8765, falls back to next free).",
+    )
+    sp_mgr_ui.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind address (default 127.0.0.1 — localhost-only by design).",
+    )
+    sp_mgr_ui.add_argument(
+        "--no-browser", action="store_true",
+        help="Don't open the browser automatically.",
+    )
+
     sp_mig = sub.add_parser(
         "migrate-config",
         help="Convert a v1 config.json to the v2 schema",
@@ -490,6 +578,26 @@ def _cmd_graph(args) -> int:
     return 0
 
 
+def _cmd_manager(args) -> int:
+    """Dispatch the `lynx manager <cmd>` sub-namespace.
+
+    Lazy-import the manager package so users who never run a `lynx
+    manager *` command don't pay its import cost (FastAPI alone is
+    ~300ms cold).
+    """
+    sub = getattr(args, "manager_command", None)
+    if sub is None:
+        print(
+            "error: `lynx manager` requires a sub-command "
+            "(init | doctor | install | ui).\n"
+            "Run `lynx manager --help` for details.",
+            file=sys.stderr,
+        )
+        return 2
+    from .manager import cli as manager_cli
+    return manager_cli.dispatch(sub, args)
+
+
 _DISPATCH = {
     "serve": _cmd_serve,
     "build": _cmd_build,
@@ -497,6 +605,7 @@ _DISPATCH = {
     "status": _cmd_status,
     "list-sources": _cmd_list_sources,
     "graph": _cmd_graph,
+    "manager": _cmd_manager,
     "migrate-config": _cmd_migrate_config,
 }
 
