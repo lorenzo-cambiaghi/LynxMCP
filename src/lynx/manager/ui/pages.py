@@ -219,10 +219,42 @@ def register(app) -> None:
             },
         )
 
-    _PLACEHOLDERS = [
-        ("/doctor",        "Doctor",        "Phase 5",
-         "lynx manager doctor"),
-    ]
+    # Phase 9: the doctor page wraps `lynx manager doctor` — full
+    # diagnostic report with re-run button.
+    @app.get("/doctor", response_class=HTMLResponse)
+    def doctor_page(request: Request):
+        from .. import doctor as doc_mod
+        config_path = Path(app.state.config_path) if app.state.config_path else None
+        try:
+            results = doc_mod.run_all_checks(config_path)
+            worst = doc_mod._worst_status(results)
+        except Exception as e:
+            # Doctor itself should never crash, but better safe than sorry.
+            results = []
+            worst = "error"
+            app.state.manager_error = (
+                f"Doctor crashed: {type(e).__name__}: {e}"
+            )
+        counts = {
+            "ok":    sum(1 for r in results if r.status == "ok"),
+            "warn":  sum(1 for r in results if r.status == "warn"),
+            "error": sum(1 for r in results if r.status == "error"),
+        }
+        return app.state.templates.TemplateResponse(
+            request, "doctor.html",
+            {
+                "results": [r.to_dict() for r in results],
+                "worst_status": worst,
+                "counts": counts,
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
+    # No more placeholder routes — every sidebar page now has a real
+    # implementation. List kept (empty) so future deferred features can
+    # use the helper below without scaffolding it again.
+    _PLACEHOLDERS: list = []
 
     def _make_placeholder(path, title, phase, cli_hint):
         @app.get(path, response_class=HTMLResponse, name=f"placeholder_{path.strip('/')}")

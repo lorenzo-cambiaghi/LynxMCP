@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Doctor — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-bold text-slate-900">Doctor</h1>
+  <button type="button"
+          hx-get="/doctor"
+          hx-target="body"
+          hx-swap="outerHTML"
+          class="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+    🔄 Re-run checks
+  </button>
+</div>
+
+<!-- Overall summary -->
+{% if worst_status == "ok" %}
+  <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded">
+    <div class="font-semibold text-green-900">✓ All checks passed — Lynx is healthy.</div>
+    <div class="text-sm text-green-700 mt-1">
+      {{ counts.ok }} ok
+      {% if counts.warn %} · {{ counts.warn }} warning(s){% endif %}
+      {% if counts.error %} · {{ counts.error }} error(s){% endif %}
+    </div>
+  </div>
+{% elif worst_status == "warn" %}
+  <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded">
+    <div class="font-semibold text-amber-900">⚠ Some warnings — review below.</div>
+    <div class="text-sm text-amber-700 mt-1">
+      {{ counts.ok }} ok · {{ counts.warn }} warning(s){% if counts.error %} · {{ counts.error }} error(s){% endif %}
+    </div>
+  </div>
+{% else %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded">
+    <div class="font-semibold text-red-900">✗ Errors detected — fix them before relying on Lynx.</div>
+    <div class="text-sm text-red-700 mt-1">
+      {{ counts.ok }} ok · {{ counts.warn }} warning(s) · {{ counts.error }} error(s)
+    </div>
+  </div>
+{% endif %}
+
+<!-- Per-check cards -->
+<div class="space-y-2">
+  {% for r in results %}
+    {% if r.status == "ok" %}
+      {% set bg = "bg-white border-slate-200" %}
+      {% set icon = "✓" %}
+      {% set icon_color = "text-green-600" %}
+    {% elif r.status == "warn" %}
+      {% set bg = "bg-amber-50 border-amber-200" %}
+      {% set icon = "⚠" %}
+      {% set icon_color = "text-amber-600" %}
+    {% else %}
+      {% set bg = "bg-red-50 border-red-200" %}
+      {% set icon = "✗" %}
+      {% set icon_color = "text-red-600" %}
+    {% endif %}
+    <div class="p-4 border rounded {{ bg }}">
+      <div class="flex items-baseline gap-2">
+        <span class="font-bold text-lg {{ icon_color }}">{{ icon }}</span>
+        <div class="font-semibold text-slate-900">{{ r.name }}</div>
+      </div>
+      <div class="ml-7 text-sm text-slate-700 mt-1">{{ r.summary }}</div>
+      {% if r.details %}
+        <ul class="ml-7 mt-2 text-xs text-slate-600 space-y-0.5">
+          {% for d in r.details %}
+            <li>• {{ d }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  {% endfor %}
+</div>
+
+<div class="mt-6 text-xs text-slate-500">
+  Equivalent CLI: <code class="bg-slate-100 px-1 rounded">lynx manager doctor</code>
+  — exit code 0 = ok, 1 = warn, 2 = error.
+</div>
+
+{% endblock %}
