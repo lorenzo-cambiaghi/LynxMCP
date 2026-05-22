@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% block title %}Playground — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-bold text-slate-900">Search playground</h1>
+  <div class="text-sm text-slate-500">
+    Try the same tools your AI client uses via MCP.
+  </div>
+</div>
+
+{% if not sources_meta %}
+  <div class="p-6 bg-white border border-dashed border-slate-300 rounded text-slate-500 text-sm">
+    No sources available. Add one in the
+    <a href="/config" class="text-indigo-600 hover:underline">Config editor</a>
+    or run <code class="bg-slate-100 px-1 rounded">lynx manager init</code>.
+  </div>
+{% else %}
+
+<!-- Shared source selector — hx-include="#pg-source" pulls this into every form -->
+<div class="mb-4 flex items-center gap-3">
+  <label for="pg-source" class="text-sm font-medium text-slate-700">Source:</label>
+  <select id="pg-source" name="source"
+          class="px-3 py-1.5 border border-slate-300 rounded text-sm bg-white
+                 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+    {% for s in sources_meta %}
+      <option value="{{ s.name }}"
+              data-type="{{ s.type }}"
+              data-graph="{{ 'true' if s.graph else 'false' }}">
+        {{ s.name }} ({{ s.type }}{% if s.graph %}, +graph{% endif %})
+      </option>
+    {% endfor %}
+  </select>
+  <div id="source-hint" class="text-xs text-slate-500"></div>
+</div>
+
+<!-- Tabs -->
+<div class="border-b border-slate-200 mb-4">
+  <nav class="flex gap-1" id="pg-tabs">
+    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+            data-tab="search">Search</button>
+    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+            data-tab="code">Code-aware</button>
+    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+            data-tab="graph">Graph</button>
+    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+            data-tab="diff">Diff</button>
+  </nav>
+</div>
+
+<!-- ===== Search tab ===== -->
+<section class="pg-panel" data-panel="search">
+  <form hx-post="/api/playground/search"
+        hx-include="#pg-source"
+        hx-target="#search-results"
+        hx-swap="innerHTML"
+        class="space-y-3">
+    <div class="flex gap-2 items-end">
+      <div class="flex-1">
+        <label class="block text-xs font-medium text-slate-600 mb-1">Query</label>
+        <input name="query" required
+               placeholder="e.g. 'authentication middleware' or 'parse json'"
+               class="w-full px-3 py-2 border border-slate-300 rounded text-sm
+                      focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Mode</label>
+        <select name="mode" class="px-3 py-2 border border-slate-300 rounded text-sm bg-white">
+          <option value="">(default)</option>
+          <option value="hybrid">hybrid</option>
+          <option value="dense">dense</option>
+          <option value="sparse">sparse</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Top K</label>
+        <input type="number" name="top_k" value="5" min="1" max="50"
+               class="w-20 px-3 py-2 border border-slate-300 rounded text-sm">
+      </div>
+      <button type="submit"
+              class="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
+        Search
+      </button>
+    </div>
+  </form>
+  <div id="search-results" class="mt-4"></div>
+</section>
+
+<!-- ===== Code-aware tab ===== -->
+<section class="pg-panel hidden" data-panel="code">
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+    <!-- find_definition -->
+    <form hx-post="/api/playground/find_definition"
+          hx-include="#pg-source"
+          hx-target="#find-def-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">find_definition</div>
+      <input name="symbol" required placeholder="symbol name (e.g. UserManager)"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="10" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="find-def-results" class="mt-2"></div>
+    </form>
+
+    <!-- find_usages -->
+    <form hx-post="/api/playground/find_usages"
+          hx-include="#pg-source"
+          hx-target="#find-uses-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">find_usages</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="50" min="1" max="200"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="find-uses-results" class="mt-2"></div>
+    </form>
+
+    <!-- find_tests_for -->
+    <form hx-post="/api/playground/find_tests_for"
+          hx-include="#pg-source"
+          hx-target="#find-tests-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">find_tests_for</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <input name="test_path_pattern" placeholder="optional path pattern (e.g. tests/)"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="20" min="1" max="100"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="find-tests-results" class="mt-2"></div>
+    </form>
+
+    <!-- find_similar -->
+    <form hx-post="/api/playground/find_similar"
+          hx-include="#pg-source"
+          hx-target="#find-similar-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">find_similar</div>
+      <textarea name="snippet" required rows="4" placeholder="paste a code snippet"
+                class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono"></textarea>
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Top K</label>
+          <input type="number" name="top_k" value="10" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="find-similar-results" class="mt-2"></div>
+    </form>
+
+  </div>
+</section>
+
+<!-- ===== Graph tab ===== -->
+<section class="pg-panel hidden" data-panel="graph">
+
+  <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
+    💡 Graph tools work only on codebase sources with
+    <code class="bg-amber-100 px-1 rounded">graph.enabled = true</code> in config.
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+    <!-- architectural_overview -->
+    <form hx-post="/api/playground/architectural_overview"
+          hx-include="#pg-source"
+          hx-target="#arch-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2 lg:col-span-2">
+      <div class="font-semibold text-slate-800 text-sm">architectural_overview</div>
+      <div class="flex gap-3 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Top N god nodes</label>
+          <input type="number" name="top_n_gods" value="10" min="1" max="50"
+                 class="w-24 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Min community size</label>
+          <input type="number" name="min_community_size" value="3" min="2" max="20"
+                 class="w-24 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="arch-results" class="mt-2"></div>
+    </form>
+
+    <!-- get_callers -->
+    <form hx-post="/api/playground/get_callers"
+          hx-include="#pg-source"
+          hx-target="#callers-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">get_callers</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="50" min="1" max="200"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="callers-results" class="mt-2"></div>
+    </form>
+
+    <!-- get_callees -->
+    <form hx-post="/api/playground/get_callees"
+          hx-include="#pg-source"
+          hx-target="#callees-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">get_callees</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="50" min="1" max="200"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="callees-results" class="mt-2"></div>
+    </form>
+
+  </div>
+</section>
+
+<!-- ===== Diff tab ===== -->
+<section class="pg-panel hidden" data-panel="diff">
+
+  <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
+    💡 Diff search works only on codebase sources with
+    <code class="bg-amber-100 px-1 rounded">git_integration.enabled = true</code>.
+    Restricts results to files modified vs the base ref.
+  </div>
+
+  <form hx-post="/api/playground/search_diff"
+        hx-include="#pg-source"
+        hx-target="#diff-results"
+        class="p-4 bg-white border border-slate-200 rounded space-y-2">
+    <div class="font-semibold text-slate-800 text-sm">search_diff</div>
+    <input name="query" required placeholder="search query (e.g. 'token validation')"
+           class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+    <div class="flex gap-3 items-end">
+      <div class="flex-1">
+        <label class="block text-xs text-slate-600 mb-1">Base ref (optional)</label>
+        <input name="base" placeholder="e.g. main, origin/main, HEAD~10"
+               class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Top K</label>
+        <input type="number" name="top_k" value="8" min="1" max="50"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+    </div>
+    <div id="diff-results" class="mt-2"></div>
+  </form>
+
+</section>
+
+<script>
+  // ----- Tab switcher (vanilla JS, no library) -----
+  const tabBtns = document.querySelectorAll('.pg-tab-btn');
+  const panels  = document.querySelectorAll('.pg-panel');
+  function activate(tab) {
+    tabBtns.forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.className = 'pg-tab-btn px-4 py-2 text-sm font-medium border-b-2 ' +
+        (on ? 'border-indigo-600 text-indigo-700'
+            : 'border-transparent text-slate-500 hover:text-slate-700');
+    });
+    panels.forEach(p => p.classList.toggle('hidden', p.dataset.panel !== tab));
+  }
+  tabBtns.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+  activate('search');  // default
+
+  // ----- Source hint (graph badge etc) -----
+  const sel = document.getElementById('pg-source');
+  const hint = document.getElementById('source-hint');
+  function refreshHint() {
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt) { hint.textContent = ''; return; }
+    const bits = [];
+    bits.push('type=' + opt.dataset.type);
+    if (opt.dataset.graph === 'true') bits.push('graph✓');
+    hint.textContent = bits.join(' · ');
+  }
+  sel.addEventListener('change', refreshHint);
+  refreshHint();
+</script>
+
+{% endif %}
+{% endblock %}

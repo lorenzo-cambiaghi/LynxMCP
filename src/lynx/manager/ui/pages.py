@@ -79,7 +79,29 @@ def register(app) -> None:
             },
         )
 
-    # Phase 5-8 land in their own templates. Until then we surface the
+    # Phase 6: search playground — exercises all per-source tools the
+    # MCP server exposes (search, find_definition, get_callers, ...).
+    @app.get("/playground", response_class=HTMLResponse)
+    def playground(request: Request):
+        mgr = _get_manager(app)
+        sources_meta: list = []
+        if mgr is not None:
+            for st in mgr.list_sources():
+                sources_meta.append({
+                    "name": st["name"],
+                    "type": st["type"],
+                    "graph": bool(st.get("graph")),
+                })
+        return app.state.templates.TemplateResponse(
+            request, "playground.html",
+            {
+                "sources_meta": sources_meta,
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
+    # Phase 7-8 land in their own templates. Until then we surface the
     # sidebar links to clear placeholders so the user knows the page
     # exists and what CLI command does the same thing.
 
@@ -111,8 +133,6 @@ def register(app) -> None:
     _PLACEHOLDERS = [
         ("/sources",       "Sources",       "Phase 7",
          "lynx status --source NAME"),
-        ("/playground",    "Search playground", "Phase 6",
-         "lynx search 'query' --source NAME"),
         ("/integrations",  "Integrations",  "Phase 8",
          "see README section 'Connect it to your AI client'"),
         ("/doctor",        "Doctor",        "Phase 5",
