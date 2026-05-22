@@ -31,6 +31,7 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 4. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
 5. **🎯 Code-aware combined queries** (new in v0.8) — `find_definition`, `find_usages`, `find_tests_for`, `find_similar`, `search_diff`. They combine the graph layer with hybrid search so the AI gets a direct answer to *"where is X defined?"*, *"who uses X?"*, *"are there tests for X?"*, *"is there code similar to this snippet?"*, *"what did I change vs main, and is anything else affected?"* — instead of you scrolling through search results.
 6. **⚙️ Optional cross-encoder reranker** (opt-in, new in v0.8) — after the hybrid RRF, a small ~80MB local cross-encoder model re-scores the top-N candidates by actually *looking at* (query, chunk) content. ~+20-30% precision@1 on ambiguous queries for ~50ms extra latency. Off by default.
+7. **🎛️ LynxManager** (new in v0.9) — a sub-command namespace that turns the painful parts of running Lynx into one-liners: `lynx manager init` is an interactive wizard that builds your `config.json` step-by-step (and writes the AI-client rules file for you), `lynx manager doctor` runs a full diagnostic (HF cache, drift, paths, extras, disk space), `lynx manager install` handles pip extras + explicit model downloads, and `lynx manager ui` opens a local web panel (FastAPI + HTMX + bundled Tailwind, `127.0.0.1` only) for dashboard, config editor, search playground, build trigger and integration snippets. No CDN, no cloud — fully offline like everything else in Lynx.
 
 ### 💡 See the Difference
 
@@ -70,32 +71,33 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 3. [How it works (in 30 seconds)](#how-it-works-in-30-seconds)
 4. [Prerequisites](#prerequisites)
 5. [Installation](#installation)
-6. [Configuration](#configuration)
-7. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
-8. [Build the index for the first time](#build-the-index-for-the-first-time)
-9. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
-10. [Webdoc sources](#webdoc-sources)
-11. [PDF sources](#pdf-sources)
-12. [Connect it to your AI client](#connect-it-to-your-ai-client)
+6. [LynxManager — guided setup, web UI, diagnostics (new in v0.9)](#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09)
+7. [Configuration](#configuration)
+8. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
+9. [Build the index for the first time](#build-the-index-for-the-first-time)
+10. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
+11. [Webdoc sources](#webdoc-sources)
+12. [PDF sources](#pdf-sources)
+13. [Connect it to your AI client](#connect-it-to-your-ai-client)
     - [Claude Code (CLI)](#claude-code-cli)
     - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
     - [Google Antigravity](#google-antigravity)
     - [Cursor](#cursor)
     - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-13. [Command-line interface](#command-line-interface)
-14. [Verify the integration works](#verify-the-integration-works)
-15. [The MCP tools you get](#the-mcp-tools-you-get)
-16. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
-17. [Keeping the index up to date](#keeping-the-index-up-to-date)
-18. [AST-aware chunking](#ast-aware-chunking)
-19. [Hybrid retrieval](#hybrid-retrieval)
-20. [Reranking (opt-in)](#reranking-opt-in)
-21. [Graph layer (opt-in)](#graph-layer-opt-in)
-22. [Config drift detection](#config-drift-detection)
-23. [Architecture](#architecture)
-24. [Troubleshooting](#troubleshooting)
-25. [Contributing](#contributing)
-25. [Privacy guarantees](#privacy-guarantees)
+14. [Command-line interface](#command-line-interface)
+15. [Verify the integration works](#verify-the-integration-works)
+16. [The MCP tools you get](#the-mcp-tools-you-get)
+17. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+18. [Keeping the index up to date](#keeping-the-index-up-to-date)
+19. [AST-aware chunking](#ast-aware-chunking)
+20. [Hybrid retrieval](#hybrid-retrieval)
+21. [Reranking (opt-in)](#reranking-opt-in)
+22. [Graph layer (opt-in)](#graph-layer-opt-in)
+23. [Config drift detection](#config-drift-detection)
+24. [Architecture](#architecture)
+25. [Troubleshooting](#troubleshooting)
+26. [Contributing](#contributing)
+27. [Privacy guarantees](#privacy-guarantees)
 
 ---
 
@@ -293,7 +295,116 @@ lynx --help
 
 ---
 
+## LynxManager — guided setup, web UI, diagnostics (new in v0.9)
+
+If you'd rather not hand-edit a JSON file and read through the
+configuration section that follows, `lynx manager` covers the entire
+lifecycle in four commands. **This is the recommended on-ramp for new
+users.** Everything stays local — no telemetry, no cloud, same privacy
+guarantees as the rest of Lynx.
+
+### `lynx manager init` — interactive setup wizard
+
+```bash
+lynx manager init
+```
+
+Walks you through every decision step by step: storage path, embedding
+model (defaults to `BAAI/bge-small-en-v1.5`), search mode, optional
+reranker, then a "add another source?" loop for codebase / webdoc / PDF
+sources. For codebases it auto-detects file extensions, watcher
+settings and git integration based on what's actually in the folder.
+At the end it:
+
+- writes a valid `config.json`,
+- offers to download the embedding model (one-time `snapshot_download`),
+- generates an AI-client rules file (`CLAUDE.md` / `AGENTS.md` /
+  `.cursor/rules/lynx.md` depending on the client you pick),
+- prints the exact MCP snippet to paste into your client.
+
+Non-interactive mode (`--non-interactive`) is supported for scripting.
+
+### `lynx manager doctor` — full diagnostic
+
+```bash
+lynx manager doctor
+```
+
+Runs six checks in parallel and prints a colour-coded report: Python
+version, HuggingFace cache (per declared model), config file validity,
+per-source state (path exists, ChromaDB collection healthy, drift
+status, watcher path still there), optional extras (which are installed
+vs available), and free disk space at the storage path. Exit code is
+`0` (all green), `1` (warnings), or `2` (errors) so you can wire it
+into CI / pre-deploy scripts.
+
+### `lynx manager install` — extras + model download
+
+```bash
+# What extras are available / installed?
+lynx manager install --list
+
+# Install an extra (uses `pip install lynx[<name>]` under the hood)
+lynx manager install pdf-fast
+
+# Download the configured embedding model explicitly
+lynx manager install --model
+
+# ...and the reranker model too
+lynx manager install --model --with-reranker
+```
+
+The `--model` path temporarily bypasses `HF_HUB_OFFLINE` /
+`TRANSFORMERS_OFFLINE` so you can force a download even when
+runtime offline mode is on. Useful when prepping an air-gapped machine.
+
+### `lynx manager ui` — local web panel
+
+```bash
+lynx manager ui --config ./config.json
+# 🦌 Lynx UI ready at http://127.0.0.1:8765
+```
+
+Opens a small FastAPI app (bundled HTMX + Tailwind, no CDN, listens on
+`127.0.0.1` only). What's inside:
+
+- **Dashboard** — per-source cards with chunk count, drift severity,
+  lock badge (set when another process is writing to the same
+  ChromaDB), plus a doctor summary.
+- **Sources** — list + per-source detail page with a rebuild button
+  that runs `manager.update(src, force=True)` in a daemon thread; the
+  HTMX widget self-polls every second until the job is terminal.
+  Refuses to start when the SQLite write lock is held by another
+  process — guards against the classic "I left `lynx serve` running
+  and the build corrupted the DB" footgun.
+- **Playground** — tabbed forms for every per-source tool the MCP
+  server exposes: hybrid search, `find_definition` / `find_usages` /
+  `find_tests_for` / `find_similar`, `architectural_overview` /
+  `get_callers` / `get_callees`, and `search_diff`. Faster than
+  spinning up a client to validate that a query works.
+- **Config** — JSON editor with backup-then-overwrite save and the
+  exact same validation the CLI uses (validates to a tempfile before
+  touching the real config).
+- **Integrations** — per-client cards (Claude Code, Cursor,
+  Antigravity, generic stdio) with the MCP JSON snippet pre-populated
+  using *your* interpreter + *your* config path, copy-to-clipboard
+  button, and one-click download of the generated `CLAUDE.md` /
+  `AGENTS.md` / `lynx.md` rules file.
+
+Auth and HTTPS are explicitly out of scope — this is a personal
+management tool, not a shared service. Bind is `127.0.0.1` only. To
+disable the auto-browser-open use `--no-browser`. To pick a different
+port use `--port`. If the port is busy it advances up to 10 slots
+before letting the OS assign one.
+
+---
+
 ## Configuration
+
+> 💡 **New in v0.9:** prefer `lynx manager init` over editing JSON by
+> hand — the wizard validates inputs as you go and writes the rules
+> file for your AI client too. The reference below is still authoritative
+> for advanced cases (multi-source, custom rerankers, watcher tuning).
 
 The config is a single JSON file with **shared settings at the top level**
 and a `sources` block that lists everything to index. Copy the example and
@@ -899,8 +1010,8 @@ A single `pip install` covers all of them.
 
 ## Command-line interface
 
-The same `lynx` command exposes six subcommands. Useful for debugging the
-index, scripting, or just querying the codebase without opening an AI
+The same `lynx` command exposes seven subcommands. Useful for debugging
+the index, scripting, or just querying the codebase without opening an AI
 assistant.
 
 ```text
@@ -914,6 +1025,11 @@ lynx [--version] [-h] COMMAND ...
   graph         Manage the per-source knowledge graph layer
                   graph build   Rebuild graph for a source
                   graph status  Show node / edge counts, by language / kind
+  manager       Setup / install / diagnose / web UI (new in v0.9)
+                  manager init     Interactive config wizard
+                  manager doctor   Full diagnostic report
+                  manager install  Extras + HF model download
+                  manager ui       Local web panel (FastAPI + HTMX)
 ```
 
 > Every example in this section can be invoked equivalently as
