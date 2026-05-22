@@ -231,18 +231,68 @@ backward-compatible: leave it off and nothing changes.
 
 ## Installation
 
-The project is a standard Python package. Install it from a local clone in
-editable mode (recommended while it is pre-PyPI):
+### Recommended: a one-line install with `pipx` or `uv tool`
+
+If you just want to **use** Lynx (not hack on it), install it as a
+standalone CLI tool. Both `pipx` and `uv tool` create an isolated
+virtualenv per tool and drop the `lynx` command **on your system
+PATH** so you can call it from any folder, in any shell, on any
+platform — no `source .venv/bin/activate`, no `python -m`, no
+absolute paths.
+
+```bash
+# pipx — the established "install a Python CLI globally" tool.
+# macOS / Linux: `brew install pipx` (or `python -m pip install --user pipx`)
+# Windows:       `py -m pip install --user pipx`
+pipx install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
+
+# OR — uv (faster, same end result):
+# Install uv first: see https://docs.astral.sh/uv/getting-started/installation/
+uv tool install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
+```
+
+After either of those, `lynx` works from anywhere:
+
+```bash
+lynx --version
+lynx manager ui     # opens the web panel
+lynx manager init   # interactive setup wizard
+```
+
+(When LynxMCP lands on PyPI the source URL becomes just `lynx`, e.g.
+`pipx install lynx`.)
+
+To upgrade later: `pipx upgrade lynx` (or `uv tool upgrade lynx`).
+To uninstall: `pipx uninstall lynx` (or `uv tool uninstall lynx`).
+
+### Development install (editable from a clone)
+
+Use this only if you want to **modify** Lynx's source code and have
+your changes take effect immediately:
 
 ```bash
 git clone https://github.com/lorenzo-cambiaghi/LynxMCP.git
 cd LynxMCP
-pip install -e .
+
+# pick ONE of these:
+python -m venv .venv && source .venv/bin/activate     # macOS / Linux
+python -m venv .venv && .venv\Scripts\activate        # Windows
+# OR with uv:  uv venv && source .venv/bin/activate
+
+pip install -e .     # or: uv pip install -e .
 ```
 
-This installs the package and exposes a `lynx` console
-command. (When PyPI publication lands, the install becomes a single
-`pip install lynx`.)
+In this mode the `lynx` command exists at `.venv/bin/lynx` (or
+`.venv\Scripts\lynx.exe` on Windows) and is on PATH **only while the
+venv is activated**. If you forget to activate, you'll see
+`command not found: lynx`. Three ways out:
+
+1. Activate the venv: `source .venv/bin/activate` (then plain `lynx ...` works).
+2. Use the full path: `.venv/bin/lynx manager ui`.
+3. Use the explicit module form: `.venv/bin/python -m lynx manager ui`.
+
+For everyday use, `pipx`/`uv tool` (above) is dramatically nicer —
+it sidesteps the activate-the-venv ritual entirely.
 
 > On Python 3.14+ you may also need: `pip install "mcp[cli]"`
 
