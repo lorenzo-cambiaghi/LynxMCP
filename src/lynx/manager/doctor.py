@@ -411,7 +411,11 @@ def _format_human(results: list) -> str:
 
 def run_doctor(args) -> int:
     """CLI entry point. Returns the exit code (0 ok, 1 warn, 2 error)."""
-    config_path = Path(args.config) if args.config else None
+    # Same resolution chain as `lynx serve` so `lynx manager doctor`
+    # without --config picks up ./config.json or $RAG_CONFIG_PATH.
+    from ..config import resolve_config_path
+    resolved = resolve_config_path(getattr(args, "config", None))
+    config_path = resolved if resolved.is_file() else None
     results = run_all_checks(config_path)
 
     if getattr(args, "json", False):

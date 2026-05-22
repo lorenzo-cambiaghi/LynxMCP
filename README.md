@@ -360,13 +360,125 @@ runtime offline mode is on. Useful when prepping an air-gapped machine.
 
 ### `lynx manager ui` — local web panel
 
+A small web app that runs **on your own machine** and lets you click
+through everything Lynx can do — no command-line needed past the launch.
+Useful when you've just set Lynx up and want to verify it actually works
+before wiring it into your AI client.
+
+#### Step 1 — launch it
+
+Open a terminal in the folder where your `config.json` lives, and type:
+
 ```bash
-lynx manager ui --config ./config.json
-# 🦌 Lynx UI ready at http://127.0.0.1:8765
+lynx manager ui
 ```
 
-Opens a small FastAPI app (bundled HTMX + Tailwind, no CDN, listens on
-`127.0.0.1` only). What's inside:
+When you don't pass `--config`, Lynx uses the same resolution chain as
+`lynx serve`: explicit flag → `RAG_CONFIG_PATH` env var → `./config.json`
+in the current working directory. On Windows that means PowerShell /
+cmd.exe / Git Bash all need to be **launched from the folder that
+contains `config.json`** (or you can pass the full path):
+
+```bash
+# Windows PowerShell / cmd.exe / Git Bash — point at it explicitly if
+# you don't want to cd first:
+python -m lynx manager ui --config C:\Users\you\projects\myrepo\config.json
+```
+
+> If your config sits elsewhere, point at it explicitly:
+> `lynx manager ui --config /full/path/to/config.json`
+>
+> The first line of the terminal output tells you exactly which config
+> file was picked up — useful for catching "I thought I was in the
+> right folder" mistakes:
+> ```text
+> [ui] using config: /home/you/myrepo/config.json
+> 🦌 Lynx UI ready at http://127.0.0.1:8765
+> ```
+
+You'll see something like this in the terminal:
+
+```text
+🦌 Lynx UI ready at http://127.0.0.1:8765
+   Press Ctrl+C to stop.
+```
+
+About half a second later **your default browser opens automatically**
+on that URL and you land on the LynxManager dashboard.
+
+> **Browser didn't open?** Some setups (SSH sessions, minimal Linux
+> desktops, certain WSL configurations) can't launch a browser
+> automatically. Just copy the URL — `http://127.0.0.1:8765` — and
+> paste it into any browser tab on the same machine. It works the
+> same way.
+>
+> **Port already in use?** Lynx tries the next 10 ports automatically
+> (`8766`, `8767`, …) and prints whichever one it landed on. If you
+> want a specific port, pass `--port 9000`.
+>
+> **Want to launch without opening a browser?** Use
+> `lynx manager ui --no-browser` (handy when you're remoting in).
+>
+> **To stop it,** go back to the terminal and press `Ctrl+C`.
+
+The UI listens **only on `127.0.0.1`** — it is not reachable from other
+machines on the network. There's no login because there's no need: nobody
+else can reach it.
+
+#### Step 2 — a 5-minute tour for a brand-new user
+
+Let's say you've just run `lynx manager init`, picked your codebase folder,
+and now have no idea what you actually got. Here's what to do, in order:
+
+1. **Dashboard (the page you land on).** You'll see one card per source.
+   Each card shows the chunk count (how many text fragments are indexed),
+   the last-update time, and a coloured badge if anything is off (`drift:
+   warning` if files changed since the last build, `🔒 locked` if another
+   process is using it). The "Health check" box at the top is your
+   `lynx manager doctor` result rolled up into one line — green means
+   everything's fine. **If a source shows `0 chunks`** you haven't built
+   the index yet — see step 4.
+
+2. **Click the source name** (e.g. `myproject`). You're now on the source
+   detail page: full status, graph layer stats if you enabled it, and a
+   big **Rebuild index** button.
+
+3. **Open the Playground** (left sidebar → 🔎 Playground). Pick your
+   source from the dropdown at the top and type a question into the
+   Search tab — something like `"how does authentication work?"` or
+   `"where do we parse JSON?"`. Hit Search. You'll get back a list of
+   code chunks with file path, line range, and a relevance score. **This
+   is exactly what your AI client will see** when it calls Lynx — no
+   need to wire up an AI client just to find out whether Lynx is
+   working.
+
+4. **If you haven't built the index yet**, go back to the source detail
+   page (left sidebar → 📚 Sources → click your source) and hit
+   **Rebuild index**. A status panel appears and updates itself every
+   second. Builds take seconds for small repos, a few minutes for
+   bigger ones. When it says ✓ Build complete, return to the Playground
+   and try the search again.
+
+5. **Wire it into your AI client** (left sidebar → 🔌 Integrations).
+   You'll see a card for Claude Code, Cursor, Antigravity, and generic
+   stdio. **Copy the JSON snippet** with the button — it's already
+   filled in with *your* Python interpreter and *your* config path —
+   and paste it into the file shown on the card (e.g.
+   `~/.claude/mcp_settings.json` for Claude Code). Also click
+   **Download CLAUDE.md** (or `AGENTS.md` / `lynx.md`) to get an
+   auto-generated rules file that teaches your AI when to call Lynx's
+   tools. Drop the file in your repo root and restart the AI client.
+
+6. **(Optional) Edit the config** from the Config tab if you want to
+   add another source or tweak a setting — the editor validates with
+   the exact same loader the CLI uses, and keeps a `.bak` of the
+   previous version in case you want to roll back.
+
+That's the whole product in five minutes. Everything else (graph tools,
+diff search, multiple sources, reranker) is built on the same surface
+— same dashboard, same playground, same lock detection.
+
+#### What each page does (reference)
 
 - **Dashboard** — per-source cards with chunk count, drift severity,
   lock badge (set when another process is writing to the same
@@ -390,6 +502,8 @@ Opens a small FastAPI app (bundled HTMX + Tailwind, no CDN, listens on
   using *your* interpreter + *your* config path, copy-to-clipboard
   button, and one-click download of the generated `CLAUDE.md` /
   `AGENTS.md` / `lynx.md` rules file.
+
+#### Notes on scope
 
 Auth and HTTPS are explicitly out of scope — this is a personal
 management tool, not a shared service. Bind is `127.0.0.1` only. To

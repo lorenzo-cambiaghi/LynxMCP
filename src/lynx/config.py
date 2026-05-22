@@ -374,21 +374,31 @@ def _looks_like_v1(raw: dict) -> bool:
     return "codebase_path" in raw and "sources" not in raw
 
 
+def resolve_config_path(explicit: "Path | str | None" = None) -> Path:
+    """Apply the standard resolution chain and return the chosen path.
+
+    Order: explicit argument > `RAG_CONFIG_PATH` env var > `./config.json`
+    in the current working directory. The returned path is NOT guaranteed
+    to exist — callers should `.is_file()` and react accordingly. Kept
+    as a single source of truth so `lynx serve`, `lynx manager ui`,
+    `lynx manager doctor`, and `lynx manager install --model` never
+    disagree on which config they're looking at.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_override = os.environ.get("RAG_CONFIG_PATH")
+    if env_override:
+        return Path(env_override)
+    return _default_config_path()
+
+
 def load_config(config_path: Path | None = None) -> Config:
     """Load and validate the JSON config file.
 
     Exits with a clear error message if the config is missing, malformed,
     or in an unsupported schema version.
     """
-    if config_path is None:
-        env_override = os.environ.get("RAG_CONFIG_PATH")
-        if env_override:
-            config_path = Path(env_override)
-        else:
-            config_path = _default_config_path()
-    else:
-        # Accept str / os.PathLike from callers (CLI, tests).
-        config_path = Path(config_path)
+    config_path = resolve_config_path(config_path)
 
     if not config_path.is_file():
         _config_error(

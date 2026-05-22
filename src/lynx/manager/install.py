@@ -202,7 +202,11 @@ def run_install(args) -> int:
 
     model_arg = getattr(args, "model", None)
     if model_arg is not None:
-        config_path = Path(args.config) if getattr(args, "config", None) else None
+        # Resolve via the shared chain so --model without --config picks
+        # up ./config.json or $RAG_CONFIG_PATH like `lynx serve` does.
+        from ..config import resolve_config_path
+        resolved = resolve_config_path(getattr(args, "config", None))
+        config_path = resolved if resolved.is_file() else None
         with_reranker = bool(getattr(args, "with_reranker", False))
         if model_arg == "__default__":
             # --model with no value → use config-driven model name

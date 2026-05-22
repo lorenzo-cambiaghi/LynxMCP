@@ -131,7 +131,16 @@ def _get_manager(app):
         # We already tried and failed — don't retry on every request
         return None
     if app.state.config_path is None or not Path(app.state.config_path).exists():
-        app.state.manager_error = "No config file (set --config or run `lynx manager init`)."
+        tried = (
+            str(Path(app.state.config_path).resolve())
+            if app.state.config_path is not None
+            else "<none>"
+        )
+        app.state.manager_error = (
+            f"No config file found at {tried}. "
+            f"Restart the UI with --config PATH, set RAG_CONFIG_PATH, "
+            f"or run `lynx manager init` to create one."
+        )
         return None
     try:
         from ...config import load_config
@@ -155,7 +164,18 @@ def _get_manager(app):
 def run_ui(args) -> int:
     """Launch the web UI. Returns the exit code uvicorn produces (0 on
     clean shutdown via Ctrl+C)."""
-    config_path = Path(args.config) if getattr(args, "config", None) else None
+    # Use the same resolution chain as `lynx serve` so the UI auto-picks
+    # ./config.json (or $RAG_CONFIG_PATH) when --config is omitted. On
+    # Windows the cwd handling is occasionally surprising — log what we
+    # resolved so the user can verify at a glance.
+    from ...config import resolve_config_path
+    config_path = resolve_config_path(getattr(args, "config", None))
+    if config_path.is_file():
+        _log(f"[ui] using config: {config_path.resolve()}")
+    else:
+        _log(f"[ui] no config at {config_path.resolve()} — "
+             f"launching with empty manager (pass --config or run "
+             f"`lynx manager init` to create one)")
 
     requested_port = int(getattr(args, "port", 8765))
     host = str(getattr(args, "host", "127.0.0.1"))
