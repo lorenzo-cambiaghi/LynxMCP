@@ -462,7 +462,7 @@ python -m lynx manager ui --config C:\Users\you\projects\myrepo\config.json
 > [ui] using config: /home/you/myrepo/config.json
 > [ui] loading embedding model + opening source collections (first launch can take 30s)...
 > [ui] manager ready in 4.2s (2 sources).
-> 🦌 Lynx UI ready at http://127.0.0.1:8765
+> 🐱 Lynx UI ready at http://127.0.0.1:8765
 > ```
 > The browser only opens **after** the manager is ready — so the page
 > loads instantly instead of hanging on a white screen while
@@ -471,7 +471,7 @@ python -m lynx manager ui --config C:\Users\you\projects\myrepo\config.json
 You'll see something like this in the terminal:
 
 ```text
-🦌 Lynx UI ready at http://127.0.0.1:8765
+🐱 Lynx UI ready at http://127.0.0.1:8765
    Press Ctrl+C to stop.
 ```
 

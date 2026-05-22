@@ -229,7 +229,7 @@ def run_ui(args) -> int:
                 _log(f"[ui] couldn't auto-open browser: {e}")
         threading.Thread(target=_open_later, daemon=True).start()
 
-    print(f"🦌 Lynx UI ready at {url}", file=sys.stderr)
+    print(f"🐱 Lynx UI ready at {url}", file=sys.stderr)
     print(f"   Press Ctrl+C to stop.", file=sys.stderr)
 
     try:
