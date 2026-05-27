@@ -1,6 +1,6 @@
 # LynxMCP
 
-```
+```text
            /\     /\           Lynceus (Latin: Lynx or Lynceus) was a hero in Greek mythology,
           {  `---'  }          one of the Argonauts who joined Jason's expedition, renowned
           {  O   O  }          for his extraordinary eyesight. Son of Aphareus and brother
@@ -16,46 +16,48 @@
 
 *A tool that finds the buried answer in your codebase deserves the name of the man who saw it first.*
 
-### 🚀 Supercharge Your AI Assistant with "Super Sight"
+**The Privacy-First, Long-Term Memory for your AI Coding Assistant.**
 
-Ever asked your AI assistant to fix a bug, only to watch it blindly guess because it can't "see" your entire project?
-AI models are incredibly smart, but they suffer from **context limits**. They don't know your codebase, they haven't read the documentation for the latest version of your framework, and they often hallucinate the wrong APIs.
+---
 
-**LynxMCP** fixes this. It runs locally as an MCP server and gives your AI assistant three ways to interrogate your project the moment a question shows up — without uploading a single byte to the cloud.
+### 🚀 Stop letting your AI guess. Give it "Super Sight".
 
-### 🛠️ What you get
+Modern AI coding assistants are incredibly smart, but they suffer from severe **context amnesia**. They only "know" the files you currently have open. If you ask them to refactor a core interface or explain a complex architecture, they often blindly guess or hallucinate non-existent APIs. 
 
-1. **🔍 Semantic + lexical search** (always on) — *"find the code that handles X"*. AST-aware chunking (13 languages) + hybrid dense + BM25 + RRF fusion. Beats `grep` because it understands what code *does*, not just how it's spelled.
-2. **🌐 Library docs at hand** (always on) — point Lynx at a docs site (Unity, Avalonia, your in-house framework) and the AI searches the *real* current API instead of hallucinating one from its training data.
-3. **📄 PDF documents** (always on, new in v0.7) — point Lynx at a folder of PDFs (manuals, RFCs, normative, white-papers) and it extracts the text page-by-page; results cite the source as `User Manual.pdf p.42`. Scanned PDFs and password-protected ones are auto-skipped with a clear warning.
-4. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
-5. **🎯 Code-aware combined queries** (new in v0.8) — `find_definition`, `find_usages`, `find_tests_for`, `find_similar`, `search_diff`. They combine the graph layer with hybrid search so the AI gets a direct answer to *"where is X defined?"*, *"who uses X?"*, *"are there tests for X?"*, *"is there code similar to this snippet?"*, *"what did I change vs main, and is anything else affected?"* — instead of you scrolling through search results.
-6. **⚙️ Optional cross-encoder reranker** (opt-in, new in v0.8) — after the hybrid RRF, a small ~80MB local cross-encoder model re-scores the top-N candidates by actually *looking at* (query, chunk) content. ~+20-30% precision@1 on ambiguous queries for ~50ms extra latency. Off by default.
-7. **🎛️ LynxManager** (new in v0.9) — a sub-command namespace that turns the painful parts of running Lynx into one-liners: `lynx manager init` writes a default `config.json` and pre-downloads the embedding model (no long Q&A — the only prompt is "open the UI now?"); `lynx manager ui` opens a local web panel (FastAPI + HTMX + bundled Tailwind, `127.0.0.1` only) where you click **+ Add source**, pick a folder visually, and the form explains each option as you go; `lynx manager doctor` runs a full diagnostic (HF cache, drift, paths, extras, disk space); `lynx manager install` handles pip extras + explicit model downloads. No CDN, no cloud — fully offline like everything else in Lynx.
+**LynxMCP** fixes this. It acts as a powerful, 100% local MCP (Model Context Protocol) server that gives any compatible AI client the ability to deeply interrogate your entire project, external documentation, and PDFs — instantly, and without uploading a single byte to the cloud.
+
+### 🎛️ The Only MCP Server with a Built-In Web Manager
+
+Forget fighting with invisible JSON configurations and mysterious background processes. LynxMCP comes with **LynxManager**, a stunning local web dashboard. Add codebase sources, sync web documentation, test queries in the Playground, and generate integration snippets for your AI client with a few clicks.
+
+<img src="readmeData/lynxManager_1.jpg" alt="LynxManager UI" width="800">
+
+### 🔥 Why use LynxMCP instead of built-in IDE indexing?
+
+Most AI coding tools come with basic codebase search, but they usually rely on simple text matching (grep) or naive embeddings. LynxMCP plays in a completely different league:
+
+* **It understands code structure, not just text:** Instead of chunking code arbitrarily, LynxMCP uses Tree-sitter to parse 13+ languages, indexing whole functions and classes intact.
+* **It builds a Knowledge Graph:** It maps out who calls what, interface implementations, and import trees. When your AI asks "What breaks if I change this?", Lynx delivers the exact blast radius.
+* **It unifies your knowledge base:** It doesn't just read your code. It synchronizes with external Web Documentation (like React or Unity docs) and local PDFs (like hardware manuals or RFCs), giving your AI the exact same reference material you use.
+* **No vendor lock-in:** It works universally with any MCP-compliant client (Cursor, Claude Code, Windsurf, Aider, etc.).
 
 ### 💡 See the Difference
 
-**Scenario 1: You're using a game engine (like Unity)**
-* 🔴 **Without Lynx:** You ask "How do I spawn a particle effect?" The AI suggests deprecated APIs from 3 years ago because its training data is old.
-* 🟢 **With Lynx:** The AI transparently searches your *local, up-to-date Unity documentation*, finds the new particle system API, and writes perfectly working code on the first try.
+**Scenario 1: You're using a specific framework (like Unity or React)**
+* 🔴 **Generic AI Tool:** You ask "How do I spawn a particle effect?" The AI suggests deprecated APIs from 3 years ago because its training data is stale.
+* 🟢 **With LynxMCP:** The AI transparently searches your *local, synced framework documentation*, finds the brand-new API, and writes perfectly working code on the first try.
 
 **Scenario 2: Working on a massive enterprise codebase**
-* 🔴 **Without Lynx:** "Where is the payment processing logic?" The AI starts randomly reading files, wasting tokens and your time.
-* 🟢 **With Lynx:** The AI uses the Lynx tool to semantically search your code. It instantly finds `PaymentGateway.cs` deep in a folder it didn't know existed, reads the relevant chunks, and answers your question.
+* 🔴 **Generic AI Tool:** "Where is the payment processing logic?" The AI starts randomly reading files, wasting tokens, time, and your patience.
+* 🟢 **With LynxMCP:** The AI uses the semantic search tool. It instantly finds `PaymentGateway.cs` deep in a folder it didn't know existed, reads the exact relevant chunks, and answers your question.
 
 **Scenario 3: Refactoring a critical interface**
-* 🔴 **Without Lynx:** "I want to rename `IDamageable.ApplyDamage`. What breaks?" The AI grep-searches the name and misses callers that pass it through delegates, callbacks, or polymorphic dispatch.
-* 🟢 **With Lynx (graph layer enabled):** The AI calls `get_callers_myproject("ApplyDamage")` and `get_subclasses_myproject("IDamageable")`. It receives the complete dependency graph — every caller, every implementation, with file path + line number for each — and proposes a safe refactor with the full blast-radius in hand.
+* 🔴 **Generic AI Tool:** "I want to rename `IDamageable.ApplyDamage`. What breaks?" The AI grep-searches the name and completely misses callers that use polymorphic dispatch.
+* 🟢 **With LynxMCP (Graph Layer):** The AI calls the graph tools. It receives the complete dependency tree — every caller, every implementation — and proposes a safe refactor with the full blast-radius accounted for.
 
-**Scenario 4: Working from a 300-page hardware manual (PDF)**
-* 🔴 **Without Lynx:** "What's the I2C timing spec for this chip?" The AI either guesses or asks you to paste the relevant page. You scroll through 300 pages looking for "I²C".
-* 🟢 **With Lynx (PDF source enabled):** The AI calls `search_manuals("I2C timing parameters")` and gets the exact paragraphs back with citation `Datasheet.pdf p.142`. Works for any vendor PDF (manuals, datasheets, RFCs, normative documents) — born-digital PDFs only, scanned ones are auto-skipped.
-
-### ✨ Why you'll love it
-* **🔒 100% Private & Local:** No code or queries ever leave your machine. No cloud, no API keys, no monthly fees.
-* **🤝 Universal:** Works out-of-the-box with Cursor, Claude Code, Google Antigravity, Continue.dev, Aider, and any MCP-compliant client.
-* **🧠 Smart:** AST-aware chunking + hybrid retrieval. Optional graph layer adds call/inheritance/import edges so the AI can reason about *structure*, not just similarity.
-* **🌍 13 languages, one tool:** C#, Python, TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift — all parsed via tree-sitter (no LLM in the indexing pipeline).
+### ✨ The Technical Edge
+* **🔒 100% Private:** No code ever leaves your machine. 
+* **🧠 Hybrid Search:** Dense Vector Embeddings + BM25 Lexical Search + Reciprocal Rank Fusion + Optional Cross-Encoder Reranker.
 * **⚡ Live updates:** A file watcher keeps both the search index and the knowledge graph in sync as you edit (~2s after save).
 
 *(Ready to get technical? Read on to see [what this does](#what-this-does) and how it works under the hood 👇)*
