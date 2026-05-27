@@ -1,20 +1,31 @@
-"""Unit tests for `lynx manager init` wizard.
+"""Unit tests for the minimal `lynx manager init`.
 
-We feed scripted input into the wizard via monkey-patching `_read_line`
-in `lynx.manager.init`. This is more reliable than redirecting stdin
-because it bypasses any TTY detection / buffering issues.
+The v0.9 redesign stripped init to a tiny bootstrap: write a default
+config (no sources) + pre-download the embedding model + optionally
+launch the UI. All source/AI-client configuration now lives in the web
+UI (`/sources/new`), so the wizard's old per-source prompt loop is gone.
+
+We monkey-patch:
+  - `init._read_line` to script y/n answers to the 2 prompts
+    (overwrite-confirm + open-UI-confirm)
+  - `install.download_model` to avoid hitting HuggingFace
+  - `subprocess.Popen` to verify whether init tried to launch the UI
 
 Scenarios:
-  1. Non-interactive mode writes a sensible default config
-  2. Existing config without overwrite confirmation → wizard aborts cleanly
-  3. Interactive: single codebase source, all defaults → config valid
-  4. Interactive: codebase + pdf + webdoc → all three sources captured
-  5. Interactive: declines AI rules file → no file written
-  6. Interactive: accepts AI rules file → CLAUDE.md written
-  7. Validators: invalid path retried until valid one given
-  8. Validators: invalid source name retried
-  9. detect_extensions: returns top N file extensions in a folder
- 10. is_git_repo: True for repo, False for plain folder
+  1. --non-interactive writes default config with sources={}, no prompts
+  2. Interactive on a fresh path: no overwrite prompt, model download
+     called, "open UI? n" → returns 0, no Popen call
+  3. Interactive on an existing path + decline overwrite → returns 1,
+     original file untouched
+  4. Interactive on an existing path + accept overwrite → returns 0,
+     file replaced with default config
+  5. --skip-model-download → install.download_model NOT called
+  6. Generated config validates through `lynx.config.load_config`
+  7. "Open UI? y" answer triggers a subprocess.Popen call
+  8. detect_extensions: top-N file extensions, dotted dirs / compiled
+     artifacts filtered
+  9. is_git_repo: True for .git dir, True for subdir of git repo,
+     False for plain folder
 """
 from __future__ import annotations
 
@@ -22,6 +33,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess as _subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -47,10 +59,39 @@ def _patch_input(monkey_answers: list):
     return lambda: setattr(init_mod, "_read_line", original)
 
 
-def _make_args(output_path: Path, non_interactive: bool = False):
+def _patch_download_model(record: list, return_code: int = 0):
+    """Stub out install.download_model. Records calls into `record`.
+    Returns a teardown."""
+    from lynx.manager import install as install_mod
+    original = install_mod.download_model
+
+    def _fake(model_name: str) -> int:
+        record.append(model_name)
+        return return_code
+
+    install_mod.download_model = _fake
+    return lambda: setattr(install_mod, "download_model", original)
+
+
+def _patch_popen(record: list):
+    """Stub subprocess.Popen at the init module's import site. Records
+    every call. Returns a teardown."""
+    from lynx.manager import init as init_mod
+    original = init_mod.subprocess.Popen
+
+    class _FakePopen:
+        def __init__(self, args, *a, **kw):
+            record.append(list(args))
+    init_mod.subprocess.Popen = _FakePopen
+    return lambda: setattr(init_mod.subprocess, "Popen", original)
+
+
+def _make_args(output_path: Path, *, non_interactive: bool = False,
+               skip_model_download: bool = False):
     return argparse.Namespace(
         output=str(output_path),
         non_interactive=non_interactive,
+        skip_model_download=skip_model_download,
     )
 
 
@@ -59,287 +100,216 @@ def main() -> int:
     print(f"[test] tempdir: {tmp}")
     original_cwd = os.getcwd()
     try:
-        # Each test changes cwd to its own sub-dir so AI rules files
-        # (CLAUDE.md / AGENTS.md) don't collide.
+        from lynx.manager.init import run_init
 
         # ============================================================
-        # 1. Non-interactive mode writes defaults
+        # 1. --non-interactive writes a sensible default config
         # ============================================================
-        d1 = tmp / "t1"; d1.mkdir()
-        os.chdir(d1)
-        from lynx.manager.init import run_init
-        rc = run_init(_make_args(d1 / "cfg.json", non_interactive=True))
+        d1 = tmp / "t1"; d1.mkdir(); os.chdir(d1)
+        download_calls: list = []
+        teardown_dl = _patch_download_model(download_calls)
+        try:
+            rc = run_init(_make_args(d1 / "cfg.json", non_interactive=True))
+        finally:
+            teardown_dl()
         if rc != 0:
-            print(f"[test] FAIL [1/10]: non-interactive returned {rc}")
+            print(f"[test] FAIL [1/9]: non-interactive returned {rc}")
             return 1
         cfg = json.loads((d1 / "cfg.json").read_text())
         if cfg["config_version"] != 2:
-            print(f"[test] FAIL [1/10]: config_version wrong: {cfg['config_version']}")
+            print(f"[test] FAIL [1/9]: config_version wrong: {cfg['config_version']}")
             return 1
-        if "myproject" not in cfg["sources"]:
-            print(f"[test] FAIL [1/10]: default source 'myproject' missing")
+        if cfg["sources"] != {}:
+            print(f"[test] FAIL [1/9]: sources should be empty dict, got {cfg['sources']}")
             return 1
-        print(f"[test] OK [1/10] non-interactive: defaults written cleanly")
+        if download_calls != ["BAAI/bge-small-en-v1.5"]:
+            print(f"[test] FAIL [1/9]: model download not invoked, got {download_calls}")
+            return 1
+        print(f"[test] OK [1/9] non-interactive: defaults + model download")
 
         # ============================================================
-        # 2. Interactive: existing config + decline overwrite → abort
+        # 2. Interactive on fresh path: no overwrite prompt, "open UI? n"
         # ============================================================
         d2 = tmp / "t2"; d2.mkdir(); os.chdir(d2)
-        existing = d2 / "cfg.json"
-        existing.write_text('{"placeholder": true}')
-        teardown = _patch_input([
-            "./rag_storage",          # storage_path (use default actually)
-            "",                       # embed default
-            "",                       # top_k default
-            "",                       # mode default
-            "n",                      # reranker no
-            "codebase",               # add source: codebase
-            "src",                    # source name
-            str(d2),                  # path
-            "",                       # extensions default
-            "n",                      # watcher no (avoid background)
-            "n",                      # graph no
-            "n",                      # add another?
-            "n",                      # overwrite existing? NO → abort
-        ])
+        download_calls = []
+        popen_calls: list = []
+        teardown_in = _patch_input(["n"])  # answer "n" to "Open UI now?"
+        teardown_dl = _patch_download_model(download_calls)
+        teardown_pop = _patch_popen(popen_calls)
         try:
-            rc = run_init(_make_args(existing, non_interactive=False))
+            rc = run_init(_make_args(d2 / "cfg.json"))
         finally:
-            teardown()
-        # KeyboardInterrupt from _write_config → run_init returns 130
-        if rc != 130:
-            print(f"[test] FAIL [2/10]: decline overwrite should exit 130, got {rc}")
+            teardown_in(); teardown_dl(); teardown_pop()
+        if rc != 0:
+            print(f"[test] FAIL [2/9]: interactive fresh returned {rc}")
             return 2
-        # Original file untouched
-        kept = json.loads(existing.read_text())
-        if not kept.get("placeholder"):
-            print(f"[test] FAIL [2/10]: existing config was overwritten despite decline")
+        if download_calls != ["BAAI/bge-small-en-v1.5"]:
+            print(f"[test] FAIL [2/9]: model download not invoked, got {download_calls}")
             return 2
-        print(f"[test] OK [2/10] decline overwrite: aborts cleanly, existing config preserved")
+        if popen_calls:
+            print(f"[test] FAIL [2/9]: UI was launched despite 'n' answer: {popen_calls}")
+            return 2
+        print(f"[test] OK [2/9] interactive fresh: no Popen on 'n'")
 
         # ============================================================
-        # 3. Interactive: single codebase source, defaults → valid
+        # 3. Existing file + decline overwrite → exit 1, file preserved
         # ============================================================
         d3 = tmp / "t3"; d3.mkdir(); os.chdir(d3)
-        (d3 / "main.py").write_text("def f(): pass\n")
-        out3 = d3 / "cfg.json"
-        teardown = _patch_input([
-            "",                       # storage_path default
-            "",                       # embed default
-            "",                       # top_k default
-            "",                       # mode default
-            "n",                      # reranker no
-            "codebase",               # add source: codebase
-            "demo",                   # name
-            str(d3),                  # path
-            "",                       # extensions auto-detected default
-            "n",                      # watcher
-            "n",                      # graph
-            "n",                      # add another?
-            "n",                      # don't write rules file
-        ])
+        existing = d3 / "cfg.json"
+        existing.write_text('{"placeholder": true}')
+        teardown_in = _patch_input(["n"])  # decline overwrite
+        teardown_dl = _patch_download_model([])
         try:
-            rc = run_init(_make_args(out3, non_interactive=False))
+            rc = run_init(_make_args(existing))
         finally:
-            teardown()
-        if rc != 0:
-            print(f"[test] FAIL [3/10]: wizard returned {rc}")
+            teardown_in(); teardown_dl()
+        if rc != 1:
+            print(f"[test] FAIL [3/9]: decline overwrite should exit 1, got {rc}")
             return 3
-        cfg = json.loads(out3.read_text())
-        if cfg["sources"]["demo"]["type"] != "codebase":
-            print(f"[test] FAIL [3/10]: source type wrong: {cfg['sources']}")
+        kept = json.loads(existing.read_text())
+        if not kept.get("placeholder"):
+            print(f"[test] FAIL [3/9]: existing config was overwritten despite decline")
             return 3
-        # Validate the generated config actually parses through load_config
-        from lynx.config import load_config
-        try:
-            load_config(out3)
-        except SystemExit as e:
-            print(f"[test] FAIL [3/10]: generated config rejected by load_config: {e}")
-            return 3
-        print(f"[test] OK [3/10] interactive minimal: valid config generated")
+        print(f"[test] OK [3/9] decline overwrite: exit 1, file preserved")
 
         # ============================================================
-        # 4. Three sources (codebase + pdf + webdoc)
+        # 4. Existing file + accept overwrite → file replaced
         # ============================================================
         d4 = tmp / "t4"; d4.mkdir(); os.chdir(d4)
-        (d4 / "code").mkdir(); (d4 / "code" / "x.py").write_text("def x(): pass\n")
-        (d4 / "pdfs").mkdir()
-        out4 = d4 / "cfg.json"
-        teardown = _patch_input([
-            "",                       # storage
-            "",                       # embed
-            "",                       # top_k
-            "",                       # mode
-            "n",                      # reranker
-            # source 1: codebase
-            "codebase", "src1", str(d4 / "code"), "", "n", "n",
-            "y",                      # add another?
-            # source 2: pdf
-            "pdf", "manuals", str(d4 / "pdfs"), "y", "auto", "n",
-            "y",                      # add another?
-            # source 3: webdoc
-            "webdoc", "docs", "https://example.com/docs/", "3", "500", "y",
-            "n",                      # add another?
-            "n",                      # rules file
-        ])
+        existing4 = d4 / "cfg.json"
+        existing4.write_text('{"placeholder": true}')
+        download_calls = []
+        teardown_in = _patch_input(["y", "n"])  # accept overwrite + "open UI? n"
+        teardown_dl = _patch_download_model(download_calls)
+        teardown_pop = _patch_popen([])
         try:
-            rc = run_init(_make_args(out4, non_interactive=False))
+            rc = run_init(_make_args(existing4))
         finally:
-            teardown()
+            teardown_in(); teardown_dl(); teardown_pop()
         if rc != 0:
-            print(f"[test] FAIL [4/10]: 3-source wizard returned {rc}")
+            print(f"[test] FAIL [4/9]: accept overwrite should exit 0, got {rc}")
             return 4
-        cfg = json.loads(out4.read_text())
-        expected_names = {"src1", "manuals", "docs"}
-        if set(cfg["sources"]) != expected_names:
-            print(f"[test] FAIL [4/10]: source names wrong: {set(cfg['sources'])}")
+        cfg4 = json.loads(existing4.read_text())
+        if cfg4.get("config_version") != 2:
+            print(f"[test] FAIL [4/9]: file not actually replaced: {cfg4}")
             return 4
-        if cfg["sources"]["manuals"]["type"] != "pdf":
-            print(f"[test] FAIL [4/10]: pdf type wrong")
+        if cfg4["sources"] != {}:
+            print(f"[test] FAIL [4/9]: replaced file has unexpected sources: {cfg4['sources']}")
             return 4
-        if cfg["sources"]["docs"]["type"] != "webdoc":
-            print(f"[test] FAIL [4/10]: webdoc type wrong")
-            return 4
-        print(f"[test] OK [4/10] 3 sources captured: src1/manuals/docs")
+        print(f"[test] OK [4/9] accept overwrite: file replaced with default config")
 
         # ============================================================
-        # 5. Decline AI rules file → no file written
+        # 5. --skip-model-download bypasses install.download_model
         # ============================================================
         d5 = tmp / "t5"; d5.mkdir(); os.chdir(d5)
-        (d5 / "x.py").write_text("def x(): pass\n")
-        out5 = d5 / "cfg.json"
-        teardown = _patch_input([
-            "", "", "", "", "n",      # globals
-            "codebase", "p", str(d5), "", "n", "n", "n",
-            "n",                      # rules file: NO
-        ])
+        download_calls = []
+        teardown_dl = _patch_download_model(download_calls)
         try:
-            run_init(_make_args(out5, non_interactive=False))
+            rc = run_init(_make_args(d5 / "cfg.json",
+                                     non_interactive=True,
+                                     skip_model_download=True))
         finally:
-            teardown()
-        if (d5 / "CLAUDE.md").exists() or (d5 / "AGENTS.md").exists():
-            print(f"[test] FAIL [5/10]: rules file written despite decline")
+            teardown_dl()
+        if rc != 0:
+            print(f"[test] FAIL [5/9]: skip-model returned {rc}")
             return 5
-        print(f"[test] OK [5/10] decline rules file: nothing written")
+        if download_calls:
+            print(f"[test] FAIL [5/9]: download_model invoked despite --skip: {download_calls}")
+            return 5
+        print(f"[test] OK [5/9] --skip-model-download: download bypassed")
 
         # ============================================================
-        # 6. Accept AI rules file → CLAUDE.md written
+        # 6. Generated config validates via load_config
         # ============================================================
         d6 = tmp / "t6"; d6.mkdir(); os.chdir(d6)
-        (d6 / "x.py").write_text("def x(): pass\n")
-        out6 = d6 / "cfg.json"
-        teardown = _patch_input([
-            "", "", "", "", "n",      # globals
-            "codebase", "myproj", str(d6), "", "n", "n", "n",
-            "y",                      # rules file: yes
-            "1",                      # claude
-        ])
+        teardown_dl = _patch_download_model([])
         try:
-            run_init(_make_args(out6, non_interactive=False))
+            run_init(_make_args(d6 / "cfg.json", non_interactive=True))
         finally:
-            teardown()
-        rules = d6 / "CLAUDE.md"
-        if not rules.exists():
-            print(f"[test] FAIL [6/10]: CLAUDE.md not written")
+            teardown_dl()
+        from lynx.config import load_config
+        try:
+            cfg6 = load_config(d6 / "cfg.json")
+        except SystemExit as e:
+            print(f"[test] FAIL [6/9]: generated config rejected by load_config (exit {e.code})")
             return 6
-        content = rules.read_text()
-        if "search_myproj" not in content:
-            print(f"[test] FAIL [6/10]: rules file doesn't use real source name 'myproj'")
+        if cfg6.embedding.model_name != "BAAI/bge-small-en-v1.5":
+            print(f"[test] FAIL [6/9]: embedding model unexpected: {cfg6.embedding.model_name}")
             return 6
-        print(f"[test] OK [6/10] CLAUDE.md written with real source name")
+        print(f"[test] OK [6/9] generated config validates via load_config")
 
         # ============================================================
-        # 7. Validator retries on bad path
+        # 7. "Open UI? y" triggers a subprocess.Popen call
         # ============================================================
         d7 = tmp / "t7"; d7.mkdir(); os.chdir(d7)
-        (d7 / "x.py").write_text("def x(): pass\n")
-        out7 = d7 / "cfg.json"
-        teardown = _patch_input([
-            "", "", "", "", "n",
-            "codebase", "demo",
-            "/this/does/not/exist",   # bad path #1
-            "/also/bad",              # bad path #2
-            str(d7),                  # finally valid
-            "", "n", "n", "n", "n",
-        ])
+        popen_calls = []
+        teardown_in = _patch_input(["y"])  # answer "y" to "Open UI?"
+        teardown_dl = _patch_download_model([])
+        teardown_pop = _patch_popen(popen_calls)
         try:
-            rc = run_init(_make_args(out7, non_interactive=False))
+            rc = run_init(_make_args(d7 / "cfg.json"))
         finally:
-            teardown()
+            teardown_in(); teardown_dl(); teardown_pop()
         if rc != 0:
-            print(f"[test] FAIL [7/10]: retry-on-bad-path wizard returned {rc}")
+            print(f"[test] FAIL [7/9]: open-ui-y returned {rc}")
             return 7
-        print(f"[test] OK [7/10] validator retries on bad path until valid")
+        if len(popen_calls) != 1:
+            print(f"[test] FAIL [7/9]: expected 1 Popen call, got {len(popen_calls)}: {popen_calls}")
+            return 7
+        cmd = popen_calls[0]
+        # cmd[0] is sys.executable; cmd[1:] should be ['-m','lynx','manager','ui','--config',<path>]
+        if cmd[1:5] != ["-m", "lynx", "manager", "ui"]:
+            print(f"[test] FAIL [7/9]: Popen cmd unexpected: {cmd}")
+            return 7
+        if "--config" not in cmd or str((d7 / "cfg.json").resolve()) not in cmd:
+            print(f"[test] FAIL [7/9]: Popen cmd missing --config path: {cmd}")
+            return 7
+        print(f"[test] OK [7/9] 'open UI? y' spawns subprocess.Popen with right argv")
 
         # ============================================================
-        # 8. Validator retries on bad source name
+        # 8. detect_extensions
         # ============================================================
         d8 = tmp / "t8"; d8.mkdir(); os.chdir(d8)
-        (d8 / "x.py").write_text("def x(): pass\n")
-        out8 = d8 / "cfg.json"
-        teardown = _patch_input([
-            "", "", "", "", "n",
-            "codebase",
-            "9bad-name",              # invalid (starts with digit, has dash)
-            "also.bad",               # invalid (dot)
-            "good_name",              # finally valid
-            str(d8), "", "n", "n", "n", "n",
-        ])
-        try:
-            rc = run_init(_make_args(out8, non_interactive=False))
-        finally:
-            teardown()
-        if rc != 0:
-            print(f"[test] FAIL [8/10]: retry-on-bad-name wizard returned {rc}")
+        for i in range(5):
+            (d8 / f"a{i}.py").write_text("")
+        for i in range(2):
+            (d8 / f"b{i}.md").write_text("")
+        (d8 / "junk.pyc").write_text("")
+        (d8 / ".git").mkdir()
+        (d8 / ".git" / "irrelevant.py").write_text("")  # under dot dir, ignored
+        from lynx.manager.ui.detect import detect_extensions, is_git_repo
+        exts = detect_extensions(d8)
+        if ".py" not in exts or ".md" not in exts:
+            print(f"[test] FAIL [8/9]: expected .py + .md in {exts}")
             return 8
-        print(f"[test] OK [8/10] validator retries on bad source name")
+        if ".pyc" in exts:
+            print(f"[test] FAIL [8/9]: .pyc not filtered: {exts}")
+            return 8
+        # Ordering: .py (5) should come before .md (2)
+        if exts.index(".py") > exts.index(".md"):
+            print(f"[test] FAIL [8/9]: .py should rank above .md: {exts}")
+            return 8
+        print(f"[test] OK [8/9] detect_extensions: {exts}")
 
         # ============================================================
-        # 9. detect_extensions returns top file types
+        # 9. is_git_repo: plain dir vs .git dir vs subdir of repo
         # ============================================================
         d9 = tmp / "t9"; d9.mkdir(); os.chdir(d9)
-        for i in range(5):
-            (d9 / f"a{i}.py").write_text("")
-        for i in range(2):
-            (d9 / f"b{i}.md").write_text("")
-        (d9 / "junk.pyc").write_text("")  # should be filtered
-        (d9 / ".git").mkdir()
-        (d9 / ".git" / "irrelevant.py").write_text("")  # under dot dir, ignored
-        from lynx.manager.init import detect_extensions
-        exts = detect_extensions(d9)
-        if ".py" not in exts:
-            print(f"[test] FAIL [9/10]: .py missing from {exts}")
-            return 9
-        if ".md" not in exts:
-            print(f"[test] FAIL [9/10]: .md missing from {exts}")
-            return 9
-        if ".pyc" in exts:
-            print(f"[test] FAIL [9/10]: .pyc not filtered: {exts}")
-            return 9
-        # .py count should be 5 (not 6) — dot dir excluded
-        print(f"[test] OK [9/10] detect_extensions: {exts}")
-
-        # ============================================================
-        # 10. is_git_repo: True for actual repo
-        # ============================================================
-        d10 = tmp / "t10"; d10.mkdir(); os.chdir(d10)
-        from lynx.manager.init import is_git_repo
-        plain = d10 / "plain"; plain.mkdir()
+        plain = d9 / "plain"; plain.mkdir()
         if is_git_repo(plain):
-            print(f"[test] FAIL [10/10]: plain dir incorrectly reported as git")
-            return 10
-        repo = d10 / "repo"; (repo / ".git").mkdir(parents=True)
+            print(f"[test] FAIL [9/9]: plain dir incorrectly reported as git")
+            return 9
+        repo = d9 / "repo"; (repo / ".git").mkdir(parents=True)
         if not is_git_repo(repo):
-            print(f"[test] FAIL [10/10]: real git repo not detected")
-            return 10
-        # Sub-directory inside repo should also be detected
+            print(f"[test] FAIL [9/9]: real git repo not detected")
+            return 9
         sub = repo / "sub"; sub.mkdir()
         if not is_git_repo(sub):
-            print(f"[test] FAIL [10/10]: subdir of git repo not detected")
-            return 10
-        print(f"[test] OK [10/10] is_git_repo: detects .git in dir + parents")
+            print(f"[test] FAIL [9/9]: subdir of git repo not detected")
+            return 9
+        print(f"[test] OK [9/9] is_git_repo: detects .git in dir + parents")
 
-        print("\n[test] === SUCCESS: init wizard works as expected ===")
+        print("\n[test] === SUCCESS: minimal init works as expected ===")
         return 0
     finally:
         os.chdir(original_cwd)

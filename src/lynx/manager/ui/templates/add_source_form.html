@@ -1,0 +1,594 @@
+{% extends "base.html" %}
+{% block title %}Add {{ source_type }} source — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="mb-2">
+  <a href="/sources/new" class="text-sm text-slate-500 hover:text-indigo-600">← Back to source types</a>
+</div>
+
+{% if source_type == "codebase" %}
+  <h1 class="text-2xl font-bold text-slate-900 mb-1">📂 Add a codebase source</h1>
+  <p class="text-slate-600 mb-6 max-w-3xl leading-relaxed">
+    Indexes a folder of source code so your AI client can search it semantically.
+    Each chunk is one syntactic unit (function, class, doc paragraph). The file
+    watcher reindexes on save so results stay fresh. With git integration on,
+    Lynx can also do diff-aware searches (<code>search_diff</code>) — useful
+    during code review when you want to find everything related to your current
+    changes.
+  </p>
+{% elif source_type == "webdoc" %}
+  <h1 class="text-2xl font-bold text-slate-900 mb-1">🌐 Add a web-docs source</h1>
+  <p class="text-slate-600 mb-6 max-w-3xl leading-relaxed">
+    Crawls a public documentation site and stores it locally. After the initial
+    crawl (triggered by <code>lynx build --source &lt;name&gt;</code>), searches
+    are 100% offline. The crawl is depth-limited and same-origin by default so
+    you don't accidentally index half the web. Re-run build manually whenever
+    you want a refresh — there's no automatic re-crawl.
+  </p>
+{% elif source_type == "pdf" %}
+  <h1 class="text-2xl font-bold text-slate-900 mb-1">📄 Add a PDF source</h1>
+  <p class="text-slate-600 mb-6 max-w-3xl leading-relaxed">
+    Points at a folder of PDFs. Lynx extracts the text layer page by page and
+    indexes one chunk per page; AI clients cite results as
+    <code>document.pdf p.42</code>. Scanned PDFs (no text layer) and
+    password-protected files are skipped automatically. The watcher is OFF by
+    default since re-extracting a folder of PDFs is costly — trigger refreshes
+    manually via <code>lynx build --source &lt;name&gt;</code>.
+  </p>
+{% endif %}
+
+<form id="add-source-form" class="max-w-3xl space-y-5">
+
+  <!-- Common: source name -->
+  <div>
+    <label class="block text-sm font-medium text-slate-800 mb-1">
+      Source name <span class="text-red-600">*</span>
+    </label>
+    <input type="text" name="name" required
+           pattern="^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+           placeholder="{% if source_type == 'codebase' %}myproject{% elif source_type == 'webdoc' %}reactdocs{% else %}manuals{% endif %}"
+           class="w-full px-3 py-2 border border-slate-300 rounded font-mono text-sm focus:border-indigo-500 focus:outline-none" />
+    <div class="text-xs text-slate-500 mt-1">
+      Used as the MCP tool suffix: e.g. <code>search_&lt;name&gt;</code>. Letters,
+      digits, underscores; must start with a letter. Max 40 chars.
+    </div>
+  </div>
+
+  {% if source_type == "codebase" or source_type == "pdf" %}
+    <!-- Path with folder picker -->
+    <div>
+      <label class="block text-sm font-medium text-slate-800 mb-1">
+        Folder path <span class="text-red-600">*</span>
+      </label>
+      <div class="flex gap-2">
+        <input type="text" name="path" id="path-input" required
+               placeholder="/Users/you/projects/myrepo"
+               class="flex-1 px-3 py-2 border border-slate-300 rounded font-mono text-sm focus:border-indigo-500 focus:outline-none" />
+        <button type="button" id="browse-btn"
+                class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-50">
+          📁 Browse…
+        </button>
+        {% if source_type == "codebase" %}
+          <button type="button" id="detect-btn"
+                  class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-50">
+            🔍 Detect
+          </button>
+        {% endif %}
+      </div>
+      <div class="text-xs text-slate-500 mt-1">
+        Absolute path is recommended. Use <strong>Browse</strong> to pick visually
+        — that avoids typos that send Lynx to a non-existent folder.
+        {% if source_type == "codebase" %}
+          <strong>Detect</strong> scans the folder and pre-fills the extension list
+          + flags whether this is a git repo.
+        {% endif %}
+      </div>
+      <div id="detect-result" class="text-xs mt-1"></div>
+    </div>
+  {% endif %}
+
+  {% if source_type == "codebase" %}
+    <!-- Extensions -->
+    <div>
+      <label class="block text-sm font-medium text-slate-800 mb-1">
+        File extensions to index
+      </label>
+      <input type="text" name="extensions" id="extensions-input"
+             value=".py,.md,.txt,.json,.yaml"
+             class="w-full px-3 py-2 border border-slate-300 rounded font-mono text-sm focus:border-indigo-500 focus:outline-none" />
+      <div class="text-xs text-slate-500 mt-1">
+        Comma-separated. Use <strong>Detect</strong> above to fill from the actual
+        files in your folder.
+      </div>
+    </div>
+
+    <!-- Watcher -->
+    <div class="flex items-start gap-2">
+      <input type="checkbox" id="watcher-cb" name="watcher" checked class="mt-1" />
+      <label for="watcher-cb" class="text-sm">
+        <span class="font-medium text-slate-800">Auto-reindex on file changes</span>
+        <div class="text-xs text-slate-500 mt-0.5">
+          Watches the folder and reindexes touched files within a couple of seconds.
+          Off → you have to run <code>lynx build --source &lt;name&gt;</code> manually
+          after changes.
+        </div>
+      </label>
+    </div>
+
+    <!-- Git integration -->
+    <div class="flex items-start gap-2">
+      <input type="checkbox" id="git-cb" name="git_integration" class="mt-1" />
+      <label for="git-cb" class="text-sm">
+        <span class="font-medium text-slate-800">Enable git integration</span>
+        <div class="text-xs text-slate-500 mt-0.5">
+          Adds a <code>search_diff_&lt;name&gt;</code> tool that restricts search
+          to files changed vs <code>main</code>. Auto-enabled by <strong>Detect</strong>
+          if the folder is a git repo.
+        </div>
+      </label>
+    </div>
+
+    <!-- Graph (advanced) -->
+    <details class="border border-slate-200 rounded bg-white">
+      <summary class="px-3 py-2 cursor-pointer text-sm font-medium text-slate-800">
+        Advanced: knowledge graph layer
+      </summary>
+      <div class="px-3 py-3 space-y-2 border-t border-slate-200">
+        <div class="flex items-start gap-2">
+          <input type="checkbox" id="graph-cb" name="graph" class="mt-1" />
+          <label for="graph-cb" class="text-sm">
+            <span class="font-medium text-slate-800">Build the graph layer</span>
+            <div class="text-xs text-slate-500 mt-0.5">
+              Extracts a call / import / inheritance graph and exposes
+              <strong>9 extra MCP tools</strong>:
+              <code>get_callers</code>, <code>get_callees</code>,
+              <code>find_definition</code>, <code>find_usages</code>,
+              <code>architectural_overview</code>, etc. Costs ~20% more build
+              time and ~10% more storage. Worth it for active development;
+              skip it if you only need plain semantic search.
+            </div>
+          </label>
+        </div>
+      </div>
+    </details>
+  {% endif %}
+
+  {% if source_type == "webdoc" %}
+    <!-- URL -->
+    <div>
+      <label class="block text-sm font-medium text-slate-800 mb-1">
+        Docs site URL <span class="text-red-600">*</span>
+      </label>
+      <input type="url" name="url" required
+             placeholder="https://react.dev/reference/"
+             class="w-full px-3 py-2 border border-slate-300 rounded font-mono text-sm focus:border-indigo-500 focus:outline-none" />
+      <div class="text-xs text-slate-500 mt-1">
+        Start URL for the crawl. Should be <strong>as specific as possible</strong>
+        — e.g. <code>/reference/</code> not the homepage — so the crawler doesn't
+        waste time on landing pages, blog posts, etc.
+      </div>
+    </div>
+
+    <!-- Max depth + Max pages -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-slate-800 mb-1">Max crawl depth</label>
+        <input type="number" name="max_depth" value="3" min="1" max="20"
+               class="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
+        <div class="text-xs text-slate-500 mt-1">
+          How many link-hops from the start URL. 3 is fine for most docs sites.
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-800 mb-1">Max pages</label>
+        <input type="number" name="max_pages" value="500" min="1" max="50000"
+               class="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
+        <div class="text-xs text-slate-500 mt-1">
+          Hard cap. Crawler stops as soon as it hits this number.
+        </div>
+      </div>
+    </div>
+
+    <!-- Same origin -->
+    <div class="flex items-start gap-2">
+      <input type="checkbox" id="origin-cb" name="same_origin_only" checked class="mt-1" />
+      <label for="origin-cb" class="text-sm">
+        <span class="font-medium text-slate-800">Restrict to same origin</span>
+        <div class="text-xs text-slate-500 mt-0.5">
+          Never follows links to a different domain. Keep this on unless you
+          really mean to crawl across sites.
+        </div>
+      </label>
+    </div>
+
+    <!-- Advanced: URL filters + delay -->
+    <details class="border border-slate-200 rounded bg-white">
+      <summary class="px-3 py-2 cursor-pointer text-sm font-medium text-slate-800">
+        Advanced: URL filters and rate limiting
+      </summary>
+      <div class="px-3 py-3 space-y-3 border-t border-slate-200">
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">
+            Include URL patterns (comma-separated substrings)
+          </label>
+          <input type="text" name="include_url_patterns" placeholder="/docs/, /reference/"
+                 class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono" />
+          <div class="text-xs text-slate-500 mt-1">
+            URLs must contain one of these to be crawled. Leave empty = everything matches.
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">
+            Exclude URL patterns
+          </label>
+          <input type="text" name="exclude_url_patterns" placeholder="/legacy/, /blog/"
+                 class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono" />
+          <div class="text-xs text-slate-500 mt-1">
+            URLs matching any of these are skipped. Useful to dodge changelogs / blogs.
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">
+            Request delay (seconds)
+          </label>
+          <input type="number" name="request_delay_seconds" value="0.5" step="0.1" min="0"
+                 class="w-32 px-3 py-2 border border-slate-300 rounded text-sm" />
+          <div class="text-xs text-slate-500 mt-1">
+            Pause between HTTP requests. Be polite — 0.5s is a good default.
+          </div>
+        </div>
+      </div>
+    </details>
+  {% endif %}
+
+  {% if source_type == "pdf" %}
+    <!-- Recursive -->
+    <div class="flex items-start gap-2">
+      <input type="checkbox" id="recursive-cb" name="recursive" checked class="mt-1" />
+      <label for="recursive-cb" class="text-sm">
+        <span class="font-medium text-slate-800">Scan sub-directories recursively</span>
+        <div class="text-xs text-slate-500 mt-0.5">
+          On = find PDFs at any nesting depth. Off = only PDFs directly in the folder.
+        </div>
+      </label>
+    </div>
+
+    <!-- Watcher -->
+    <div class="flex items-start gap-2">
+      <input type="checkbox" id="watcher-cb" name="watcher" class="mt-1" />
+      <label for="watcher-cb" class="text-sm">
+        <span class="font-medium text-slate-800">Watch for new/changed PDFs</span>
+        <div class="text-xs text-slate-500 mt-0.5">
+          OFF by default — PDF re-extraction is expensive (seconds per file) and PDFs
+          rarely change. Prefer manual <code>lynx build --source &lt;name&gt;</code>.
+        </div>
+      </label>
+    </div>
+
+    <details class="border border-slate-200 rounded bg-white">
+      <summary class="px-3 py-2 cursor-pointer text-sm font-medium text-slate-800">
+        Advanced: extractor &amp; file limits
+      </summary>
+      <div class="px-3 py-3 space-y-3 border-t border-slate-200">
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">Extractor backend</label>
+          <select name="extractor_backend" class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+            <option value="auto">auto (pymupdf if installed, else pypdf)</option>
+            <option value="pypdf">pypdf (pure-Python, always available)</option>
+            <option value="pymupdf">pymupdf (faster, better on multi-column PDFs — requires <code>lynx[pdf-fast]</code>)</option>
+          </select>
+          <div class="text-xs text-slate-500 mt-1">
+            "auto" is almost always what you want. Pymupdf is AGPL-licensed so it's opt-in.
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">
+            Max file size (MB)
+          </label>
+          <input type="number" name="max_file_mb" value="100" min="1" max="10000"
+                 class="w-32 px-3 py-2 border border-slate-300 rounded text-sm" />
+          <div class="text-xs text-slate-500 mt-1">
+            PDFs above this size are skipped (extraction would take minutes).
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-800 mb-1">
+            File glob pattern
+          </label>
+          <input type="text" name="file_glob" value="**/*.pdf"
+                 class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono" />
+          <div class="text-xs text-slate-500 mt-1">
+            Default <code>**/*.pdf</code> matches any .pdf at any depth.
+          </div>
+        </div>
+      </div>
+    </details>
+  {% endif %}
+
+  <!-- Submit -->
+  <div class="flex items-center gap-3 pt-2">
+    <button type="submit"
+            class="px-5 py-2 bg-indigo-600 text-white rounded font-medium hover:bg-indigo-700">
+      Add source
+    </button>
+    <a href="/sources" class="text-sm text-slate-500 hover:text-slate-800">Cancel</a>
+  </div>
+
+  <!-- Submit feedback -->
+  <div id="submit-result"></div>
+</form>
+
+
+{% if source_type == "codebase" or source_type == "pdf" %}
+{# ---------------------------------------------------------------------------
+   Folder browser modal — server-rendered tree via /api/fs/browse.
+   Hidden by default; opened by the "Browse..." button next to the path input.
+   --------------------------------------------------------------------------- #}
+<div id="fp-modal"
+     class="hidden fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4">
+  <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl flex flex-col max-h-[80vh]">
+    <!-- Header -->
+    <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+      <div class="font-semibold text-slate-800">Pick a folder</div>
+      <button type="button" id="fp-close" class="text-slate-400 hover:text-slate-800 text-xl leading-none">&times;</button>
+    </div>
+    <!-- Breadcrumb -->
+    <div id="fp-breadcrumb" class="px-4 py-2 border-b border-slate-200 text-sm font-mono text-slate-700 overflow-x-auto whitespace-nowrap"></div>
+    <!-- Folder list -->
+    <div id="fp-list" class="flex-1 overflow-y-auto px-2 py-2 text-sm"></div>
+    <!-- Footer -->
+    <div class="px-4 py-3 border-t border-slate-200 flex items-center justify-between gap-2">
+      <div class="text-xs text-slate-500 font-mono truncate flex-1" id="fp-current">—</div>
+      <button type="button" id="fp-cancel"
+              class="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded hover:bg-slate-50">
+        Cancel
+      </button>
+      <button type="button" id="fp-select"
+              class="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">
+        Select this folder
+      </button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+
+<script>
+(function () {
+  // Helpers ------------------------------------------------------------
+  function $(sel) { return document.querySelector(sel); }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c];
+    });
+  }
+  function setResult(html, isError) {
+    var box = $("#submit-result");
+    box.innerHTML = html;
+    box.className = "mt-2";
+  }
+
+  var sourceType = {{ source_type | tojson }};
+
+{% if source_type == "codebase" or source_type == "pdf" %}
+  // ------------------------------------------------------------------
+  // Folder browser modal
+  // ------------------------------------------------------------------
+  var modal = $("#fp-modal");
+  var current = "";
+
+  function openPicker() {
+    var seed = $("#path-input").value.trim();
+    loadDir(seed || "");
+    modal.classList.remove("hidden");
+  }
+  function closePicker() {
+    modal.classList.add("hidden");
+  }
+  function loadDir(path) {
+    fetch("/api/fs/browse?path=" + encodeURIComponent(path))
+      .then(function (r) {
+        if (r.ok) return r.json();
+        return r.json().then(function (j) { throw new Error(j.detail || r.statusText); });
+      })
+      .then(function (data) {
+        current = data.path;
+        $("#fp-current").textContent = current;
+        $("#fp-current").title = current;
+        renderBreadcrumb(current);
+        renderList(data.entries, data.parent);
+      })
+      .catch(function (err) {
+        $("#fp-list").innerHTML =
+          '<div class="p-3 text-red-700 text-sm">Error: ' + esc(err.message) + '</div>';
+      });
+  }
+  function renderBreadcrumb(path) {
+    // Split absolute path into navigable segments. Works for both
+    // Unix-style (/a/b/c) and Windows-style (C:\a\b\c) paths.
+    var sep = path.indexOf("\\") >= 0 ? "\\" : "/";
+    var parts = path.split(sep).filter(function (s) { return s.length > 0; });
+    var html = '';
+    var acc = (sep === "/") ? "/" : "";
+    if (sep === "/") {
+      html += '<a href="#" data-path="/" class="text-indigo-600 hover:underline">/</a>';
+    }
+    for (var i = 0; i < parts.length; i++) {
+      acc = (acc.endsWith(sep) ? acc : acc + sep) + parts[i];
+      html += (i > 0 || sep === "/") ? '<span class="text-slate-400">' + sep + '</span>' : '';
+      html += '<a href="#" data-path="' + esc(acc) + '" class="text-indigo-600 hover:underline">' + esc(parts[i]) + '</a>';
+    }
+    $("#fp-breadcrumb").innerHTML = html;
+    var links = $("#fp-breadcrumb").querySelectorAll("a");
+    links.forEach(function (a) {
+      a.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        loadDir(a.getAttribute("data-path"));
+      });
+    });
+  }
+  function renderList(entries, parent) {
+    var html = '<ul class="divide-y divide-slate-100">';
+    if (parent) {
+      html += '<li><a href="#" data-path="' + esc(parent) +
+              '" class="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 rounded">' +
+              '<span>⬆️</span><span class="font-mono text-slate-600">..</span></a></li>';
+    }
+    if (!entries || entries.length === 0) {
+      html += '<li class="px-2 py-2 text-sm text-slate-500 italic">No subfolders here.</li>';
+    } else {
+      entries.forEach(function (e) {
+        var child = current.endsWith("/") || current.endsWith("\\")
+          ? current + e.name
+          : current + (current.indexOf("\\") >= 0 ? "\\" : "/") + e.name;
+        html += '<li><a href="#" data-path="' + esc(child) +
+                '" class="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 rounded">' +
+                '<span>📁</span><span class="font-mono">' + esc(e.name) + '</span></a></li>';
+      });
+    }
+    html += '</ul>';
+    $("#fp-list").innerHTML = html;
+    var links = $("#fp-list").querySelectorAll("a");
+    links.forEach(function (a) {
+      a.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        loadDir(a.getAttribute("data-path"));
+      });
+    });
+  }
+  function selectCurrent() {
+    if (current) {
+      $("#path-input").value = current;
+    }
+    closePicker();
+  }
+  $("#browse-btn").addEventListener("click", openPicker);
+  $("#fp-close").addEventListener("click", closePicker);
+  $("#fp-cancel").addEventListener("click", closePicker);
+  $("#fp-select").addEventListener("click", selectCurrent);
+  // Click outside the dialog also closes
+  modal.addEventListener("click", function (ev) {
+    if (ev.target === modal) closePicker();
+  });
+{% endif %}
+
+{% if source_type == "codebase" %}
+  // ------------------------------------------------------------------
+  // Detect: probe the path, pre-fill extensions + git
+  // ------------------------------------------------------------------
+  $("#detect-btn").addEventListener("click", function () {
+    var path = $("#path-input").value.trim();
+    if (!path) {
+      $("#detect-result").innerHTML = '<span class="text-amber-700">Fill in the path first.</span>';
+      return;
+    }
+    $("#detect-result").innerHTML = '<span class="text-slate-500">scanning…</span>';
+    fetch("/api/sources/_detect", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({path: path}),
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data.error) {
+        $("#detect-result").innerHTML = '<span class="text-red-700">' + esc(data.error) + '</span>';
+        return;
+      }
+      if (!data.exists) {
+        $("#detect-result").innerHTML = '<span class="text-red-700">Path does not exist.</span>';
+        return;
+      }
+      if (!data.is_dir) {
+        $("#detect-result").innerHTML = '<span class="text-red-700">Path is not a directory.</span>';
+        return;
+      }
+      var bits = [];
+      if (data.extensions && data.extensions.length) {
+        $("#extensions-input").value = data.extensions.join(",");
+        bits.push("filled <strong>" + data.extensions.length + " extension(s)</strong>");
+      } else {
+        bits.push("<span class=\"text-amber-700\">no common extensions found</span>");
+      }
+      $("#git-cb").checked = !!data.is_git;
+      bits.push(data.is_git
+        ? "<span class=\"text-green-700\">git repo detected</span>"
+        : "not a git repo");
+      $("#detect-result").innerHTML = '<span class="text-slate-600">✓ ' + bits.join(" · ") + '</span>';
+    }).catch(function (err) {
+      $("#detect-result").innerHTML = '<span class="text-red-700">' + esc(err.message) + '</span>';
+    });
+  });
+{% endif %}
+
+  // ------------------------------------------------------------------
+  // Submit: build the source block, POST to /api/sources
+  // ------------------------------------------------------------------
+  $("#add-source-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var form = ev.target;
+    var fd = new FormData(form);
+    var name = (fd.get("name") || "").trim();
+    var block = {type: sourceType};
+
+    if (sourceType === "codebase") {
+      block.path = (fd.get("path") || "").trim();
+      var extsRaw = (fd.get("extensions") || "").trim();
+      block.supported_extensions = extsRaw
+        ? extsRaw.split(",").map(function (s) {
+            var t = s.trim();
+            if (!t) return null;
+            return t.startsWith(".") ? t : "." + t;
+          }).filter(Boolean)
+        : [];
+      block.watcher = {enabled: !!fd.get("watcher"), debounce_seconds: 2.0};
+      block.git_integration = {enabled: !!fd.get("git_integration")};
+      if (fd.get("graph")) {
+        block.graph = {enabled: true};
+      }
+    } else if (sourceType === "webdoc") {
+      block.url = (fd.get("url") || "").trim();
+      block.max_depth = parseInt(fd.get("max_depth"), 10) || 3;
+      block.max_pages = parseInt(fd.get("max_pages"), 10) || 500;
+      block.same_origin_only = !!fd.get("same_origin_only");
+      var inc = (fd.get("include_url_patterns") || "").trim();
+      var exc = (fd.get("exclude_url_patterns") || "").trim();
+      if (inc) block.include_url_patterns = inc.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      if (exc) block.exclude_url_patterns = exc.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      block.request_delay_seconds = parseFloat(fd.get("request_delay_seconds")) || 0.5;
+    } else if (sourceType === "pdf") {
+      block.path = (fd.get("path") || "").trim();
+      block.recursive = !!fd.get("recursive");
+      block.file_glob = (fd.get("file_glob") || "**/*.pdf").trim();
+      block.watcher = {enabled: !!fd.get("watcher"), debounce_seconds: 5.0};
+      block.extractor = {
+        backend: fd.get("extractor_backend") || "auto",
+        max_file_mb: parseInt(fd.get("max_file_mb"), 10) || 100,
+        max_pages_per_file: 5000,
+        skip_password_protected: true,
+        skip_if_text_empty: true,
+      };
+    }
+
+    fetch("/api/sources", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: name, block: block}),
+    }).then(function (r) {
+      var redirect = r.headers.get("HX-Redirect");
+      return r.text().then(function (body) {
+        if (r.ok && redirect) {
+          // Show a brief success toast, then navigate.
+          setResult(body, false);
+          setTimeout(function () { window.location.assign(redirect); }, 300);
+        } else {
+          setResult(body, !r.ok);
+        }
+      });
+    }).catch(function (err) {
+      setResult('<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">❌ ' +
+                esc(err.message) + '</div>', true);
+    });
+  });
+})();
+</script>
+
+{% endblock %}

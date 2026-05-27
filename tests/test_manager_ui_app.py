@@ -560,7 +560,215 @@ def main() -> int:
             return 27
         print(f"[test] OK [27/27] resolve_config_path: explicit > env > cwd")
 
-        print("\n[test] === SUCCESS: UI scaffolding + playground + build + integrations + config resolution work as expected ===")
+        # ============================================================
+        # Phase 10 — source CRUD + folder browser + add-source pages
+        # ============================================================
+        # These tests use a SEPARATE config file so they don't trip over
+        # the cached SourceManager / dirty state from the playground +
+        # build tests above. We also re-create the TestClient so the new
+        # config path takes effect.
+        crud_tmp = tmp / "crud"; crud_tmp.mkdir()
+        crud_code = crud_tmp / "code"; crud_code.mkdir()
+        (crud_code / "main.py").write_text("def f(): pass\n")
+        (crud_code / "README.md").write_text("# hello\n")
+        crud_cfg_path = _write_config(crud_tmp, crud_code)
+        crud_app = create_app(crud_cfg_path)
+        crud_client = TestClient(crud_app)
+
+        # ----- P10/1: GET /sources/new — chooser page renders --------
+        r = crud_client.get("/sources/new")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/1]: /sources/new returned {r.status_code}")
+            return 28
+        for needle in ("Codebase", "Web docs", "PDFs", "/sources/new/codebase"):
+            if needle not in r.text:
+                print(f"[test] FAIL [P10/1]: chooser missing {needle!r}")
+                return 28
+        print(f"[test] OK [P10/1] /sources/new chooser: 3 cards + links")
+
+        # ----- P10/2: GET /sources/new/codebase — form page ----------
+        r = crud_client.get("/sources/new/codebase")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/2]: /sources/new/codebase returned {r.status_code}")
+            return 28
+        for needle in ('name="path"', "Browse", "Detect", "graph layer", 'name="name"'):
+            if needle not in r.text:
+                print(f"[test] FAIL [P10/2]: codebase form missing {needle!r}")
+                return 28
+        print(f"[test] OK [P10/2] /sources/new/codebase: form + Browse + Detect")
+
+        # ----- P10/3: GET /sources/new/UNKNOWN → 404 -----------------
+        r = crud_client.get("/sources/new/banana")
+        if r.status_code != 404:
+            print(f"[test] FAIL [P10/3]: unknown source type should be 404, got {r.status_code}")
+            return 28
+        print(f"[test] OK [P10/3] /sources/new/banana: 404")
+
+        # ----- P10/4: POST /api/sources — add a codebase, get HX-Redirect
+        new_block = {
+            "type": "codebase",
+            "path": str(crud_code),
+            "supported_extensions": [".py"],
+            "watcher": {"enabled": False, "debounce_seconds": 2.0},
+            "git_integration": {"enabled": False},
+        }
+        r = crud_client.post(
+            "/api/sources",
+            json={"name": "second", "block": new_block},
+        )
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/4]: POST sources returned {r.status_code}: {r.text[:200]}")
+            return 28
+        if r.headers.get("HX-Redirect") != "/sources/second":
+            print(f"[test] FAIL [P10/4]: missing/wrong HX-Redirect header: "
+                  f"{r.headers.get('HX-Redirect')!r}")
+            return 28
+        # Verify config on disk
+        on_disk = json.loads(crud_cfg_path.read_text())
+        if "second" not in on_disk.get("sources", {}):
+            print(f"[test] FAIL [P10/4]: new source not in config on disk: "
+                  f"{list(on_disk.get('sources', {}))}")
+            return 28
+        # Backup file should now exist
+        bak = crud_cfg_path.with_suffix(crud_cfg_path.suffix + ".bak")
+        if not bak.exists():
+            print(f"[test] FAIL [P10/4]: .bak not created")
+            return 28
+        print(f"[test] OK [P10/4] POST /api/sources: source added + HX-Redirect + .bak")
+
+        # ----- P10/5: POST /api/sources — duplicate name → 409 -------
+        r = crud_client.post(
+            "/api/sources",
+            json={"name": "second", "block": new_block},
+        )
+        if r.status_code != 409:
+            print(f"[test] FAIL [P10/5]: duplicate should be 409, got {r.status_code}: {r.text[:200]}")
+            return 28
+        if "already exists" not in r.text:
+            print(f"[test] FAIL [P10/5]: error message unhelpful: {r.text[:200]}")
+            return 28
+        print(f"[test] OK [P10/5] POST /api/sources duplicate: 409 with clear message")
+
+        # ----- P10/6: POST /api/sources — invalid block → 422 --------
+        # webdoc without url is a schema failure
+        bad_block = {"type": "webdoc", "max_depth": 3}  # no url
+        snap_before = crud_cfg_path.read_text()
+        r = crud_client.post(
+            "/api/sources",
+            json={"name": "broken", "block": bad_block},
+        )
+        if r.status_code != 422:
+            print(f"[test] FAIL [P10/6]: invalid block should be 422, got {r.status_code}: {r.text[:200]}")
+            return 28
+        # Config file must NOT have changed
+        if crud_cfg_path.read_text() != snap_before:
+            print(f"[test] FAIL [P10/6]: config was modified despite validation failure!")
+            return 28
+        print(f"[test] OK [P10/6] POST invalid block: 422, config untouched")
+
+        # ----- P10/7: POST /api/sources/_detect on a real folder -----
+        r = crud_client.post(
+            "/api/sources/_detect",
+            json={"path": str(crud_code)},
+        )
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/7]: detect returned {r.status_code}: {r.text[:200]}")
+            return 28
+        data = r.json()
+        if not data.get("exists") or not data.get("is_dir"):
+            print(f"[test] FAIL [P10/7]: detect didn't see existing dir: {data}")
+            return 28
+        if ".py" not in data.get("extensions", []) or ".md" not in data.get("extensions", []):
+            print(f"[test] FAIL [P10/7]: detect missed .py/.md: {data['extensions']}")
+            return 28
+        # is_git could be True or False depending on whether the parent tree
+        # is a git repo (the repo IS one, since we're running tests from it).
+        # We only check the type is a bool.
+        if not isinstance(data.get("is_git"), bool):
+            print(f"[test] FAIL [P10/7]: is_git missing/wrong type: {data}")
+            return 28
+        print(f"[test] OK [P10/7] /api/sources/_detect: extensions + is_git probe")
+
+        # ----- P10/8: GET /api/fs/browse — basic listing --------------
+        # Browse the parent of crud_tmp; the response should include 'crud'
+        r = crud_client.get(f"/api/fs/browse?path={tmp}")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/8]: browse returned {r.status_code}: {r.text[:200]}")
+            return 28
+        data = r.json()
+        names = [e["name"] for e in data.get("entries", [])]
+        if "crud" not in names:
+            print(f"[test] FAIL [P10/8]: browse missing 'crud' in {names}")
+            return 28
+        if data.get("parent") is None:
+            print(f"[test] FAIL [P10/8]: parent should be set (not at root)")
+            return 28
+        print(f"[test] OK [P10/8] /api/fs/browse: {len(names)} entries, parent set")
+
+        # ----- P10/9: GET /api/fs/browse — bogus path → 404 ----------
+        r = crud_client.get("/api/fs/browse?path=/this/does/not/exist/anywhere")
+        if r.status_code != 404:
+            print(f"[test] FAIL [P10/9]: bogus path should be 404, got {r.status_code}")
+            return 28
+        print(f"[test] OK [P10/9] /api/fs/browse bogus path: 404")
+
+        # ----- P10/10: GET /api/fs/browse — empty path → home -------
+        r = crud_client.get("/api/fs/browse?path=")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/10]: empty path should default to home, got {r.status_code}")
+            return 28
+        data = r.json()
+        if data.get("path") != str(Path.home().resolve()):
+            print(f"[test] FAIL [P10/10]: empty path should resolve to home: {data}")
+            return 28
+        print(f"[test] OK [P10/10] /api/fs/browse empty: defaults to {data['path']}")
+
+        # ----- P10/11: DELETE /api/sources/{name} — soft delete -----
+        # Remove the 'second' source we added in P10/4 (no purge)
+        r = crud_client.delete("/api/sources/second")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/11]: delete returned {r.status_code}: {r.text[:200]}")
+            return 28
+        on_disk = json.loads(crud_cfg_path.read_text())
+        if "second" in on_disk.get("sources", {}):
+            print(f"[test] FAIL [P10/11]: source still in config after delete")
+            return 28
+        print(f"[test] OK [P10/11] DELETE /api/sources/second: source removed from config")
+
+        # ----- P10/12: DELETE — unknown name → 404 ------------------
+        r = crud_client.delete("/api/sources/ghost")
+        if r.status_code != 404:
+            print(f"[test] FAIL [P10/12]: deleting unknown should be 404, got {r.status_code}")
+            return 28
+        print(f"[test] OK [P10/12] DELETE unknown: 404")
+
+        # ----- P10/13: DELETE with ?purge=true wipes storage dir ----
+        # First add a source whose storage dir we'll populate, then delete
+        # with purge=true.
+        r = crud_client.post(
+            "/api/sources",
+            json={"name": "purgeme", "block": new_block},
+        )
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/13]: setup POST returned {r.status_code}")
+            return 28
+        cfg = json.loads(crud_cfg_path.read_text())
+        storage_root = Path(cfg["storage_path"])
+        if not storage_root.is_absolute():
+            storage_root = crud_cfg_path.parent / storage_root
+        purgeme_dir = storage_root / "purgeme"
+        purgeme_dir.mkdir(parents=True, exist_ok=True)
+        (purgeme_dir / "marker.txt").write_text("x")
+        r = crud_client.delete("/api/sources/purgeme?purge=true")
+        if r.status_code != 200:
+            print(f"[test] FAIL [P10/13]: purge delete returned {r.status_code}")
+            return 28
+        if purgeme_dir.exists():
+            print(f"[test] FAIL [P10/13]: storage dir not removed at {purgeme_dir}")
+            return 28
+        print(f"[test] OK [P10/13] DELETE ?purge=true: storage dir wiped")
+
+        print("\n[test] === SUCCESS: UI scaffolding + playground + build + integrations + config resolution + source CRUD work as expected ===")
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

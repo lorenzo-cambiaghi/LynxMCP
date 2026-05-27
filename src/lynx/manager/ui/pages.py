@@ -150,6 +150,37 @@ def register(app) -> None:
             },
         )
 
+    # Phase 10: guided "Add source" flow — chooser + per-type form.
+    # Routes registered BEFORE /sources/{name} so the literal "new"
+    # segment matches the chooser instead of falling through to the
+    # source-detail route.
+    @app.get("/sources/new", response_class=HTMLResponse)
+    def add_source_chooser(request: Request):
+        return app.state.templates.TemplateResponse(
+            request, "add_source_chooser.html",
+            {
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
+    @app.get("/sources/new/{source_type}", response_class=HTMLResponse)
+    def add_source_form(request: Request, source_type: str):
+        from fastapi import HTTPException
+        if source_type not in ("codebase", "webdoc", "pdf"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown source type: {source_type!r}",
+            )
+        return app.state.templates.TemplateResponse(
+            request, "add_source_form.html",
+            {
+                "source_type": source_type,
+                "manager_error": app.state.manager_error,
+                "config_path": str(app.state.config_path) if app.state.config_path else None,
+            },
+        )
+
     @app.get("/sources/{name}", response_class=HTMLResponse)
     def source_detail(request: Request, name: str):
         from fastapi import HTTPException

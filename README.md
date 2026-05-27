@@ -31,7 +31,7 @@ AI models are incredibly smart, but they suffer from **context limits**. They do
 4. **🧬 Structural code understanding** (opt-in, new in v0.6) — a **knowledge graph** of your codebase: *"who calls `IDamageable`?"*, *"what concrete classes extend `BaseController`?"*, *"how does `CheckoutFlow` reach `PaymentGateway`?"*, *"give me an architectural overview"*. Search finds the file; the graph finds the relationships.
 5. **🎯 Code-aware combined queries** (new in v0.8) — `find_definition`, `find_usages`, `find_tests_for`, `find_similar`, `search_diff`. They combine the graph layer with hybrid search so the AI gets a direct answer to *"where is X defined?"*, *"who uses X?"*, *"are there tests for X?"*, *"is there code similar to this snippet?"*, *"what did I change vs main, and is anything else affected?"* — instead of you scrolling through search results.
 6. **⚙️ Optional cross-encoder reranker** (opt-in, new in v0.8) — after the hybrid RRF, a small ~80MB local cross-encoder model re-scores the top-N candidates by actually *looking at* (query, chunk) content. ~+20-30% precision@1 on ambiguous queries for ~50ms extra latency. Off by default.
-7. **🎛️ LynxManager** (new in v0.9) — a sub-command namespace that turns the painful parts of running Lynx into one-liners: `lynx manager init` is an interactive wizard that builds your `config.json` step-by-step (and writes the AI-client rules file for you), `lynx manager doctor` runs a full diagnostic (HF cache, drift, paths, extras, disk space), `lynx manager install` handles pip extras + explicit model downloads, and `lynx manager ui` opens a local web panel (FastAPI + HTMX + bundled Tailwind, `127.0.0.1` only) for dashboard, config editor, search playground, build trigger and integration snippets. No CDN, no cloud — fully offline like everything else in Lynx.
+7. **🎛️ LynxManager** (new in v0.9) — a sub-command namespace that turns the painful parts of running Lynx into one-liners: `lynx manager init` writes a default `config.json` and pre-downloads the embedding model (no long Q&A — the only prompt is "open the UI now?"); `lynx manager ui` opens a local web panel (FastAPI + HTMX + bundled Tailwind, `127.0.0.1` only) where you click **+ Add source**, pick a folder visually, and the form explains each option as you go; `lynx manager doctor` runs a full diagnostic (HF cache, drift, paths, extras, disk space); `lynx manager install` handles pip extras + explicit model downloads. No CDN, no cloud — fully offline like everything else in Lynx.
 
 ### 💡 See the Difference
 
@@ -255,8 +255,8 @@ After either of those, `lynx` works from anywhere:
 
 ```bash
 lynx --version
-lynx manager ui     # opens the web panel
-lynx manager init   # interactive setup wizard
+lynx manager init   # writes default config + pre-downloads embedding model
+lynx manager ui     # opens the web panel — add your sources from there
 ```
 
 (When LynxMCP lands on PyPI the source URL becomes just `lynx`, e.g.
@@ -353,26 +353,35 @@ lifecycle in four commands. **This is the recommended on-ramp for new
 users.** Everything stays local — no telemetry, no cloud, same privacy
 guarantees as the rest of Lynx.
 
-### `lynx manager init` — interactive setup wizard
+### `lynx manager init` — minimal bootstrap
 
 ```bash
 lynx manager init
 ```
 
-Walks you through every decision step by step: storage path, embedding
-model (defaults to `BAAI/bge-small-en-v1.5`), search mode, optional
-reranker, then a "add another source?" loop for codebase / webdoc / PDF
-sources. For codebases it auto-detects file extensions, watcher
-settings and git integration based on what's actually in the folder.
-At the end it:
+Does the one thing the web UI can't do for itself: writes a default
+`config.json` (with `sources: {}` — empty) and pre-downloads the
+embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB) into your local
+HuggingFace cache. That's it — no per-source Q&A, no AI-client picker.
+The only prompt is **"Open LynxManager now?"** at the end (default Y);
+say yes and the UI launches in your browser ready to add sources.
 
-- writes a valid `config.json`,
-- offers to download the embedding model (one-time `snapshot_download`),
-- generates an AI-client rules file (`CLAUDE.md` / `AGENTS.md` /
-  `.cursor/rules/lynx.md` depending on the client you pick),
-- prints the exact MCP snippet to paste into your client.
+Why so terse? The original wizard chained 15+ prompts with opaque
+choices (`reranker enabled?`, `pdf backend?`, `search mode hybrid /
+dense / sparse?`). All of that is now in the UI — each option presented
+in a form with multi-line help text and visual folder picker, instead
+of one-line terminal prompts the user can't evaluate at first contact.
 
-Non-interactive mode (`--non-interactive`) is supported for scripting.
+Flags:
+
+- `--output PATH` — where to write the config (default `./config.json`).
+- `--non-interactive` — skip both prompts (overwrite-confirm + open-UI);
+  used by CI / scripts.
+- `--skip-model-download` — don't pre-fetch the embedding model. It will
+  be downloaded lazily on the first `lynx serve` query instead.
+
+After init, jump into the UI and click **+ Add source** — see
+`lynx manager ui` below for the guided form.
 
 ### `lynx manager doctor` — full diagnostic
 
@@ -499,8 +508,12 @@ else can reach it.
 
 #### Step 2 — a 5-minute tour for a brand-new user
 
-Let's say you've just run `lynx manager init`, picked your codebase folder,
-and now have no idea what you actually got. Here's what to do, in order:
+Let's say you've just run `lynx manager init` and the UI just opened in
+your browser on the dashboard. The empty-state nudges you toward
+**+ Add your first source** — click it, pick **Codebase**, hit
+**📁 Browse...** to visually point at your repo folder, then **Detect**
+to auto-fill the file extensions list. Submit. You're back on a
+populated dashboard. Here's what to do next, in order:
 
 1. **Dashboard (the page you land on).** You'll see one card per source.
    Each card shows the chunk count (how many text fragments are indexed),
@@ -587,10 +600,12 @@ before letting the OS assign one.
 
 ## Configuration
 
-> 💡 **New in v0.9:** prefer `lynx manager init` over editing JSON by
-> hand — the wizard validates inputs as you go and writes the rules
-> file for your AI client too. The reference below is still authoritative
-> for advanced cases (multi-source, custom rerankers, watcher tuning).
+> 💡 **New in v0.9:** prefer the web UI's **+ Add source** flow over
+> editing JSON by hand. `lynx manager init` bootstraps an empty config;
+> `lynx manager ui` opens a guided form for each source type (codebase /
+> web docs / PDFs) with inline help for every option and a visual folder
+> picker. The reference below stays authoritative for advanced cases
+> (multi-source, custom rerankers, watcher tuning).
 
 The config is a single JSON file with **shared settings at the top level**
 and a `sources` block that lists everything to index. Copy the example and

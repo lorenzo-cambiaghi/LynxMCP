@@ -505,10 +505,14 @@ def load_config(config_path: Path | None = None) -> Config:
     )
 
     # --- sources -----------------------------------------------------------
+    # An empty `sources: {}` is allowed: that's the state right after
+    # `lynx manager init`, before the user has added any source via the UI.
+    # `lynx serve` will run with zero MCP tools registered, and the manager
+    # UI will surface an empty-state prompt to add one.
     sources_raw = raw.get("sources")
-    if not isinstance(sources_raw, dict) or not sources_raw:
+    if not isinstance(sources_raw, dict):
         _config_error(
-            "'sources' must be a non-empty object mapping source name -> "
+            "'sources' must be an object mapping source name -> "
             "source config. See config.example.json for the shape."
         )
 

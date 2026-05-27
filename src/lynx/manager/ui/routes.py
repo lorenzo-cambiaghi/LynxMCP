@@ -211,6 +211,13 @@ def register(app) -> None:
     _register_build_routes(app)
 
     # ------------------------------------------------------------------
+    # Phase 10: source CRUD + filesystem browser
+    # ------------------------------------------------------------------
+    # POST /api/sources, DELETE /api/sources/{name}, POST /api/sources/_detect
+    # GET /api/fs/browse — all consumed by the new "Add source" UI flow.
+    _register_source_crud_routes(app)
+
+    # ------------------------------------------------------------------
     # Phase 8: integrations — MCP snippet + AI rules-file download
     # ------------------------------------------------------------------
     @app.get("/api/integrations/{client}/rules")
@@ -811,6 +818,343 @@ def _register_build_routes(app) -> None:
                 status_code=404,
             )
         return HTMLResponse(_render_job_widget(j, source or (j.metadata.get("source") or "")))
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: source CRUD + filesystem browser
+# ---------------------------------------------------------------------------
+
+
+# Source-name shape mirrors the validator used by the v2 config loader.
+# Letter followed by letters / digits / underscore, max 40 chars.
+_SOURCE_NAME_RE = __import__("re").compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
+
+# Roots we never list on the filesystem browser — these are kernel
+# virtual filesystems on Linux that are either huge, slow, or weird to
+# walk and have no value to anyone picking a folder to index.
+_FS_BROWSE_SKIP_DIRS = {"/proc", "/sys", "/dev"}
+
+
+def _toast_ok(html_body: str) -> str:
+    """Wrap a success message in the green-toast div HTMX swaps in."""
+    return (
+        '<div class="p-3 bg-green-50 border border-green-200 rounded '
+        'text-green-900 text-sm">'
+        f'✓ {html_body}'
+        '</div>'
+    )
+
+
+def _toast_err(html_body: str) -> str:
+    """Wrap an error message in the red-toast div HTMX swaps in."""
+    return (
+        '<div class="p-3 bg-red-50 border border-red-200 rounded '
+        'text-red-900 text-sm">'
+        f'❌ {html_body}'
+        '</div>'
+    )
+
+
+def _load_config_dict(config_path):
+    """Read config.json as a raw dict (no schema validation).
+
+    Used for read-modify-write of source CRUD endpoints — we don't want
+    the source-add flow to fail because some unrelated config field is
+    slightly off-schema. Schema validation runs at write-time via
+    `_validate_and_write_config`.
+    """
+    import json as _json
+    from pathlib import Path
+    return _json.loads(Path(config_path).read_text(encoding="utf-8"))
+
+
+def _validate_and_write_config(config_dict, config_path):
+    """Round-trip the dict through `load_config` for schema validation,
+    then atomically write to disk with a `.bak` backup of the previous
+    content. Returns None on success, or an error message string.
+
+    Mirrors the validation strategy of PUT /api/config: write a tempfile,
+    invoke load_config on it, surface any SystemExit/Exception as an
+    error string. Keeps validation logic in one place (the loader).
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+
+    content = _json.dumps(config_dict, indent=2) + "\n"
+
+    # Schema validation via tempfile + load_config.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8",
+    ) as tf:
+        tf.write(content)
+        tmp_path = Path(tf.name)
+    try:
+        try:
+            from ...config import load_config
+            load_config(tmp_path)
+        except SystemExit as e:
+            return (f"Schema validation failed (exit {e.code}). Check the "
+                    f"terminal where you launched `lynx manager ui` for the "
+                    f"detailed error.")
+        except Exception as e:
+            return f"Validation error: {type(e).__name__}: {e}"
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+    # Backup + write.
+    target = Path(config_path)
+    try:
+        if target.exists():
+            backup = target.with_suffix(target.suffix + ".bak")
+            backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        target.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return f"Couldn't write config: {e}"
+    return None
+
+
+def _register_source_crud_routes(app) -> None:
+    """POST/DELETE /api/sources/* and GET /api/fs/browse."""
+    from fastapi import HTTPException, Request
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    def _require_config_path():
+        if app.state.config_path is None:
+            return None, HTMLResponse(
+                _toast_err("No config path configured — launch the UI with --config PATH."),
+                status_code=400,
+            )
+        from pathlib import Path
+        p = Path(app.state.config_path)
+        if not p.exists():
+            return None, HTMLResponse(
+                _toast_err(f"Config not found at {p} — run `lynx manager init` first."),
+                status_code=404,
+            )
+        return p, None
+
+    @app.post("/api/sources")
+    async def api_add_source(request: Request):
+        """Add a new source block to config.json.
+
+        Body: {"name": "...", "block": {"type": "codebase"|"webdoc"|"pdf", ...}}
+        On success: returns 200 + success toast + sets HX-Redirect header
+        so HTMX navigates to the new source's detail page.
+        """
+        config_path, err = _require_config_path()
+        if err: return err
+        try:
+            payload = await request.json()
+        except Exception as e:
+            return HTMLResponse(_toast_err(f"Invalid JSON body: {e}"), status_code=400)
+
+        name = (payload.get("name") or "").strip()
+        block = payload.get("block")
+        if not name or not _SOURCE_NAME_RE.match(name):
+            return HTMLResponse(
+                _toast_err(
+                    "Source name must start with a letter and contain only "
+                    "letters, digits, and underscores (max 40 chars)."
+                ),
+                status_code=400,
+            )
+        if not isinstance(block, dict) or not block.get("type"):
+            return HTMLResponse(
+                _toast_err("`block` must be an object with a `type` field."),
+                status_code=400,
+            )
+
+        try:
+            cfg = _load_config_dict(config_path)
+        except Exception as e:
+            return HTMLResponse(
+                _toast_err(f"Couldn't read existing config: {e}"),
+                status_code=500,
+            )
+        if name in (cfg.get("sources") or {}):
+            return HTMLResponse(
+                _toast_err(f"A source named {name!r} already exists."),
+                status_code=409,
+            )
+
+        cfg.setdefault("sources", {})[name] = block
+
+        err_msg = _validate_and_write_config(cfg, config_path)
+        if err_msg is not None:
+            return HTMLResponse(_toast_err(err_msg), status_code=422)
+
+        # Invalidate cached manager so the new source becomes visible.
+        app.state.manager = None
+        app.state.manager_error = None
+
+        # Tell HTMX to navigate to the new source detail page after
+        # success. Falls back to swapping the toast if the caller isn't
+        # using HTMX (vanilla fetch will see the body + header).
+        return HTMLResponse(
+            _toast_ok(f"<strong>Source {name!r} added.</strong>"),
+            status_code=200,
+            headers={"HX-Redirect": f"/sources/{name}"},
+        )
+
+    @app.delete("/api/sources/{name}")
+    def api_delete_source(name: str, purge: bool = False):
+        """Remove a source from config.json. With `?purge=true`, also
+        wipe its ChromaDB storage directory on disk.
+        """
+        config_path, err = _require_config_path()
+        if err: return err
+        try:
+            cfg = _load_config_dict(config_path)
+        except Exception as e:
+            return HTMLResponse(
+                _toast_err(f"Couldn't read existing config: {e}"),
+                status_code=500,
+            )
+        sources = cfg.get("sources") or {}
+        if name not in sources:
+            return HTMLResponse(
+                _toast_err(f"Source {name!r} not found in config."),
+                status_code=404,
+            )
+
+        storage_root = cfg.get("storage_path", "./rag_storage")
+        del sources[name]
+        cfg["sources"] = sources
+
+        err_msg = _validate_and_write_config(cfg, config_path)
+        if err_msg is not None:
+            return HTMLResponse(_toast_err(err_msg), status_code=422)
+
+        app.state.manager = None
+        app.state.manager_error = None
+
+        purge_msg = ""
+        if purge:
+            from pathlib import Path
+            import shutil
+            src_storage = Path(storage_root) / name
+            if src_storage.exists():
+                try:
+                    shutil.rmtree(src_storage)
+                    purge_msg = f" Storage at <code>{src_storage}</code> wiped."
+                except OSError as e:
+                    purge_msg = f" (but couldn't remove storage dir: {e})"
+
+        return HTMLResponse(
+            _toast_ok(f"<strong>Source {name!r} removed.</strong>{purge_msg}"),
+            status_code=200,
+            headers={"HX-Redirect": "/sources"},
+        )
+
+    @app.post("/api/sources/_detect")
+    async def api_detect_source(request: Request):
+        """Probe a folder: return top-N file extensions and git-repo flag.
+
+        Body: {"path": "/abs/or/relative/dir"}
+        Returns: {"path", "exists", "is_dir", "extensions": [...], "is_git": bool}
+        """
+        try:
+            payload = await request.json()
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid JSON: {e}"}, status_code=400)
+        raw_path = (payload.get("path") or "").strip()
+        if not raw_path:
+            return JSONResponse({"error": "`path` is required"}, status_code=400)
+
+        from pathlib import Path
+        from . import detect
+        p = Path(raw_path).expanduser()
+        try:
+            resolved = p.resolve()
+        except OSError as e:
+            return JSONResponse({"error": f"Couldn't resolve path: {e}"}, status_code=400)
+        if not resolved.exists():
+            return JSONResponse({
+                "path": str(resolved),
+                "exists": False,
+                "is_dir": False,
+                "extensions": [],
+                "is_git": False,
+            })
+        if not resolved.is_dir():
+            return JSONResponse({
+                "path": str(resolved),
+                "exists": True,
+                "is_dir": False,
+                "extensions": [],
+                "is_git": False,
+            })
+        return JSONResponse({
+            "path": str(resolved),
+            "exists": True,
+            "is_dir": True,
+            "extensions": detect.detect_extensions(resolved, top_n=10),
+            "is_git": detect.is_git_repo(resolved),
+        })
+
+    @app.get("/api/fs/browse")
+    def api_fs_browse(path: str = ""):
+        """Single-level folder listing for the folder-picker modal.
+
+        Returns JSON {path, parent, entries: [{name, is_dir}]} where
+        `entries` contains ONLY subdirectories (files are omitted to
+        keep the tree small). Empty `path` defaults to the user's home
+        directory.
+
+        Safety:
+        - Resolves the path (follows symlinks) so the response can't
+          leak via `..` traversal beyond what the user could see anyway.
+        - Skips kernel virtual roots (/proc, /sys, /dev) on Linux.
+        - 404 on non-existent paths or non-directories.
+        """
+        from pathlib import Path
+        raw = path.strip()
+        if not raw:
+            target = Path.home()
+        else:
+            target = Path(raw).expanduser()
+        try:
+            resolved = target.resolve()
+        except OSError as e:
+            raise HTTPException(status_code=400, detail=f"Couldn't resolve path: {e}")
+        if not resolved.exists():
+            raise HTTPException(status_code=404, detail=f"path does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise HTTPException(status_code=404, detail=f"path is not a directory: {resolved}")
+
+        entries = []
+        try:
+            for child in sorted(resolved.iterdir(), key=lambda c: c.name.lower()):
+                # The skip-set guards Linux virtual FS roots; on macOS /
+                # Windows the paths just won't match and nothing is skipped.
+                if str(child) in _FS_BROWSE_SKIP_DIRS:
+                    continue
+                try:
+                    if not child.is_dir():
+                        continue
+                except OSError:
+                    # Permission / IO errors on a specific entry: just skip it.
+                    continue
+                entries.append({"name": child.name, "is_dir": True})
+        except PermissionError:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied reading {resolved}",
+            )
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"OS error: {e}")
+
+        # parent = None when we're at the filesystem root (Path('/').parent == Path('/'))
+        parent = str(resolved.parent) if resolved.parent != resolved else None
+        return {
+            "path": str(resolved),
+            "parent": parent,
+            "entries": entries,
+        }
 
 
 # Hoist `time` so _render_job_widget can use it without re-importing per call.

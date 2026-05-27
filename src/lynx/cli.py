@@ -129,9 +129,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_mgr_init = manager_sub.add_parser(
         "init",
-        help="Interactive wizard that generates a valid config.json + "
-             "optionally downloads the embedding model and the AI-client "
-             "rules file.",
+        help="Bootstrap a fresh Lynx install: write a default config.json "
+             "and pre-download the embedding model. Sources are added "
+             "afterwards via `lynx manager ui` (guided form).",
     )
     sp_mgr_init.add_argument(
         "--output", "-o", metavar="PATH", default="config.json",
@@ -139,7 +139,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp_mgr_init.add_argument(
         "--non-interactive", action="store_true",
-        help="Skip prompts; use defaults for everything. Useful in scripts.",
+        help="Skip prompts; overwrite any existing config; do not offer to "
+             "launch the UI. Useful in scripts / CI.",
+    )
+    sp_mgr_init.add_argument(
+        "--skip-model-download", action="store_true",
+        help="Don't pre-download the embedding model. It will be fetched "
+             "lazily on the first `lynx serve` query instead.",
     )
 
     sp_mgr_doctor = manager_sub.add_parser(

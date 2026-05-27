@@ -5,16 +5,29 @@
 
 <div class="flex items-baseline justify-between mb-4">
   <h1 class="text-2xl font-bold text-slate-900">Sources</h1>
-  <div class="text-sm text-slate-500">
-    {{ sources|length }} source{{ '' if sources|length == 1 else 's' }} configured
+  <div class="flex items-center gap-3">
+    <span class="text-sm text-slate-500">
+      {{ sources|length }} source{{ '' if sources|length == 1 else 's' }} configured
+    </span>
+    <a href="/sources/new"
+       class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded font-medium hover:bg-indigo-700">
+      + Add source
+    </a>
   </div>
 </div>
 
 {% if not sources %}
-  <div class="p-6 bg-white border border-dashed border-slate-300 rounded text-slate-500 text-sm">
-    No sources yet. Add one in the
-    <a href="/config" class="text-indigo-600 hover:underline">Config editor</a>
-    or run <code class="bg-slate-100 px-1 rounded">lynx manager init</code>.
+  <div class="p-8 bg-white border border-dashed border-slate-300 rounded text-center">
+    <div class="text-4xl mb-2">📚</div>
+    <div class="text-slate-700 font-medium mb-1">No sources configured yet</div>
+    <div class="text-sm text-slate-500 mb-4 max-w-md mx-auto">
+      A source is one body of content Lynx indexes — your code, a docs site, or a
+      folder of PDFs. Add one to get started.
+    </div>
+    <a href="/sources/new"
+       class="inline-block px-5 py-2 bg-indigo-600 text-white rounded font-medium hover:bg-indigo-700">
+      + Add your first source
+    </a>
   </div>
 {% else %}
   <div class="space-y-2">

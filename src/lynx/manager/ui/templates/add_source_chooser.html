@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Add source — LynxManager{% endblock %}
+
+{% block content %}
+
+<div class="mb-2">
+  <a href="/sources" class="text-sm text-slate-500 hover:text-indigo-600">← Back to sources</a>
+</div>
+
+<h1 class="text-2xl font-bold text-slate-900 mb-1">Add a source</h1>
+<p class="text-slate-600 mb-6 max-w-3xl">
+  A <em>source</em> is one body of content Lynx indexes and exposes to your AI client
+  via MCP tools. Pick the kind below — the next screen explains the options for that
+  type and lets you configure it without editing JSON.
+</p>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-5xl">
+
+  <!-- Codebase card -->
+  <a href="/sources/new/codebase"
+     class="block p-5 bg-white border border-slate-200 rounded-lg hover:border-indigo-400 hover:shadow-md transition group">
+    <div class="text-3xl mb-3">📂</div>
+    <div class="font-semibold text-slate-900 text-lg group-hover:text-indigo-700">Codebase</div>
+    <div class="text-sm text-slate-600 mt-2 leading-relaxed">
+      Index a local repo so your AI client can search it semantically — by intent, not
+      by grep. Auto-reindexes on save when the watcher is on, and can expose a call /
+      import / inheritance graph for structural queries.
+    </div>
+    <div class="text-xs text-slate-500 mt-3 italic">
+      Use for: your own projects, vendored deps you want context on.
+    </div>
+  </a>
+
+  <!-- Web docs card -->
+  <a href="/sources/new/webdoc"
+     class="block p-5 bg-white border border-slate-200 rounded-lg hover:border-indigo-400 hover:shadow-md transition group">
+    <div class="text-3xl mb-3">🌐</div>
+    <div class="font-semibold text-slate-900 text-lg group-hover:text-indigo-700">Web docs</div>
+    <div class="text-sm text-slate-600 mt-2 leading-relaxed">
+      Crawl a public documentation site (React docs, AWS API ref, library manuals)
+      and index it locally. After the initial crawl Lynx searches offline — your AI
+      client can quote library docs without your training data being stale.
+    </div>
+    <div class="text-xs text-slate-500 mt-3 italic">
+      Use for: library docs whose API may have moved since your model's cutoff.
+    </div>
+  </a>
+
+  <!-- PDF card -->
+  <a href="/sources/new/pdf"
+     class="block p-5 bg-white border border-slate-200 rounded-lg hover:border-indigo-400 hover:shadow-md transition group">
+    <div class="text-3xl mb-3">📄</div>
+    <div class="font-semibold text-slate-900 text-lg group-hover:text-indigo-700">PDFs</div>
+    <div class="text-sm text-slate-600 mt-2 leading-relaxed">
+      Point at a folder of PDFs — manuals, RFCs, papers, internal specs. Lynx extracts
+      text per page and indexes one chunk per page. AI clients cite results with
+      <code class="text-xs bg-slate-100 px-1 rounded">document.pdf p.42</code>.
+    </div>
+    <div class="text-xs text-slate-500 mt-3 italic">
+      Use for: technical PDFs you wish you could "grep". Scanned PDFs are skipped.
+    </div>
+  </a>
+
+</div>
+
+{% endblock %}
