@@ -385,6 +385,8 @@ After init, jump into the UI and click **+ Add source** — see
 
 ### `lynx manager doctor` — full diagnostic
 
+<img src="readmeData/lynxManager_4.jpg" alt="Doctor Diagnostic" width="800">
+
 ```bash
 lynx manager doctor
 ```
@@ -515,49 +517,57 @@ your browser on the dashboard. The empty-state nudges you toward
 to auto-fill the file extensions list. Submit. You're back on a
 populated dashboard. Here's what to do next, in order:
 
-1. **Dashboard (the page you land on).** You'll see one card per source.
-   Each card shows the chunk count (how many text fragments are indexed),
-   the last-update time, and a coloured badge if anything is off (`drift:
-   warning` if files changed since the last build, `🔒 locked` if another
-   process is using it). The "Health check" box at the top is your
-   `lynx manager doctor` result rolled up into one line — green means
-   everything's fine. **If a source shows `0 chunks`** you haven't built
-   the index yet — see step 4.
+<img src="readmeData/lynxManager_1.jpg" alt="Add Source" width="800">
 
-2. **Click the source name** (e.g. `myproject`). You're now on the source
-   detail page: full status, graph layer stats if you enabled it, and a
-   big **Rebuild index** button.
+<img src="readmeData/lynxManager_1_2.jpg" alt="Add Codebase" width="800">
 
-3. **Open the Playground** (left sidebar → 🔎 Playground). Pick your
-   source from the dropdown at the top and type a question into the
-   Search tab — something like `"how does authentication work?"` or
-   `"where do we parse JSON?"`. Hit Search. You'll get back a list of
-   code chunks with file path, line range, and a relevance score. **This
-   is exactly what your AI client will see** when it calls Lynx — no
-   need to wire up an AI client just to find out whether Lynx is
-   working.
+**Dashboard (the page you land on).** You'll see one card per source.
+Each card shows the chunk count (how many text fragments are indexed),
+the last-update time, and a coloured badge if anything is off (`drift:
+warning` if files changed since the last build, `🔒 locked` if another
+process is using it). The "Health check" box at the top is your
+`lynx manager doctor` result rolled up into one line — green means
+everything's fine. **If a source shows `0 chunks`** you haven't built
+the index yet.
 
-4. **If you haven't built the index yet**, go back to the source detail
-   page (left sidebar → 📚 Sources → click your source) and hit
-   **Rebuild index**. A status panel appears and updates itself every
-   second. Builds take seconds for small repos, a few minutes for
-   bigger ones. When it says ✓ Build complete, return to the Playground
-   and try the search again.
+**Click the source name** (e.g. `myproject`). You're now on the source
+detail page: full status, graph layer stats if you enabled it, and a
+big **Rebuild index** button.
 
-5. **Wire it into your AI client** (left sidebar → 🔌 Integrations).
-   You'll see a card for Claude Code, Cursor, Antigravity, and generic
-   stdio. **Copy the JSON snippet** with the button — it's already
-   filled in with *your* Python interpreter and *your* config path —
-   and paste it into the file shown on the card (e.g.
-   `~/.claude/mcp_settings.json` for Claude Code). Also click
-   **Download CLAUDE.md** (or `AGENTS.md` / `lynx.md`) to get an
-   auto-generated rules file that teaches your AI when to call Lynx's
-   tools. Drop the file in your repo root and restart the AI client.
+**Open the Playground** (left sidebar → 🔎 Playground). Pick your
+source from the dropdown at the top and type a question into the
+Search tab — something like `"how does authentication work?"` or
+`"where do we parse JSON?"`. Hit Search. You'll get back a list of
+code chunks with file path, line range, and a relevance score. **This
+is exactly what your AI client will see** when it calls Lynx — no
+need to wire up an AI client just to find out whether Lynx is
+working.
 
-6. **(Optional) Edit the config** from the Config tab if you want to
-   add another source or tweak a setting — the editor validates with
-   the exact same loader the CLI uses, and keeps a `.bak` of the
-   previous version in case you want to roll back.
+<img src="readmeData/lynxManager_2.jpg" alt="Playground" width="800">
+
+**If you haven't built the index yet**, go back to the source detail
+page (left sidebar → 📚 Sources → click your source) and hit
+**Rebuild index**. A status panel appears and updates itself every
+second. Builds take seconds for small repos, a few minutes for
+bigger ones. When it says ✓ Build complete, return to the Playground
+and try the search again.
+
+**Wire it into your AI client** (left sidebar → 🔌 Integrations).
+You'll see a card for Claude Code, Cursor, Antigravity, and generic
+stdio. **Copy the JSON snippet** with the button — it's already
+filled in with *your* Python interpreter and *your* config path —
+and paste it into the file shown on the card (e.g.
+`~/.claude/mcp_settings.json` for Claude Code). Also click
+**Download CLAUDE.md** (or `AGENTS.md` / `lynx.md`) to get an
+auto-generated rules file that teaches your AI when to call Lynx's
+tools. Drop the file in your repo root and restart the AI client.
+
+<img src="readmeData/lynxManager_3.jpg" alt="Integrations" width="800">
+
+**(Optional) Edit the config** from the Config tab if you want to
+add another source or tweak a setting — the editor validates with
+the exact same loader the CLI uses, and keeps a `.bak` of the
+previous version in case you want to roll back.
 
 That's the whole product in five minutes. Everything else (graph tools,
 diff search, multiple sources, reranker) is built on the same surface
