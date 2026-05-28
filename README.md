@@ -267,6 +267,14 @@ lynx manager ui     # opens the web panel — add your sources from there
 To upgrade later: `pipx upgrade lynx` (or `uv tool upgrade lynx`).
 To uninstall: `pipx uninstall lynx` (or `uv tool uninstall lynx`).
 
+### Zero-terminal launch (for beginners)
+
+If you have cloned the repository and prefer not to use the command line every time, Lynx comes with double-click launchers that automatically find your installation and open the web UI:
+- **Windows:** Double-click `LynxManager.bat`
+- **macOS / Linux:** Double-click `LynxManager.command` (from Finder)
+
+These scripts will handle starting the server and opening your browser automatically. If you haven't installed `lynx` yet, they will guide you through the process.
+
 ### Development install (editable from a clone)
 
 Use this only if you want to **modify** Lynx's source code and have
