@@ -70,36 +70,36 @@ Most AI coding tools come with basic codebase search, but they usually rely on s
 
 1. [What this does](#what-this-does)
 2. [Why it exists](#why-it-exists)
-3. [How it works (in 30 seconds)](#how-it-works-in-30-seconds)
+3. [Install Lynx](#install-lynx)
 4. [Prerequisites](#prerequisites)
-5. [Installation](#installation)
-6. [LynxManager — guided setup, web UI, diagnostics (new in v0.9)](#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09)
-7. [Configuration](#configuration)
-8. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
-9. [Build the index for the first time](#build-the-index-for-the-first-time)
-10. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
-11. [Webdoc sources](#webdoc-sources)
-12. [PDF sources](#pdf-sources)
-13. [Connect it to your AI client](#connect-it-to-your-ai-client)
+5. [LynxManager — guided setup, web UI, diagnostics (new in v0.9)](#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09)
+6. [Configuration](#configuration)
+7. [Migrating from v1 (single-source) configs](#migrating-from-v1-single-source-configs)
+8. [Build the index for the first time](#build-the-index-for-the-first-time)
+9. [Multi-source: indexing code AND library documentation](#multi-source-indexing-code-and-library-documentation)
+10. [Webdoc sources](#webdoc-sources)
+11. [PDF sources](#pdf-sources)
+12. [Connect it to your AI client](#connect-it-to-your-ai-client)
     - [Claude Code (CLI)](#claude-code-cli)
     - [Claude Code extension for VS Code](#claude-code-extension-for-vs-code)
     - [Google Antigravity](#google-antigravity)
     - [Cursor](#cursor)
     - [Continue.dev / Aider / other MCP-compliant clients](#continuedev--aider--other-mcp-compliant-clients)
-14. [Command-line interface](#command-line-interface)
-15. [Verify the integration works](#verify-the-integration-works)
-16. [The MCP tools you get](#the-mcp-tools-you-get)
-17. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
-18. [Keeping the index up to date](#keeping-the-index-up-to-date)
-19. [AST-aware chunking](#ast-aware-chunking)
-20. [Hybrid retrieval](#hybrid-retrieval)
-21. [Reranking (opt-in)](#reranking-opt-in)
-22. [Graph layer (opt-in)](#graph-layer-opt-in)
-23. [Config drift detection](#config-drift-detection)
-24. [Architecture](#architecture)
-25. [Troubleshooting](#troubleshooting)
-26. [Contributing](#contributing)
-27. [Privacy guarantees](#privacy-guarantees)
+13. [Command-line interface](#command-line-interface)
+14. [Verify the integration works](#verify-the-integration-works)
+15. [The MCP tools you get](#the-mcp-tools-you-get)
+16. [Get the most out of it: AI integration rules](#get-the-most-out-of-it-ai-integration-rules)
+17. [Keeping the index up to date](#keeping-the-index-up-to-date)
+18. [AST-aware chunking](#ast-aware-chunking)
+19. [Hybrid retrieval](#hybrid-retrieval)
+20. [Reranking (opt-in)](#reranking-opt-in)
+21. [Graph layer (opt-in)](#graph-layer-opt-in)
+22. [Config drift detection](#config-drift-detection)
+23. [Architecture](#architecture)
+24. [Troubleshooting](#troubleshooting)
+25. [Contributing](#contributing)
+26. [Privacy guarantees](#privacy-guarantees)
+27. [How it works (in 30 seconds)](#how-it-works-in-30-seconds)
 
 ---
 
@@ -185,89 +185,35 @@ This project addresses all three:
 - **Explicit retrieval.** `search_<source>` tools are invoked deliberately
   by the assistant — you can also bias *when* via project rules files.
 
-## How it works (in 30 seconds)
-
-**Two layers run side-by-side on every codebase source:**
-
-```
-Search layer (always on):
-  Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
-                                                                     |
-  Your question  --> embedded --> top-K cosine similarity  ----------+
-                                                                     |
-                                                                     v
-                                       Top-K relevant code snippets
-                                       returned to the AI client via MCP
-
-Graph layer (opt-in, `graph: { enabled: true }`):
-  Your code  --> tree-sitter walk --> nodes (classes, functions)
-                                  --> edges (calls, inherits, imports, contains)
-                                                                     |
-  Your question (e.g. "who calls X?")  ------------------------------+
-                                                                     |
-                                                                     v
-                                       NetworkX query results
-                                       (callers, callees, subclasses, paths, ...)
-```
-
-Both layers parse the source files via the **same tree-sitter parsers**
-(13 languages, sharing the parser cache), and both are kept in sync by
-the same file watcher (~2s after each save). The graph layer is
-backward-compatible: leave it off and nothing changes.
-
----
-
-## Prerequisites
-
-- **Python 3.10+** (3.12 or 3.13 recommended)
-- **pip**
-- ~500 MB of disk space for the embedding model (downloaded once on first run)
-- An **MCP-compliant AI client**: Claude Code CLI, Claude Code extension for
-  VS Code, Antigravity, Cursor, Continue.dev, Aider, etc.
-
-> **First-run note:** the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB)
-> is downloaded once from HuggingFace on the very first run. After that,
-> offline mode is enforced — no network calls are ever made.
-
----
-
 ## Install Lynx
 
-**Just download one file and open it. No terminal, no Python, nothing to set up.**
+**Download one file, open it, done. No terminal, no Python, nothing to set up.**
 
-### Step 1 — Download
+### 🍎 Mac
 
-Go to the **[⬇️ Download page](https://github.com/lorenzo-cambiaghi/LynxMCP/releases/latest)**
-and pick the file for your computer:
+1. **Download** `Lynx-…-macos.dmg` from the
+   **[⬇️ Download page](https://github.com/lorenzo-cambiaghi/LynxMCP/releases/latest)**.
+2. **Open** the downloaded file, then **drag the Lynx icon onto the
+   Applications folder.**
+3. **Open Applications and double-click Lynx.**
+   - The first time, your Mac may say *"Lynx can't be opened because it's from
+     an unidentified developer."* This is normal and safe — instead of
+     double-clicking, **right-click the Lynx icon → click Open → click Open
+     again.** (Only needed the first time; after that just double-click.)
+4. A window opens and **sets everything up by itself** (a few minutes — just
+   leave it running). When it's done, Lynx opens in your web browser. 🎉
 
-| Your computer | File to download |
-|---|---|
-| 🍎 **Mac** | `Lynx-…-macos.dmg` |
-| 🪟 **Windows** | `Lynx-Setup-…exe` |
+### 🪟 Windows
 
-### Step 2 — Install
-
-- 🍎 **Mac:** double-click the downloaded file, then drag the **Lynx** icon
-  onto the **Applications** folder.
-- 🪟 **Windows:** double-click the downloaded file and click **Next / Install**
-  until it finishes.
-
-### Step 3 — Open Lynx
-
-- 🍎 **Mac:** open **Applications** and double-click **Lynx**.
-- 🪟 **Windows:** click **Lynx** in the Start Menu (or the desktop icon).
-
-**That's it.** The first time, a window opens and sets everything up by
-itself — this takes a few minutes, so just leave it running. When it's ready,
-Lynx opens automatically in your web browser. 🎉
-
-> ### 😮 Did your computer show a warning?
-> That's normal — the app is new and not yet "recognized". It's safe. Do this
-> **once**:
-> - 🍎 **Mac:** *right-click* the **Lynx** icon → **Open** → **Open** again.
-> - 🪟 **Windows:** click **More info** → **Run anyway**.
->
-> After the first time it just opens normally.
+1. **Download** `Lynx-Setup-…exe` from the
+   **[⬇️ Download page](https://github.com/lorenzo-cambiaghi/LynxMCP/releases/latest)**.
+2. **Double-click the downloaded file.**
+   - If a blue box says *"Windows protected your PC"*, this is normal and safe —
+     click **More info → Run anyway.**
+3. Click **Next / Install** until it finishes, then **open Lynx from the Start
+   Menu** (or the desktop icon).
+4. A window opens and **sets everything up by itself** (a few minutes — just
+   leave it running). When it's done, Lynx opens in your web browser. 🎉
 
 <br>
 
@@ -397,6 +343,20 @@ lynx --help
 > just prefix the invocation with `python -m`. That's the only difference.
 
 </details>
+
+---
+
+## Prerequisites
+
+- **Python 3.10+** (3.12 or 3.13 recommended)
+- **pip**
+- ~500 MB of disk space for the embedding model (downloaded once on first run)
+- An **MCP-compliant AI client**: Claude Code CLI, Claude Code extension for
+  VS Code, Antigravity, Cursor, Continue.dev, Aider, etc.
+
+> **First-run note:** the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB)
+> is downloaded once from HuggingFace on the very first run. After that,
+> offline mode is enforced — no network calls are ever made.
 
 ---
 
@@ -2579,3 +2539,35 @@ When contributing code:
 - All vectors and metadata stay in `rag_storage/` on your disk.
 
 If you find a leak, please open a security issue.
+
+---
+
+## How it works (in 30 seconds)
+
+**Two layers run side-by-side on every codebase source:**
+
+```
+Search layer (always on):
+  Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
+                                                                     |
+  Your question  --> embedded --> top-K cosine similarity  ----------+
+                                                                     |
+                                                                     v
+                                       Top-K relevant code snippets
+                                       returned to the AI client via MCP
+
+Graph layer (opt-in, `graph: { enabled: true }`):
+  Your code  --> tree-sitter walk --> nodes (classes, functions)
+                                  --> edges (calls, inherits, imports, contains)
+                                                                     |
+  Your question (e.g. "who calls X?")  ------------------------------+
+                                                                     |
+                                                                     v
+                                       NetworkX query results
+                                       (callers, callees, subclasses, paths, ...)
+```
+
+Both layers parse the source files via the **same tree-sitter parsers**
+(13 languages, sharing the parser cache), and both are kept in sync by
+the same file watcher (~2s after each save). The graph layer is
+backward-compatible: leave it off and nothing changes.
