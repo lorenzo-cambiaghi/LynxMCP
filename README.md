@@ -231,36 +231,50 @@ backward-compatible: leave it off and nothing changes.
 
 ---
 
-## Installation
+## Install Lynx
 
-### Easiest: download the installer (no terminal, no Python)
+**Just download one file and open it. No terminal, no Python, nothing to set up.**
 
-If you just want to **use** Lynx and you're not comfortable with the command
-line, grab the native installer for your platform from the
-[**Releases page**](https://github.com/lorenzo-cambiaghi/LynxMCP/releases) —
-one file to download and install:
+### Step 1 — Download
 
-- **macOS:** `Lynx-<version>-macos.dmg` → open it, drag **Lynx** into
-  **Applications**, then launch it.
-- **Windows:** `Lynx-Setup-<version>.exe` → double-click and follow the
-  installer, then launch **Lynx** from the Start Menu.
+Go to the **[⬇️ Download page](https://github.com/lorenzo-cambiaghi/LynxMCP/releases/latest)**
+and pick the file for your computer:
 
-The installer itself is tiny. The **first launch** opens a console window
-that downloads the environment (~1 GB) and the embedding model (~130 MB)
-**once** — after that, Lynx starts straight into the web UI at
-`http://127.0.0.1:8765`. Everything stays on your machine; nothing is
-uploaded.
+| Your computer | File to download |
+|---|---|
+| 🍎 **Mac** | `Lynx-…-macos.dmg` |
+| 🪟 **Windows** | `Lynx-Setup-…exe` |
 
-> **First-launch warning (unsigned builds).** The installers aren't
-> code-signed yet, so the OS shows a one-time prompt:
-> - **macOS:** right-click **Lynx** → **Open** → **Open**.
-> - **Windows:** click **More info** → **Run anyway**.
+### Step 2 — Install
+
+- 🍎 **Mac:** double-click the downloaded file, then drag the **Lynx** icon
+  onto the **Applications** folder.
+- 🪟 **Windows:** double-click the downloaded file and click **Next / Install**
+  until it finishes.
+
+### Step 3 — Open Lynx
+
+- 🍎 **Mac:** open **Applications** and double-click **Lynx**.
+- 🪟 **Windows:** click **Lynx** in the Start Menu (or the desktop icon).
+
+**That's it.** The first time, a window opens and sets everything up by
+itself — this takes a few minutes, so just leave it running. When it's ready,
+Lynx opens automatically in your web browser. 🎉
+
+> ### 😮 Did your computer show a warning?
+> That's normal — the app is new and not yet "recognized". It's safe. Do this
+> **once**:
+> - 🍎 **Mac:** *right-click* the **Lynx** icon → **Open** → **Open** again.
+> - 🪟 **Windows:** click **More info** → **Run anyway**.
 >
-> See [`installer/README.md`](installer/README.md) for how the installers
-> work and how signing will be added.
+> After the first time it just opens normally.
 
-The rest of this section covers the command-line install methods (`pipx`,
-`uv tool`, editable dev clone) for everyone else.
+<br>
+
+<details>
+<summary><b>Are you a developer? Click here for the command-line install (pipx / uv / dev clone).</b></summary>
+
+<br>
 
 ### Recommended (CLI): a one-line install with `pipx` or `uv tool`
 
@@ -381,6 +395,8 @@ lynx --help
 >
 > If you're on Windows and the short form fails with "command not found",
 > just prefix the invocation with `python -m`. That's the only difference.
+
+</details>
 
 ---
 

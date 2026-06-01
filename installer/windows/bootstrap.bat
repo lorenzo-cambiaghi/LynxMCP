@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  bootstrap.cmd - first-run installer + UI launcher for the Windows build.
+REM  bootstrap.bat - first-run installer + UI launcher for the Windows build.
 REM
 REM  Installed to %LOCALAPPDATA%\Lynx alongside uv.exe by the Inno Setup
 REM  installer. The Start Menu / desktop shortcut points here, so a console

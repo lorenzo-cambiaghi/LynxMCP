@@ -121,3 +121,28 @@ jobs:
             artifacts/lynx-windows/*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            ## ⬇️ Install Lynx — just download and open
+
+            **No terminal. No Python. Nothing to read.**
+
+            ### 1. Download the file for your computer (in **Assets** below)
+            - 🍎 **Mac** → `Lynx-…-macos.dmg`
+            - 🪟 **Windows** → `Lynx-Setup-…exe`
+
+            ### 2. Open it and install
+            - 🍎 **Mac:** double-click the file, then drag **Lynx** into **Applications**.
+            - 🪟 **Windows:** double-click the file and click **Next / Install**.
+
+            ### 3. Launch Lynx
+            - 🍎 **Mac:** open **Applications** → double-click **Lynx**.
+            - 🪟 **Windows:** click **Lynx** in the Start Menu (or desktop icon).
+
+            The first launch sets everything up by itself (a few minutes — just
+            leave the window open). When it's done, Lynx opens in your browser. 🎉
+
+            > **😮 Did your computer show a warning?** It's normal and safe — do this once:
+            > - 🍎 **Mac:** *right-click* **Lynx** → **Open** → **Open**.
+            > - 🪟 **Windows:** **More info** → **Run anyway**.
+
+            ---

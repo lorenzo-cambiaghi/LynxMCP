@@ -1,8 +1,8 @@
 ; lynx.iss — Inno Setup script for the Windows Lynx installer.
 ;
 ; Produces a single Lynx-Setup-<version>.exe that installs (no admin) into
-; %LOCALAPPDATA%\Programs\Lynx, bundling only uv.exe + bootstrap.cmd. The
-; heavy Python stack is downloaded on first launch by bootstrap.cmd.
+; %LOCALAPPDATA%\Programs\Lynx, bundling only uv.exe + bootstrap.bat. The
+; heavy Python stack is downloaded on first launch by bootstrap.bat.
 ;
 ; Build (on Windows, with uv.exe already staged next to this script):
 ;   ISCC /DMyAppVersion=0.9.0 lynx.iss
@@ -49,20 +49,20 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "uv.exe";        DestDir: "{app}"; Flags: ignoreversion
-Source: "bootstrap.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bootstrap.bat"; DestDir: "{app}"; Flags: ignoreversion
 #if FileExists("Lynx.ico")
 Source: "Lynx.ico";      DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 [Icons]
-; Start Menu + optional desktop shortcut, both launching bootstrap.cmd.
-Name: "{group}\Lynx"; Filename: "{app}\bootstrap.cmd"; WorkingDir: "{app}"; \
+; Start Menu + optional desktop shortcut, both launching bootstrap.bat.
+Name: "{group}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; \
 #if FileExists("Lynx.ico")
     IconFilename: "{app}\Lynx.ico"; \
 #endif
     Comment: "Launch LynxManager (first run downloads the environment)"
 Name: "{group}\Uninstall Lynx"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\Lynx"; Filename: "{app}\bootstrap.cmd"; WorkingDir: "{app}"; \
+Name: "{userdesktop}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; \
 #if FileExists("Lynx.ico")
     IconFilename: "{app}\Lynx.ico"; \
 #endif
@@ -71,7 +71,7 @@ Name: "{userdesktop}\Lynx"; Filename: "{app}\bootstrap.cmd"; WorkingDir: "{app}"
 [Run]
 ; Offer to launch right after install (unchecked-by-default would need
 ; postinstall flag; here we let the user opt out via the wizard checkbox).
-Filename: "{app}\bootstrap.cmd"; Description: "Launch Lynx now"; \
+Filename: "{app}\bootstrap.bat"; Description: "Launch Lynx now"; \
     Flags: postinstall nowait skipifsilent shellexec
 
 [UninstallDelete]

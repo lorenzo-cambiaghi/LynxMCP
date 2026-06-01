@@ -38,7 +38,7 @@ installer/
     build-dmg.sh         -> assembles Lynx.app + the .dmg
     Lynx.png  (optional) -> source icon; converted to .icns if present
   windows/
-    bootstrap.cmd        -> Windows equivalent of bootstrap.sh
+    bootstrap.bat        -> Windows equivalent of bootstrap.sh
     lynx.iss             -> Inno Setup script -> Lynx-Setup-<ver>.exe
     Lynx.ico  (optional) -> app icon; used by Inno Setup if present
 ```
@@ -61,8 +61,8 @@ Both installers are produced by `.github/workflows/release.yml`:
 
 ```bash
 # download a uv binary for your Mac, then:
-UV_ARM64_BIN=/path/to/uv VERSION=0.9.0 bash installer/macos/build-dmg.sh
-# -> dist/Lynx-0.9.0-macos.dmg
+UV_ARM64_BIN=/path/to/uv VERSION=1.0.0 bash installer/macos/build-dmg.sh
+# -> dist/Lynx-1.0.0-macos.dmg
 ```
 
 ### Local Windows build
@@ -71,8 +71,8 @@ On Windows with [Inno Setup 6](https://jrsoftware.org/isdl.php) installed and
 `uv.exe` copied next to `lynx.iss`:
 
 ```pwsh
-ISCC /DMyAppVersion=0.9.0 installer\windows\lynx.iss
-# -> dist\Lynx-Setup-0.9.0.exe
+ISCC /DMyAppVersion=1.0.0 installer\windows\lynx.iss
+# -> dist\Lynx-Setup-1.0.0.exe
 ```
 
 ## First-launch warnings (unsigned builds)
