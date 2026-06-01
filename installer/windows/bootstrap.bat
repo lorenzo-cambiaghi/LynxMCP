@@ -75,7 +75,7 @@ if not exist "%LYNX_BIN%" (
 
 REM --- write default config + pre-download embedding model (once) ----------
 if not exist "%RAG_CONFIG_PATH%" (
-    echo [Lynx] Writing default config + downloading embedding model (~130 MB)...
+    echo [Lynx] Writing default config + downloading embedding model ^(~130 MB^)...
     "%LYNX_BIN%" manager init --non-interactive --output "%RAG_CONFIG_PATH%"
     echo [Lynx] Setup done.
     echo.
