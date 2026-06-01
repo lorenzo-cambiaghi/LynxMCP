@@ -95,11 +95,11 @@ Most AI coding tools come with basic codebase search, but they usually rely on s
 20. [Reranking (opt-in)](#reranking-opt-in)
 21. [Graph layer (opt-in)](#graph-layer-opt-in)
 22. [Config drift detection](#config-drift-detection)
-23. [Architecture](#architecture)
-24. [Troubleshooting](#troubleshooting)
-25. [Contributing](#contributing)
-26. [Privacy guarantees](#privacy-guarantees)
-27. [How it works (in 30 seconds)](#how-it-works-in-30-seconds)
+23. [How it works (in 30 seconds)](#how-it-works-in-30-seconds)
+24. [Architecture](#architecture)
+25. [Troubleshooting](#troubleshooting)
+26. [Contributing](#contributing)
+27. [Privacy guarantees](#privacy-guarantees)
 
 ---
 
@@ -2223,6 +2223,38 @@ currently only filters file-watcher events, not the indexing pipeline.
 
 ---
 
+## How it works (in 30 seconds)
+
+**Two layers run side-by-side on every codebase source:**
+
+```
+Search layer (always on):
+  Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
+                                                                     |
+  Your question  --> embedded --> top-K cosine similarity  ----------+
+                                                                     |
+                                                                     v
+                                       Top-K relevant code snippets
+                                       returned to the AI client via MCP
+
+Graph layer (opt-in, `graph: { enabled: true }`):
+  Your code  --> tree-sitter walk --> nodes (classes, functions)
+                                  --> edges (calls, inherits, imports, contains)
+                                                                     |
+  Your question (e.g. "who calls X?")  ------------------------------+
+                                                                     |
+                                                                     v
+                                       NetworkX query results
+                                       (callers, callees, subclasses, paths, ...)
+```
+
+Both layers parse the source files via the **same tree-sitter parsers**
+(13 languages, sharing the parser cache), and both are kept in sync by
+the same file watcher (~2s after each save). The graph layer is
+backward-compatible: leave it off and nothing changes.
+
+---
+
 ## Architecture
 
 ```
@@ -2539,35 +2571,3 @@ When contributing code:
 - All vectors and metadata stay in `rag_storage/` on your disk.
 
 If you find a leak, please open a security issue.
-
----
-
-## How it works (in 30 seconds)
-
-**Two layers run side-by-side on every codebase source:**
-
-```
-Search layer (always on):
-  Your code  --> chunked --> embedded (BGE-small, on CPU)  --> ChromaDB (local file)
-                                                                     |
-  Your question  --> embedded --> top-K cosine similarity  ----------+
-                                                                     |
-                                                                     v
-                                       Top-K relevant code snippets
-                                       returned to the AI client via MCP
-
-Graph layer (opt-in, `graph: { enabled: true }`):
-  Your code  --> tree-sitter walk --> nodes (classes, functions)
-                                  --> edges (calls, inherits, imports, contains)
-                                                                     |
-  Your question (e.g. "who calls X?")  ------------------------------+
-                                                                     |
-                                                                     v
-                                       NetworkX query results
-                                       (callers, callees, subclasses, paths, ...)
-```
-
-Both layers parse the source files via the **same tree-sitter parsers**
-(13 languages, sharing the parser cache), and both are kept in sync by
-the same file watcher (~2s after each save). The graph layer is
-backward-compatible: leave it off and nothing changes.

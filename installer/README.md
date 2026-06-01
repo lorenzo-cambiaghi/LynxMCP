@@ -4,29 +4,6 @@ One downloadable file per platform that installs Lynx and opens the guided
 web UI — no terminal, no `git`, no manual Python setup. Aimed at people who
 just want to *use* Lynx.
 
-## How it works (thin bootstrapper)
-
-The runtime stack (`torch` + `sentence-transformers` + `chromadb`) weighs
-~1.1 GB, plus a ~130 MB embedding model. Shipping that inside a single
-offline binary would be huge and awkward to sign/distribute. Instead the
-installers are **thin**: they bundle only the [`uv`](https://docs.astral.sh/uv/)
-binary (~30 MB) and download everything else **on first launch**.
-
-```
-download installer  ->  install (instant)  ->  first launch:
-    uv installs lynx (~1 GB, once)  ->  init writes config + downloads model
-    ->  browser opens http://127.0.0.1:8765 (LynxManager UI)
-later launches: UI starts immediately, no download
-```
-
-Everything lives in a private per-user folder, so nothing touches the system
-Python or PATH:
-
-- macOS: `~/Library/Application Support/Lynx/`
-- Windows: `%LOCALAPPDATA%\Lynx\`
-
-To fully remove Lynx: uninstall the app **and** delete that folder.
-
 ## Layout
 
 ```
@@ -94,3 +71,26 @@ The CI workflow has commented slots for both:
 
 Both need secrets added to the repo. Once signed + notarized, the warnings
 above disappear.
+
+## How it works (thin bootstrapper)
+
+The runtime stack (`torch` + `sentence-transformers` + `chromadb`) weighs
+~1.1 GB, plus a ~130 MB embedding model. Shipping that inside a single
+offline binary would be huge and awkward to sign/distribute. Instead the
+installers are **thin**: they bundle only the [`uv`](https://docs.astral.sh/uv/)
+binary (~30 MB) and download everything else **on first launch**.
+
+```
+download installer  ->  install (instant)  ->  first launch:
+    uv installs lynx (~1 GB, once)  ->  init writes config + downloads model
+    ->  browser opens http://127.0.0.1:8765 (LynxManager UI)
+later launches: UI starts immediately, no download
+```
+
+Everything lives in a private per-user folder, so nothing touches the system
+Python or PATH:
+
+- macOS: `~/Library/Application Support/Lynx/`
+- Windows: `%LOCALAPPDATA%\Lynx\`
+
+To fully remove Lynx: uninstall the app **and** delete that folder.
