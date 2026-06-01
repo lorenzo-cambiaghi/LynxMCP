@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lynx"
-version = "0.9.0"
+version = "1.0.0"
 description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code AND library documentation (fetched from the web on demand). AST-aware chunking via tree-sitter, multi-source, 100% local except the explicit doc-fetch step. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
 readme = "README.md"
 license = { file = "LICENSE" }

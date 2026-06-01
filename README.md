@@ -233,7 +233,36 @@ backward-compatible: leave it off and nothing changes.
 
 ## Installation
 
-### Recommended: a one-line install with `pipx` or `uv tool`
+### Easiest: download the installer (no terminal, no Python)
+
+If you just want to **use** Lynx and you're not comfortable with the command
+line, grab the native installer for your platform from the
+[**Releases page**](https://github.com/lorenzo-cambiaghi/LynxMCP/releases) —
+one file to download and install:
+
+- **macOS:** `Lynx-<version>-macos.dmg` → open it, drag **Lynx** into
+  **Applications**, then launch it.
+- **Windows:** `Lynx-Setup-<version>.exe` → double-click and follow the
+  installer, then launch **Lynx** from the Start Menu.
+
+The installer itself is tiny. The **first launch** opens a console window
+that downloads the environment (~1 GB) and the embedding model (~130 MB)
+**once** — after that, Lynx starts straight into the web UI at
+`http://127.0.0.1:8765`. Everything stays on your machine; nothing is
+uploaded.
+
+> **First-launch warning (unsigned builds).** The installers aren't
+> code-signed yet, so the OS shows a one-time prompt:
+> - **macOS:** right-click **Lynx** → **Open** → **Open**.
+> - **Windows:** click **More info** → **Run anyway**.
+>
+> See [`installer/README.md`](installer/README.md) for how the installers
+> work and how signing will be added.
+
+The rest of this section covers the command-line install methods (`pipx`,
+`uv tool`, editable dev clone) for everyone else.
+
+### Recommended (CLI): a one-line install with `pipx` or `uv tool`
 
 If you just want to **use** Lynx (not hack on it), install it as a
 standalone CLI tool. Both `pipx` and `uv tool` create an isolated
