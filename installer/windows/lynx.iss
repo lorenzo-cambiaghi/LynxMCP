@@ -18,6 +18,15 @@
 #define MyAppPublisher "Lorenzo Cambiaghi"
 #define MyAppURL "https://github.com/lorenzo-cambiaghi/LynxMCP"
 
+; Optional custom icon: only referenced if Lynx.ico is staged next to this
+; script. Building the parameter as a macro keeps it off the [Icons] lines,
+; where mixing line-continuation (\) with #if is a syntax error.
+#if FileExists("Lynx.ico")
+  #define IconParam "IconFilename: ""{app}\Lynx.ico""; "
+#else
+  #define IconParam ""
+#endif
+
 [Setup]
 AppId={{B7E6F3A2-5C4D-4E8B-9A1F-LYNXMCP00001}}
 AppName={#MyAppName}
@@ -56,17 +65,9 @@ Source: "Lynx.ico";      DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Start Menu + optional desktop shortcut, both launching bootstrap.bat.
-Name: "{group}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; \
-#if FileExists("Lynx.ico")
-    IconFilename: "{app}\Lynx.ico"; \
-#endif
-    Comment: "Launch LynxManager (first run downloads the environment)"
+Name: "{group}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; {#IconParam}Comment: "Launch LynxManager (first run downloads the environment)"
 Name: "{group}\Uninstall Lynx"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; \
-#if FileExists("Lynx.ico")
-    IconFilename: "{app}\Lynx.ico"; \
-#endif
-    Tasks: desktopicon
+Name: "{userdesktop}\Lynx"; Filename: "{app}\bootstrap.bat"; WorkingDir: "{app}"; {#IconParam}Tasks: desktopicon
 
 [Run]
 ; Offer to launch right after install (unchecked-by-default would need
