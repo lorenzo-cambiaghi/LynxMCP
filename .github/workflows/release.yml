@@ -1,0 +1,123 @@
+name: Build installers
+
+# Builds the native macOS (.dmg) and Windows (.exe) installers and, when
+# triggered by a version tag, attaches them to the matching GitHub Release.
+#
+# Both installers are thin bootstrappers: they bundle only the `uv` binary
+# (~30 MB) and download Python + Lynx + the embedding model on first launch.
+#
+# Trigger:
+#   - push a tag like `v0.9.0`  -> builds + publishes a Release
+#   - run manually (workflow_dispatch) -> builds artifacts only (no Release)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Pin the uv version bundled into the installers. Bump deliberately.
+env:
+  UV_VERSION: "0.11.17"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.0-dev" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download uv binaries (arm64 + x86_64)
+        run: |
+          base="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}"
+          mkdir -p build/uv
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            curl -fSL "$base/uv-$triple.tar.gz" -o "build/uv/$triple.tar.gz"
+            tar xzf "build/uv/$triple.tar.gz" -C build/uv
+          done
+          echo "UV_ARM64_BIN=$PWD/build/uv/uv-aarch64-apple-darwin/uv" >> "$GITHUB_ENV"
+          echo "UV_X86_64_BIN=$PWD/build/uv/uv-x86_64-apple-darwin/uv" >> "$GITHUB_ENV"
+
+      - name: Build .dmg
+        run: bash installer/macos/build-dmg.sh
+
+      # --- Signing / notarization slot (future) -----------------------------
+      # When a Developer ID cert is available, import it here and run
+      # `codesign --options runtime --sign "Developer ID Application: ..."`
+      # on Lynx.app before packaging, then `xcrun notarytool submit` + staple
+      # the .dmg. Requires the APPLE_* secrets.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lynx-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            "VERSION=0.0.0-dev" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: Download uv.exe
+        shell: pwsh
+        run: |
+          $url = "https://github.com/astral-sh/uv/releases/download/$env:UV_VERSION/uv-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile uv.zip
+          Expand-Archive -Path uv.zip -DestinationPath uv_extract -Force
+          Copy-Item -Path uv_extract\uv.exe -Destination installer\windows\uv.exe -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer .exe
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=$env:VERSION" installer\windows\lynx.iss
+
+      # --- Signing slot (future) --------------------------------------------
+      # With a code-signing cert: `signtool sign /fd SHA256 /f cert.pfx ...`
+      # the Lynx-Setup-*.exe here to silence SmartScreen. Requires secrets.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lynx-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/lynx-macos/*.dmg
+            artifacts/lynx-windows/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
