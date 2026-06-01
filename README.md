@@ -348,8 +348,7 @@ lynx --help
 
 ## Prerequisites
 
-- **Python 3.10+** (3.12 or 3.13 recommended)
-- **pip**
+- **Python 3.10+** and **pip** (Only required if you are using the CLI installation; the standalone Mac/Windows apps do not need Python).
 - ~500 MB of disk space for the embedding model (downloaded once on first run)
 - An **MCP-compliant AI client**: Claude Code CLI, Claude Code extension for
   VS Code, Antigravity, Cursor, Continue.dev, Aider, etc.
