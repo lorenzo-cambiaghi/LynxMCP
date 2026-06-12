@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 (unreleased)
+## 1.1.0 — 2026-06-12
 
 ### Breaking
 - **Fixed MCP tool surface.** Tools no longer multiply per source
