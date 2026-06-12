@@ -108,6 +108,7 @@ python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
 |---|---|
 | [Full guide](docs/GUIDE.md) | Configuration, all source types (codebase / webdoc / PDF), retrieval internals, troubleshooting |
 | [Manager UI](docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09) | Guided setup, playground, diagnostics |
+| [Use Lynx from Coral](docs/CORAL.md) | SQL over your code search: `SELECT ... FROM lynx.search` joined with live GitHub/Sentry data |
 | [config.example.json](config.example.json) | Annotated example configuration |
 
 ## Status

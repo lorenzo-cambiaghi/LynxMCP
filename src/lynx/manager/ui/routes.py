@@ -50,6 +50,76 @@ def register(app) -> None:
             out.append(st)
         return {"sources": out}
 
+    # ------------------------------------------------------------------
+    # Stable v1 JSON API — the integration surface for EXTERNAL tools
+    # (e.g. the Coral source spec in integrations/coral/, scripts, CI).
+    # Contract: versioned and additive-only — within /api/v1 fields may
+    # be added but never renamed or removed. The unversioned /api/*
+    # endpoints above remain UI-internal and may change freely.
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/search")
+    def api_v1_search(q: str, source: Optional[str] = None, top_k: int = 8):
+        """Hybrid search as plain JSON rows.
+
+        `source` omitted → all sources, RRF-fused (each row carries its
+        source name). `top_k` clamped to [1, 50].
+        """
+        mgr = _get_manager(app)
+        if mgr is None:
+            raise HTTPException(
+                status_code=503,
+                detail=app.state.manager_error or "manager not initialized",
+            )
+        k = max(1, min(int(top_k), 50))
+        try:
+            if source:
+                mgr.get(source)  # raises KeyError with available names
+                hits = mgr.search(source, q, top_k=k)
+                for h in hits:
+                    h.setdefault("source", source)
+            else:
+                hits = mgr.search_all(q, top_k=k)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        results = [
+            {
+                "source": h.get("source", ""),
+                "file": h.get("file", ""),
+                "file_path": str(h.get("file_path", "")),
+                "symbol": h.get("symbol_name", ""),
+                "kind": h.get("symbol_kind", ""),
+                "language": h.get("language", ""),
+                "start_line": h.get("start_line") or 0,
+                "end_line": h.get("end_line") or 0,
+                "score": float(h.get("score") or 0.0),
+                "content": h.get("content", ""),
+            }
+            for h in hits
+        ]
+        return {"results": results}
+
+    @app.get("/api/v1/sources")
+    def api_v1_sources():
+        """Configured sources as plain JSON rows."""
+        mgr = _get_manager(app)
+        if mgr is None:
+            raise HTTPException(
+                status_code=503,
+                detail=app.state.manager_error or "manager not initialized",
+            )
+        rows = [
+            {
+                "name": st.get("name", ""),
+                "type": st.get("type", ""),
+                "location": str(st.get("path") or st.get("url") or ""),
+                "chunk_count": st.get("chunk_count") or 0,
+                "last_update": st.get("last_update") or "",
+            }
+            for st in mgr.list_sources()
+        ]
+        return {"sources": rows}
+
     @app.get("/api/sources/{name}/status")
     def api_source_status(name: str):
         mgr = _get_manager(app)
