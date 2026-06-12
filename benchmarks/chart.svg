@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="330" viewBox="0 0 980 330" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect x="0" y="0" width="980" height="330" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+  <g transform="translate(36,28)">
+    <text x="0" y="0" font-size="20" font-weight="800" fill="#24292f">Lynx vs agentic grep — Django 5.2 (883 files, 158k lines)</text>
+    <text x="0" y="22" font-size="13" fill="#57606a">Reproducible: benchmarks/run_benchmark.py · grep baseline deliberately strong · full methodology in RESULTS.md</text>
+  </g>
+  <g transform="translate(36,80)">
+
+  <g transform="translate(0,0)">
+    <text x="0" y="24" font-size="17" font-weight="700" fill="#24292f">Tokens to get the code into context</text>
+    <text x="0" y="44" font-size="12.5" fill="#57606a">median per question, incl. the file read grep still needs</text>
+
+    <text x="0" y="84" font-size="13" fill="#57606a">agentic grep</text>
+    <rect x="0" y="92" width="320" height="30" rx="5" fill="#8b949e"/>
+    <text x="330" y="113" font-size="16" font-weight="700" fill="#24292f">4,150 tok</text>
+
+    <text x="0" y="152" font-size="13" fill="#57606a">Lynx</text>
+    <rect x="0" y="160" width="133" height="30" rx="5" fill="#e8742c"/>
+    <text x="143" y="181" font-size="16" font-weight="800" fill="#e8742c">1,725 tok</text>
+
+    <text x="0" y="218" font-size="14" font-weight="700" fill="#e8742c">−58% tokens, code chunks included</text>
+  </g>
+
+  <g transform="translate(490,0)">
+    <text x="0" y="24" font-size="17" font-weight="700" fill="#24292f">Tool calls to map a class hierarchy</text>
+    <text x="0" y="44" font-size="12.5" fill="#57606a">all 100 descendants of django Field, with file:line</text>
+
+    <text x="0" y="84" font-size="13" fill="#57606a">agentic grep</text>
+    <rect x="0" y="92" width="320" height="30" rx="5" fill="#8b949e"/>
+    <text x="330" y="113" font-size="16" font-weight="700" fill="#24292f">101 calls</text>
+
+    <text x="0" y="152" font-size="13" fill="#57606a">Lynx</text>
+    <rect x="0" y="160" width="13" height="30" rx="5" fill="#e8742c"/>
+    <text x="23" y="181" font-size="16" font-weight="800" fill="#e8742c">4 calls</text>
+
+    <text x="0" y="218" font-size="14" font-weight="700" fill="#e8742c">25× fewer calls, same 100/100 recall</text>
+  </g>
+  </g>
+</svg>

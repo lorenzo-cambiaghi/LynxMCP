@@ -83,6 +83,8 @@ Honest counterpoint: on a small repo that fits in the agent's context, built-in 
 
 ## Benchmarks (reproducible)
 
+<img src="benchmarks/chart.svg" alt="Lynx vs agentic grep: -58% tokens to answer; 4 vs 101 tool calls to map a class hierarchy" width="980">
+
 On the `django/` package of Django 5.2 (883 files, ~158k lines), 20 behavioral questions with known ground-truth files — full methodology, per-task results, and an intentionally *strong* grep baseline in [benchmarks/RESULTS.md](benchmarks/RESULTS.md):
 
 | | Agentic grep | Lynx |
