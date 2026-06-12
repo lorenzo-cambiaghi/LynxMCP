@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 — 2026-06-12
+
+### Added
+- `server.json` + `mcp-name` ownership marker in the README for listing on
+  the official MCP Registry (registry.modelcontextprotocol.io).
+
 ## 1.1.1 — 2026-06-12
 
 ### Changed

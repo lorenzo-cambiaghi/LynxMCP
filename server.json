@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.lorenzo-cambiaghi/lynx",
+  "description": "100% local semantic code search: AST-aware chunking (tree-sitter), hybrid BM25+dense retrieval, and a code knowledge graph over codebases, docs sites, and PDFs.",
+  "repository": {
+    "url": "https://github.com/lorenzo-cambiaghi/LynxMCP",
+    "source": "github"
+  },
+  "version": "1.1.2",
+  "packages": [
+    {
+      "registry_type": "pypi",
+      "identifier": "lynx-mcp",
+      "version": "1.1.2",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -93,3 +93,9 @@ Actively developed by one author; APIs may still move before 1.x stabilizes. Iss
 ## License
 
 [Apache 2.0](LICENSE)
+
+<!-- MCP Registry ownership marker — must stay in the README published on
+     PyPI so registry.modelcontextprotocol.io can verify the package.
+mcp-name: io.github.lorenzo-cambiaghi/lynx
+-->
+
