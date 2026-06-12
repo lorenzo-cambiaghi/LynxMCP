@@ -1,0 +1,110 @@
+{
+  "target": {
+    "repo": "https://github.com/django/django.git",
+    "ref": "5.2",
+    "index_subdir": "django",
+    "note": "Only the django/ package is indexed (the framework source an agent would search), not the test suite."
+  },
+  "tasks": [
+    {
+      "id": 1,
+      "query": "where are password hashes upgraded to a stronger algorithm after a successful check",
+      "ground_truth": ["contrib/auth/hashers.py"]
+    },
+    {
+      "id": 2,
+      "query": "code that generates the SQL for select for update row locking",
+      "ground_truth": ["db/models/sql/compiler.py"]
+    },
+    {
+      "id": 3,
+      "query": "logic that decides whether saving a model instance performs an INSERT or an UPDATE",
+      "ground_truth": ["db/models/base.py"]
+    },
+    {
+      "id": 4,
+      "query": "how conflicting migrations on the same app are detected",
+      "ground_truth": ["db/migrations/loader.py"]
+    },
+    {
+      "id": 5,
+      "query": "where the CSRF token from the request is compared against the stored secret",
+      "ground_truth": ["middleware/csrf.py"]
+    },
+    {
+      "id": 6,
+      "query": "how a case insensitive contains filter is turned into a SQL LIKE expression",
+      "ground_truth": ["db/models/lookups.py"]
+    },
+    {
+      "id": 7,
+      "query": "template engine logic that resolves a dotted variable name against dicts attributes and list indexes",
+      "ground_truth": ["template/base.py"]
+    },
+    {
+      "id": 8,
+      "query": "where signed values are validated and their signature checked for tampering",
+      "ground_truth": ["core/signing.py"]
+    },
+    {
+      "id": 9,
+      "query": "how the development server restarts itself when a source file changes",
+      "ground_truth": ["utils/autoreload.py"]
+    },
+    {
+      "id": 10,
+      "query": "where the password reset token is generated and checked for expiry",
+      "ground_truth": ["contrib/auth/tokens.py"]
+    },
+    {
+      "id": 11,
+      "query": "middleware that caches whole responses per URL and serves them on later requests",
+      "ground_truth": ["middleware/cache.py"]
+    },
+    {
+      "id": 12,
+      "query": "logic that streams large uploaded files to a temporary file on disk instead of keeping them in memory",
+      "ground_truth": ["core/files/uploadhandler.py"]
+    },
+    {
+      "id": 13,
+      "query": "implementation of prefetching related objects to avoid N plus one queries",
+      "ground_truth": ["db/models/query.py"]
+    },
+    {
+      "id": 14,
+      "query": "how an incoming request path is matched against the configured URL patterns",
+      "ground_truth": ["urls/resolvers.py"]
+    },
+    {
+      "id": 15,
+      "query": "where session data is serialized signed and loaded back from the session store",
+      "ground_truth": ["contrib/sessions/backends/base.py"]
+    },
+    {
+      "id": 16,
+      "query": "how datetimes are converted to the currently active timezone",
+      "ground_truth": ["utils/timezone.py"]
+    },
+    {
+      "id": 17,
+      "query": "where bulk inserts are split into batches before hitting the database",
+      "ground_truth": ["db/models/query.py", "db/models/sql/subqueries.py"]
+    },
+    {
+      "id": 18,
+      "query": "middleware that protects against clickjacking by setting the X-Frame-Options header",
+      "ground_truth": ["middleware/clickjacking.py"]
+    },
+    {
+      "id": 19,
+      "query": "how static files are located across the installed applications",
+      "ground_truth": ["contrib/staticfiles/finders.py"]
+    },
+    {
+      "id": 20,
+      "query": "logic that detects which model changes need new migrations to be generated",
+      "ground_truth": ["db/migrations/autodetector.py"]
+    }
+  ]
+}

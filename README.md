@@ -81,6 +81,25 @@ Grep is great when you know the identifier. It fails when you (or the agent) kno
 
 Honest counterpoint: on a small repo that fits in the agent's context, built-in tools are fine. Lynx pays off on large codebases, on framework docs your model's training data has gone stale on, and on repeated sessions where re-exploring from scratch is waste.
 
+## Benchmarks (reproducible)
+
+On the `django/` package of Django 5.2 (883 files, ~158k lines), 20 behavioral questions with known ground-truth files — full methodology, per-task results, and an intentionally *strong* grep baseline in [benchmarks/RESULTS.md](benchmarks/RESULTS.md):
+
+| | Agentic grep | Lynx |
+|---|---|---|
+| median tokens **to answer** (tool output + required follow-up read) | 4,150 | **1,725** |
+| tool round-trips before the code is in context | 2+ | **1** (chunks included, with symbol + file:line + score) |
+| hit@1 / MRR | 45% / 0.64 | 55% / 0.67 |
+| *"what inherits from `Field`?"* — full descendant tree (100 classes) | **101 grep rounds** | **4 graph calls**, same recall, file:line per edge |
+
+The ranking quality is comparable (Django's docstring-rich code is grep's best case — we say so in the report). The structural difference is not: every tool round-trip is a full model inference over the growing context, and class-relation questions force grep into one round per discovered class while `graph_query` reads resolved inheritance edges.
+
+```bash
+# reproduce
+git clone --depth 1 --branch 5.2 https://github.com/django/django.git benchmarks/_target/django
+python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
+```
+
 ## Documentation
 
 | | |

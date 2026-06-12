@@ -52,3 +52,6 @@ _test_watch_stderr.log
 # OS
 .DS_Store
 Thumbs.db
+benchmarks/_target/
+benchmarks/_storage/
+benchmarks/results.json
