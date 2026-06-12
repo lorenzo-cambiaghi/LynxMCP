@@ -60,7 +60,10 @@ The tool set is **fixed** — it does not grow with the number of sources, so yo
 | `find_tests_for(symbol)` | Are there tests for X? |
 | `find_similar(snippet)` | Does code like this already exist? |
 | `search_diff(query, base?)` | Search only the files changed vs a base branch — built for code review. |
+| `feedback(trying_to_do, tried, stuck)` | The agent files a report when the index couldn't answer — stored 100% locally, your signal for tuning sources. |
 | `list_sources` / `get_rag_status` / `update_source_index` | Introspection and maintenance. |
+
+All retrieval tools carry MCP `readOnlyHint` annotations (clients can auto-approve them), and the server ships its usage playbook in the MCP handshake (`instructions` + a `lynx://guide` resource) — your agent knows how to query well without any rules-file setup.
 
 ## How it works
 

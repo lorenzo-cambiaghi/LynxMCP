@@ -44,8 +44,32 @@ _REAL_STDOUT_FD = os.dup(1)
 os.dup2(2, 1)
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from .config import load_config
+
+
+# ----------------------------------------------------------------------
+# Tool annotations — hints clients use for permission UIs (a read-only
+# tool can be auto-approved) and parallelization decisions.
+# ----------------------------------------------------------------------
+
+# Retrieval tools: pure reads over the local index, no network.
+_ANN_READ = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False,
+    idempotentHint=True, openWorldHint=False,
+)
+# update_source_index rewrites the index; for webdoc sources the rebuild
+# crawls the configured site, so the open-world hint is honest.
+_ANN_REBUILD = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False,
+    idempotentHint=True, openWorldHint=True,
+)
+# feedback appends to a local log file; nothing ever leaves the machine.
+_ANN_FEEDBACK = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False,
+    idempotentHint=False, openWorldHint=False,
+)
 
 
 def _restore_real_stdout():
@@ -180,6 +204,60 @@ def _source_catalog(manager) -> str:
     return "; ".join(parts)
 
 
+def _build_instructions(manager) -> str:
+    """Handshake instructions sent to the client in the MCP `initialize`
+    response. Every client gets this automatically — no rules file needed.
+    Kept compact (it rides along in the client's context); the full
+    playbook lives in the `lynx://guide` resource."""
+    has_graph = any(
+        getattr(b, "graph", None) is not None for b in manager.backends.values()
+    )
+    parts = [
+        "Lynx provides semantic + lexical search over locally indexed sources "
+        "(code, library docs, PDFs). Indexed sources: "
+        f"{_source_catalog(manager)}. ",
+        "Use `search(query, source?)` FIRST for any question about this code or "
+        "these docs — describe what the code DOES in natural language "
+        "('method that clamps camera zoom'), not identifier names (for those "
+        "use find_definition / find_usages). Omit `source` to search everything. ",
+        "Hybrid scores are small by construction: ~0.03 is a STRONG match, "
+        "not a weak one. ",
+        "Escalate to `deep_search` only when `search` returns weak or empty "
+        "results. ",
+    ]
+    if has_graph:
+        parts.append(
+            "For structural questions ('who calls X?', 'what breaks if I "
+            "change X?') use `graph_query` / `find_usages` — they read the "
+            "code graph, which textual search cannot see. "
+        )
+    parts.append(
+        "Read the `lynx://guide` resource for the full playbook. "
+        "If you cannot find what you need, call `feedback` before giving up."
+    )
+    return "".join(parts)
+
+
+def _build_guide(manager) -> str:
+    """Full usage playbook, exposed as the `lynx://guide` MCP resource.
+
+    Reuses the same generator that powers the downloadable rules files in
+    the manager UI, so there is one source of truth for 'how to use Lynx
+    well'."""
+    from .manager.ui.integrations import render_rules_for_sources
+    has_graph = any(
+        getattr(b, "graph", None) is not None for b in manager.backends.values()
+    )
+    has_git = any(
+        b.type_name == "codebase"
+        and b.source_config.get("git_integration", {}).get("enabled")
+        for b in manager.backends.values()
+    )
+    return render_rules_for_sources(
+        list(manager.backends), has_graph=has_graph, has_git=has_git
+    )
+
+
 def _resolve_source(manager, source, *, predicate=None, kind: str = "source"):
     """Resolve an optional `source` argument to a concrete source name.
 
@@ -229,7 +307,7 @@ def _register_search_tools(mcp, manager):
         f"top_k (default from config); file_glob, extensions, path_contains (optional filters)."
     )
 
-    @mcp.tool(name="search", description=_desc_search)
+    @mcp.tool(name="search", description=_desc_search, annotations=_ANN_READ)
     def _search(
         query: str,
         source: str | None = None,
@@ -272,7 +350,7 @@ def _register_search_tools(mcp, manager):
         f"return_all_variants (per-variant diagnostics, single-source only)."
     )
 
-    @mcp.tool(name="deep_search", description=_desc_deep)
+    @mcp.tool(name="deep_search", description=_desc_deep, annotations=_ANN_READ)
     def _deep_search(
         queries: list[str],
         source: str | None = None,
@@ -331,7 +409,7 @@ def _register_global_tools(mcp, manager):
     """Register cross-source / management tools that don't depend on a
     specific source name."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=_ANN_READ)
     def list_sources() -> str:
         """List all configured sources with their type, location, chunk count, and drift status.
 
@@ -352,7 +430,7 @@ def _register_global_tools(mcp, manager):
             lines.append(line)
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_ANN_REBUILD)
     def update_source_index(source: str, force: bool = False) -> str:
         """Force a full rebuild of a specific source's index.
 
@@ -375,7 +453,7 @@ def _register_global_tools(mcp, manager):
         except Exception as e:
             return f"Error rebuilding source {source!r}: {str(e)}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=_ANN_READ)
     def get_rag_status(source: str | None = None) -> str:
         """Report state of the RAG index for one source or all sources.
 
@@ -418,6 +496,43 @@ def _register_global_tools(mcp, manager):
             return f"Error: {e}"
         except Exception as e:
             return f"Error reading status: {str(e)}"
+
+    _desc_feedback = (
+        "Report that you could not find what you needed. Call this BEFORE giving up "
+        "after exhausting search / deep_search / graph_query. The report is appended "
+        "to a LOCAL log file on this machine (rag_storage/_feedback/feedback.jsonl) — "
+        "it is never uploaded anywhere — and helps the index owner tune sources, "
+        "filters, and chunking. "
+        "Args: trying_to_do (what you were trying to find or answer); "
+        "tried (which tools/queries you already tried); "
+        "stuck (where exactly you got blocked or what was missing)."
+    )
+
+    @mcp.tool(name="feedback", description=_desc_feedback, annotations=_ANN_FEEDBACK)
+    def _feedback(trying_to_do: str, tried: str, stuck: str) -> str:
+        try:
+            import json as _json
+            from datetime import datetime as _dt
+            from pathlib import Path as _Path
+
+            feedback_dir = _Path(manager.config.storage_path) / "_feedback"
+            feedback_dir.mkdir(parents=True, exist_ok=True)
+            record = {
+                "at": _dt.now().isoformat(timespec="seconds"),
+                "trying_to_do": trying_to_do,
+                "tried": tried,
+                "stuck": stuck,
+                "sources": list(manager.backends),
+            }
+            with open(feedback_dir / "feedback.jsonl", "a", encoding="utf-8") as f:
+                f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+            return (
+                "Feedback recorded locally (rag_storage/_feedback/feedback.jsonl). "
+                "Tell the user their Lynx index didn't cover this, so they can "
+                "review the report and adjust sources or filters."
+            )
+        except Exception as e:
+            return f"Error recording feedback: {e}"
 
 
 # ----------------------------------------------------------------------
@@ -488,7 +603,7 @@ def _register_graph_tools(mcp, manager):
         f"Results include file+line so you can cite them."
     )
 
-    @mcp.tool(name="graph_query", description=_desc)
+    @mcp.tool(name="graph_query", description=_desc, annotations=_ANN_READ)
     def _graph_query(
         operation: str,
         source: str | None = None,
@@ -713,7 +828,7 @@ def _register_combined_tools(mcp, manager):
         f"Args: symbol (identifier name); source; limit (max results, default 10)."
     )
 
-    @mcp.tool(name="find_definition", description=_desc_find_def)
+    @mcp.tool(name="find_definition", description=_desc_find_def, annotations=_ANN_READ)
     def _find_def(symbol: str, source: str | None = None, limit: int = 10) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
@@ -730,7 +845,7 @@ def _register_combined_tools(mcp, manager):
         f"Args: symbol (identifier name); source; limit (max results, default 50)."
     )
 
-    @mcp.tool(name="find_usages", description=_desc_find_usages)
+    @mcp.tool(name="find_usages", description=_desc_find_usages, annotations=_ANN_READ)
     def _find_usages(symbol: str, source: str | None = None, limit: int = 50) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
@@ -748,7 +863,7 @@ def _register_combined_tools(mcp, manager):
         f"Args: symbol; source; limit (default 20); test_path_pattern (optional regex)."
     )
 
-    @mcp.tool(name="find_tests_for", description=_desc_find_tests)
+    @mcp.tool(name="find_tests_for", description=_desc_find_tests, annotations=_ANN_READ)
     def _find_tests(
         symbol: str,
         source: str | None = None,
@@ -774,7 +889,7 @@ def _register_combined_tools(mcp, manager):
         f"{src_hint} Args: snippet (the code block); source; top_k (max results, default 10)."
     )
 
-    @mcp.tool(name="find_similar", description=_desc_find_similar)
+    @mcp.tool(name="find_similar", description=_desc_find_similar, annotations=_ANN_READ)
     def _find_similar(snippet: str, source: str | None = None, top_k: int = 10) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
@@ -805,7 +920,7 @@ def _register_combined_tools(mcp, manager):
             f"base (optional branch name); top_k (max hits, default 8)."
         )
 
-        @mcp.tool(name="search_diff", description=_desc_search_diff)
+        @mcp.tool(name="search_diff", description=_desc_search_diff, annotations=_ANN_READ)
         def _search_diff(
             query: str,
             source: str | None = None,
@@ -848,8 +963,6 @@ def _register_combined_tools(mcp, manager):
 def run_server(config_path=None):
     """Boot the MCP server. Blocks on mcp.run() until the client disconnects."""
     config = load_config(config_path=config_path)
-    mcp = FastMCP("lynx")
-
     state = {
         "manager": None,
         "ready": threading.Event(),
@@ -895,6 +1008,24 @@ def run_server(config_path=None):
         sys.exit(1)
 
     manager = state["manager"]
+
+    # FastMCP is constructed only now so the handshake `instructions` can
+    # embed the live source catalog — every client gets the usage playbook
+    # automatically, without installing a rules file.
+    mcp = FastMCP("lynx", instructions=_build_instructions(manager))
+
+    # Full playbook as an MCP resource the client can read on demand.
+    guide_text = _build_guide(manager)
+
+    @mcp.resource(
+        "lynx://guide",
+        name="guide",
+        description="How to use Lynx well: search phrasing, score "
+                    "interpretation, escalation ladder, structural queries.",
+        mime_type="text/markdown",
+    )
+    def _guide() -> str:
+        return guide_text
 
     # Fixed tool set — the tool count does not grow with the number of
     # sources. Conditional tools (graph_query, find_*, search_diff) are

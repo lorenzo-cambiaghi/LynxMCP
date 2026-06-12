@@ -17,6 +17,8 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from lynx.server import (
+    _build_guide,
+    _build_instructions,
     _register_search_tools,
     _register_global_tools,
     _register_graph_tools,
@@ -38,10 +40,11 @@ class FakeBackend:
 class FakeManager:
     """Records calls; returns canned results shaped like the real ones."""
 
-    def __init__(self, backends):
+    def __init__(self, backends, storage_path="/tmp/lynx-test-storage"):
         self.backends = backends
         self.config = SimpleNamespace(
-            search=SimpleNamespace(default_top_k=5)
+            search=SimpleNamespace(default_top_k=5),
+            storage_path=storage_path,
         )
         self.calls = []
 
@@ -110,8 +113,8 @@ def test_expected_fixed_tool_names():
     names = set(_tools(_register_everything(mgr)))
     assert names == {
         "search", "deep_search", "list_sources", "update_source_index",
-        "get_rag_status", "graph_query", "find_definition", "find_usages",
-        "find_tests_for", "find_similar", "search_diff",
+        "get_rag_status", "feedback", "graph_query", "find_definition",
+        "find_usages", "find_tests_for", "find_similar", "search_diff",
     }
 
 
@@ -121,7 +124,7 @@ def test_conditional_tools_skipped_without_capability():
     names = set(_tools(_register_everything(mgr)))
     assert names == {
         "search", "deep_search", "list_sources", "update_source_index",
-        "get_rag_status",
+        "get_rag_status", "feedback",
     }
 
 
@@ -165,6 +168,63 @@ def test_find_definition_ambiguous_source_lists_candidates():
     tools = _tools(_register_everything(mgr))
     out = tools["find_definition"].fn(symbol="Foo")
     assert "Error" in out and "a" in out and "b" in out
+
+
+def test_tool_annotations():
+    mgr = FakeManager({"a": FakeBackend(graph=object(), git=True)})
+    tools = _tools(_register_everything(mgr))
+    rebuild_or_write = {"update_source_index", "feedback"}
+    for name, tool in tools.items():
+        ann = tool.annotations
+        assert ann is not None, f"{name} has no annotations"
+        if name in rebuild_or_write:
+            assert ann.readOnlyHint is False, name
+        else:
+            assert ann.readOnlyHint is True, name
+        assert ann.destructiveHint is False, name
+    # Only the index rebuild may touch the network (webdoc crawl).
+    assert tools["update_source_index"].annotations.openWorldHint is True
+    assert tools["feedback"].annotations.openWorldHint is False
+
+
+def test_instructions_embed_catalog_and_playbook():
+    mgr = FakeManager({
+        "mygame": FakeBackend(graph=object()),
+        "docs": FakeBackend(type_name="webdoc"),
+    })
+    text = _build_instructions(mgr)
+    assert "mygame" in text and "docs" in text
+    assert "search" in text
+    assert "lynx://guide" in text
+    assert "graph_query" in text  # graph source present → structural hint
+    # No graph anywhere → no structural hint.
+    text2 = _build_instructions(FakeManager({"a": FakeBackend()}))
+    assert "graph_query" not in text2
+
+
+def test_guide_is_generated_from_sources():
+    mgr = FakeManager({"mygame": FakeBackend(graph=object(), git=True)})
+    guide = _build_guide(mgr)
+    assert "mygame" in guide
+    assert "search" in guide
+    assert "search_diff" in guide  # git-enabled → diff section present
+
+
+def test_feedback_tool_writes_local_jsonl(tmp_path):
+    mgr = FakeManager({"a": FakeBackend()}, storage_path=str(tmp_path))
+    tools = _tools(_register_everything(mgr))
+    out = tools["feedback"].fn(
+        trying_to_do="find the damage formula",
+        tried="search + deep_search",
+        stuck="no chunk mentions damage",
+    )
+    assert "recorded locally" in out
+    log = tmp_path / "_feedback" / "feedback.jsonl"
+    assert log.exists()
+    import json as _json
+    rec = _json.loads(log.read_text(encoding="utf-8").strip())
+    assert rec["trying_to_do"] == "find the damage formula"
+    assert rec["sources"] == ["a"]
 
 
 # ---------------------------------------------------------------------------

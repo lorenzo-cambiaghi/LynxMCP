@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.0 — 2026-06-12
+
+### Added
+- **Usage playbook in the MCP handshake.** The server now sends compact
+  `instructions` at initialize (source catalog, how to phrase queries, score
+  interpretation, escalation ladder) and exposes the full playbook as the
+  `lynx://guide` resource. Every MCP client gets this automatically — no
+  rules file installation required (rules files remain available for
+  stronger steering).
+- **Tool annotations.** All tools now carry MCP annotations
+  (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`),
+  so clients can auto-approve the read-only retrieval tools.
+- **`feedback` tool.** When the agent can't find what it needs, it can file
+  a structured report (what it tried, where it got stuck) BEFORE giving up.
+  Reports are appended to `rag_storage/_feedback/feedback.jsonl` — 100%
+  local, never uploaded — and give the index owner a concrete signal for
+  tuning sources, filters, and chunking.
+
 ## 1.2.0 — 2026-06-12
 
 ### Added
