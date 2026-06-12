@@ -31,8 +31,8 @@ set "RAG_CONFIG_PATH=%DATA_DIR%\config.json"
 set "UV_BIN=%SCRIPT_DIR%uv.exe"
 set "LYNX_BIN=%UV_TOOL_BIN_DIR%\lynx.exe"
 
-REM Source of the package. Swap to "lynx-mcp" once it is published on PyPI.
-set "LYNX_PKG=git+https://github.com/lorenzo-cambiaghi/LynxMCP.git"
+REM Published on PyPI as lynx-mcp (the import package and CLI are `lynx`).
+set "LYNX_PKG=lynx-mcp"
 
 echo.
 echo    /\     /\

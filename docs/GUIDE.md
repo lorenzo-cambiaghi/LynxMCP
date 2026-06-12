@@ -185,11 +185,11 @@ absolute paths.
 # pipx — the established "install a Python CLI globally" tool.
 # macOS / Linux: `brew install pipx` (or `python -m pip install --user pipx`)
 # Windows:       `py -m pip install --user pipx`
-pipx install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
+pipx install lynx-mcp
 
 # OR — uv (faster, same end result):
 # Install uv first: see https://docs.astral.sh/uv/getting-started/installation/
-uv tool install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
+uv tool install lynx-mcp
 ```
 
 After either of those, `lynx` works from anywhere:

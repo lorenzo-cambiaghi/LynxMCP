@@ -21,8 +21,8 @@ Your AI assistant greps file names and guesses. Lynx gives it real retrieval ove
 
 ```bash
 # 1. Install the CLI (isolated, no venv ritual)
-pipx install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
-#    or: uv tool install git+https://github.com/lorenzo-cambiaghi/LynxMCP.git
+pipx install lynx-mcp
+#    or: uv tool install lynx-mcp
 
 # 2. Create a config pointing at your project
 lynx manager init
