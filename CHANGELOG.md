@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0 — 2026-06-12
+
+### Added
+- **JS rendering for webdoc sources (opt-in).** Set `render_js: true` on a
+  webdoc source to crawl SPA / client-side-rendered docs sites through
+  headless Chromium (Playwright): pages are extracted *after* client-side
+  rendering, and link discovery sees the post-JS DOM. Install the browser
+  dependency with `lynx manager install webdoc-js`. New per-source tunables:
+  `render_wait_until` (`load`/`domcontentloaded`/`networkidle`) and
+  `render_timeout_seconds`. The default install stays browser-free.
+- `lynx manager install` now supports extras with post-install steps
+  (used by `webdoc-js` to download the Chromium binary).
+
 ## 1.1.2 — 2026-06-12
 
 ### Added

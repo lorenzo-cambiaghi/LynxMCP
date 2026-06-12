@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # Distribution name is `lynx-mcp` (the bare `lynx` name on PyPI belongs to an
 # unrelated 2014 config library). The import package and the CLI stay `lynx`.
 name = "lynx-mcp"
-version = "1.1.2"
+version = "1.2.0"
 description = "100% local MCP server for semantic + lexical code search: AST-aware chunking (tree-sitter), hybrid BM25+dense retrieval, optional code knowledge graph."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -112,6 +112,14 @@ dev = [
 # papers or complex layouts.
 pdf-fast = [
     "pymupdf>=1.24",
+]
+# Opt-in JS rendering for webdoc sources (`render_js: true`): loads pages in
+# headless Chromium so SPA / client-side-rendered docs sites become crawlable.
+# After pip-installing, the browser binary must be fetched once with
+# `python -m playwright install chromium` (~150MB) — `lynx manager install
+# webdoc-js` does both steps.
+webdoc-js = [
+    "playwright>=1.40",
 ]
 
 [project.scripts]

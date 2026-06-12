@@ -881,11 +881,11 @@ library version bump.
 |---|---|---|
 | Static HTML | ✅ | Sphinx, mkdocs, docusaurus, hand-written sites |
 | Server-rendered SSR | ✅ | Anything that ships HTML directly |
-| JS-rendered SPAs | ❌ | Would require a headless browser (~200 MB Chromium dep) — explicitly out of scope. ~10% of doc sites; for the 90% mainstream this isn't a problem. |
+| JS-rendered SPAs | ✅ opt-in | Set `render_js: true` on the source: pages load in headless Chromium (Playwright) so client-side rendering runs before extraction, and link discovery sees the post-JS DOM. Requires the `webdoc-js` extra (`lynx manager install webdoc-js`, downloads Chromium ~150MB). Roughly 10x slower per page than plain HTTP — leave it off for server-rendered sites. Tunables: `render_wait_until` (`load` / `domcontentloaded` / `networkidle`, default `networkidle`) and `render_timeout_seconds` (default 30). |
 | Auth-gated docs | ❌ | The crawler sends a plain UA, no cookie / token support. PRs welcome if you need it. |
 | PDFs / images | ❌ | The crawler skips any URL whose content-type isn't HTML. PDF support is planned as a separate `type: "pdf"` source. |
 | robots.txt | ⚠️ Not consulted | Crawl is rate-limited and identifies itself, but currently doesn't parse robots.txt. Use `request_delay_seconds` to stay polite. |
-| Partial / JS-rendered TOCs | ⚠️ Partial | If the site's index page lists its sub-pages via JavaScript (Unity 6 ScriptReference is one example), the crawler sees the static HTML only — no link discovery happens past the seed. Workaround: point at a non-index page, or use a sitemap URL as the seed. |
+| Partial / JS-rendered TOCs | ✅ with `render_js` | If the site's index page lists its sub-pages via JavaScript (Unity 6 ScriptReference is one example), the plain-HTTP crawler sees the static HTML only — no link discovery past the seed. Enable `render_js: true` and the crawler discovers links from the rendered DOM; or, without the extra, point at a non-index page / sitemap URL as the seed. |
 
 > **Windows TLS note.** Lynx ships with `truststore` as a dependency so the
 > crawler reads the OS certificate store (Windows / macOS keychain / Linux

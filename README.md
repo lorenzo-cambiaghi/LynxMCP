@@ -11,7 +11,7 @@ Your AI assistant greps file names and guesses. Lynx gives it real retrieval ove
 - **AST-aware indexing** — tree-sitter parses 13+ languages and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
 - **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius.
-- **Multi-source** — index codebases, public docs sites (fetched once, on demand), and PDFs side by side.
+- **Multi-source** — index codebases, public docs sites (fetched once, on demand; JS-rendered SPAs supported via optional headless Chromium), and PDFs side by side.
 - **Live index** — a file watcher re-indexes saves in ~2s. No manual rebuild ritual.
 - **Web manager UI** — `lynx manager ui` gives you guided setup, a query playground, diagnostics, and client config snippets.
 

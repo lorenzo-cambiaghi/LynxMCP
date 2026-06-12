@@ -14,9 +14,12 @@ this URL changed without downloading it" is unreliable in practice (ETag /
 Last-Modified support varies by server), so we just don't try.
 
 Supported docs site shapes: static HTML, mkdocs-built, docusaurus, sphinx,
-anything that renders content server-side. JS-rendered SPAs require a
-headless browser — explicitly out of scope (would pull in ~200MB of
-Chromium). 90% of real-world technical docs are server-rendered.
+anything that renders content server-side — fetched with plain HTTP by
+default. JS-rendered SPAs are supported OPT-IN via `render_js: true` in the
+source config: pages are then loaded in headless Chromium (Playwright) so
+client-side rendering runs before extraction. The browser dependency is an
+optional extra (`lynx manager install webdoc-js`) so the default install
+stays lean — 90% of real-world technical docs are server-rendered.
 """
 from __future__ import annotations
 
@@ -114,6 +117,71 @@ def _matches_url_filters(url: str, includes: list, excludes: list) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Optional JS renderer (headless Chromium via Playwright)
+# ---------------------------------------------------------------------------
+
+
+class _PlaywrightRenderer:
+    """Fetches pages with headless Chromium so client-side JS runs before
+    content extraction. One browser instance per crawl, started lazily and
+    closed by the caller via close().
+
+    Kept import-lazy: Playwright is an optional extra; constructing this
+    class is the only place that touches it, and every failure mode maps to
+    a RuntimeError whose message tells the user the one command to run.
+    """
+
+    def __init__(self, *, user_agent: str, wait_until: str = "networkidle",
+                 timeout_seconds: float = 30.0):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as e:
+            raise RuntimeError(
+                "this source has render_js=true, which needs Playwright. "
+                "Install it with `lynx manager install webdoc-js` "
+                "(or: pip install playwright && python -m playwright install chromium)."
+            ) from e
+        self._pw = sync_playwright().start()
+        try:
+            self._browser = self._pw.chromium.launch(headless=True)
+        except Exception as e:
+            self._pw.stop()
+            raise RuntimeError(
+                "Playwright is installed but its Chromium browser is not. "
+                "Run `lynx manager install webdoc-js` "
+                "(or: python -m playwright install chromium)."
+            ) from e
+        self._context = self._browser.new_context(user_agent=user_agent)
+        self._wait_until = wait_until
+        self._timeout_ms = timeout_seconds * 1000.0
+
+    def get(self, url: str):
+        """Load `url`, wait for the configured readiness event, and return
+        (rendered_html, status_code, content_type). The HTML is the live DOM
+        serialization, i.e. *after* client-side rendering."""
+        page = self._context.new_page()
+        try:
+            response = page.goto(url, wait_until=self._wait_until,
+                                 timeout=self._timeout_ms)
+            # response is None for same-document navigations; treat as OK.
+            status = response.status if response is not None else 200
+            content_type = (
+                response.headers.get("content-type", "text/html")
+                if response is not None else "text/html"
+            )
+            return page.content(), status, content_type
+        finally:
+            page.close()
+
+    def close(self) -> None:
+        for closer in (self._context.close, self._browser.close, self._pw.stop):
+            try:
+                closer()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Crawler
 # ---------------------------------------------------------------------------
 
@@ -129,6 +197,7 @@ def _crawl(
     request_delay_seconds: float,
     user_agent: str,
     http_client: Optional[httpx.Client] = None,
+    renderer=None,
 ) -> list:
     """BFS over a docs site. Returns a list of (url, html, status_code) tuples.
 
@@ -137,9 +206,13 @@ def _crawl(
     prevents accidental drift onto external sites.
 
     `http_client` is an injection point for tests — production passes None
-    and we build a default client here.
+    and we build a default client here. When `renderer` is set (an object
+    with a `get(url) -> (html, status, content_type)` method, normally a
+    `_PlaywrightRenderer`), pages are fetched through it instead of plain
+    HTTP, so link discovery sees the *post-JS* DOM — which is the whole
+    point for SPAs, whose <a> tags often only exist after rendering.
     """
-    own_client = http_client is None
+    own_client = renderer is None and http_client is None
     if own_client:
         http_client = httpx.Client(
             timeout=_REQUEST_TIMEOUT_SECONDS,
@@ -183,14 +256,25 @@ def _crawl(
             if exclude_patterns and any(p in url for p in exclude_patterns):
                 continue
 
-            try:
-                response = http_client.get(url)
-            except (httpx.HTTPError, OSError) as e:
-                error_count += 1
-                print(f"[webdoc] fetch failed for {url}: {e}", file=sys.stderr)
-                continue
+            if renderer is not None:
+                try:
+                    html, status_code, content_type = renderer.get(url)
+                except Exception as e:
+                    error_count += 1
+                    print(f"[webdoc] render failed for {url}: {e}", file=sys.stderr)
+                    continue
+            else:
+                try:
+                    response = http_client.get(url)
+                except (httpx.HTTPError, OSError) as e:
+                    error_count += 1
+                    print(f"[webdoc] fetch failed for {url}: {e}", file=sys.stderr)
+                    continue
+                html = response.text
+                status_code = response.status_code
+                content_type = response.headers.get("content-type", "")
 
-            if response.status_code >= 400:
+            if status_code >= 400:
                 error_count += 1
                 continue
 
@@ -199,25 +283,23 @@ def _crawl(
             # docs.unity3d.com), or unusual capitalization. A simple "starts
             # with" / "contains" check is more robust than exact match and
             # still excludes obviously non-HTML responses (PDFs, JSON, etc.).
-            content_type = response.headers.get("content-type", "").lower()
+            content_type = content_type.lower()
             if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
                 continue
 
-            if len(response.content) > _MAX_RESPONSE_BYTES:
+            if len(html.encode("utf-8", errors="ignore")) > _MAX_RESPONSE_BYTES:
                 print(
                     f"[webdoc] skipping {url}: response too large "
-                    f"({len(response.content)} bytes > {_MAX_RESPONSE_BYTES})",
+                    f"(> {_MAX_RESPONSE_BYTES} bytes)",
                     file=sys.stderr,
                 )
                 continue
-
-            html = response.text
 
             # Only add to results if filters pass (the seed gets *visited*
             # for link discovery even when it doesn't pass the include
             # filter, but it's not added to the dump unless it also matches).
             if passes_filters:
-                results.append((url, html, response.status_code))
+                results.append((url, html, status_code))
 
             # Discover links and enqueue them. We stop discovering once we
             # would exceed max_depth on the children, to keep the frontier
@@ -326,6 +408,10 @@ class WebdocBackend(SourceBackend):
             source_config.get("user_agent")
             or "Lynx-DocFetcher/0.4 (+https://github.com/loren/lynx)"
         )
+        # Opt-in JS rendering for SPA / client-side-rendered sites.
+        self.render_js: bool = bool(source_config.get("render_js", False))
+        self.render_wait_until: str = str(source_config.get("render_wait_until", "networkidle"))
+        self.render_timeout_seconds: float = float(source_config.get("render_timeout_seconds", 30.0))
 
         # Inner indexing engine — same CodebaseRAG that handles the codebase
         # source type, just pointed at our dump folder.
@@ -371,29 +457,51 @@ class WebdocBackend(SourceBackend):
             except OSError as e:
                 print(f"[webdoc] could not delete {f}: {e}", file=sys.stderr)
 
-    def fetch(self, *, http_client: Optional[httpx.Client] = None) -> dict:
+    def fetch(self, *, http_client: Optional[httpx.Client] = None,
+              renderer=None) -> dict:
         """Crawl, extract, write the dump. Returns the new fetch state.
 
         Always full-refresh: wipes the dump dir first so deleted pages get
         evicted from the index. ETag/Last-Modified-based partial refresh
         wasn't worth the complexity (servers vary too much).
+
+        With `render_js: true` in the source config, pages go through
+        headless Chromium (one browser for the whole crawl). `renderer` is
+        an injection point for tests; production leaves it None and the
+        renderer is built (and closed) here.
         """
         print(
             f"[webdoc:{self.name}] crawling {self.start_url} "
-            f"(max_depth={self.max_depth}, max_pages={self.max_pages})",
+            f"(max_depth={self.max_depth}, max_pages={self.max_pages}"
+            f"{', render_js=on' if self.render_js else ''})",
             file=sys.stderr,
         )
-        pages = _crawl(
-            start_url=self.start_url,
-            max_depth=self.max_depth,
-            max_pages=self.max_pages,
-            same_origin_only=self.same_origin_only,
-            include_patterns=self.include_patterns,
-            exclude_patterns=self.exclude_patterns,
-            request_delay_seconds=self.request_delay_seconds,
-            user_agent=self.user_agent,
-            http_client=http_client,
-        )
+        own_renderer = renderer is None and self.render_js
+        if own_renderer:
+            # Raises RuntimeError with install instructions when Playwright
+            # or its Chromium binary is missing — surfaced as-is by the CLI
+            # and the manager UI job log.
+            renderer = _PlaywrightRenderer(
+                user_agent=self.user_agent,
+                wait_until=self.render_wait_until,
+                timeout_seconds=self.render_timeout_seconds,
+            )
+        try:
+            pages = _crawl(
+                start_url=self.start_url,
+                max_depth=self.max_depth,
+                max_pages=self.max_pages,
+                same_origin_only=self.same_origin_only,
+                include_patterns=self.include_patterns,
+                exclude_patterns=self.exclude_patterns,
+                request_delay_seconds=self.request_delay_seconds,
+                user_agent=self.user_agent,
+                http_client=http_client,
+                renderer=renderer,
+            )
+        finally:
+            if own_renderer:
+                renderer.close()
         print(f"[webdoc:{self.name}] fetched {len(pages)} page(s)", file=sys.stderr)
 
         self._wipe_dump()

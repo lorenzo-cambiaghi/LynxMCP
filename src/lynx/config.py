@@ -250,6 +250,23 @@ def _validate_webdoc_source(name: str, raw: dict, base_dir: Path) -> dict:
             f"source {name!r}: include/exclude_url_patterns must be lists of strings"
         )
 
+    # Opt-in JS rendering (headless Chromium via Playwright) for SPA /
+    # client-side-rendered docs sites. Off by default: it needs the
+    # `webdoc-js` extra (`lynx manager install webdoc-js`) and is an order
+    # of magnitude slower per page than the plain HTTP fetch.
+    render_js = bool(raw.get("render_js", False))
+    render_wait_until = str(raw.get("render_wait_until", "networkidle")).lower()
+    if render_wait_until not in ("load", "domcontentloaded", "networkidle"):
+        _config_error(
+            f"source {name!r}: render_wait_until must be one of "
+            f"'load' | 'domcontentloaded' | 'networkidle', got {render_wait_until!r}"
+        )
+    render_timeout = float(raw.get("render_timeout_seconds", 30.0))
+    if render_timeout <= 0:
+        _config_error(
+            f"source {name!r}: render_timeout_seconds must be positive, got {render_timeout}"
+        )
+
     return {
         "type": "webdoc",
         "url": url,
@@ -260,6 +277,9 @@ def _validate_webdoc_source(name: str, raw: dict, base_dir: Path) -> dict:
         "exclude_url_patterns": exclude_patterns,
         "request_delay_seconds": delay,
         "user_agent": raw.get("user_agent"),  # None → backend uses default
+        "render_js": render_js,
+        "render_wait_until": render_wait_until,
+        "render_timeout_seconds": render_timeout,
     }
 
 

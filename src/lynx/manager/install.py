@@ -49,6 +49,22 @@ KNOWN_EXTRAS = {
             "AGPL — opt-in."
         ),
     },
+    "webdoc-js": {
+        "pip_package": "playwright",
+        "pip_requirement": "playwright>=1.40",
+        "extra_name": "webdoc-js",
+        # Extra shell steps after the pip install (each is an argv list run
+        # with the current interpreter context). Playwright ships the driver
+        # via pip but the browser binary is a separate ~150MB download.
+        "post_install": [
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+        ],
+        "what_for": (
+            "JS rendering for webdoc sources (`render_js: true` in config): "
+            "crawls SPA / client-side-rendered docs sites through headless "
+            "Chromium. Downloads the Chromium binary (~150MB) on install."
+        ),
+    },
     # Future extras land here.
 }
 
@@ -85,8 +101,22 @@ def install_extra(extra_name: str) -> int:
         print(dim(f"Available: {', '.join(KNOWN_EXTRAS)}"))
         return 2
     info = KNOWN_EXTRAS[extra_name]
-    if _is_installed(info["pip_package"]):
+    if _is_installed(info["pip_package"]) and not info.get("post_install"):
         print(success(f"{extra_name} already installed."))
+        return 0
+    if _is_installed(info["pip_package"]):
+        # Package present, but the extra has post-install steps (e.g. the
+        # Chromium download) that may not have run — they are idempotent,
+        # so re-run them instead of guessing.
+        print(dim(f"  {info['pip_package']} already installed; "
+                  f"running post-install steps."))
+        for step in info.get("post_install", []):
+            print(dim(f"  running: {' '.join(step)}"))
+            rc = subprocess.run(step, check=False).returncode
+            if rc != 0:
+                print(error(f"post-install step failed (exit {rc})"))
+                return 2
+        print(success(f"{extra_name} installed."))
         return 0
     cmd = [sys.executable, "-m", "pip", "install", info["pip_requirement"]]
     print(dim(f"  running: {' '.join(cmd)}"))
@@ -105,6 +135,17 @@ def install_extra(extra_name: str) -> int:
         print(warn(f"pip reported success but `import {info['pip_package']}` "
                    f"still fails — check the install log above."))
         return 1
+    # Post-install steps (e.g. playwright's browser binary download).
+    for step in info.get("post_install", []):
+        print(dim(f"  running: {' '.join(step)}"))
+        try:
+            rc = subprocess.run(step, check=False).returncode
+        except FileNotFoundError as e:
+            print(error(f"post-install step failed to start: {e}"))
+            return 2
+        if rc != 0:
+            print(error(f"post-install step failed (exit {rc})"))
+            return 2
     print(success(f"{extra_name} installed."))
     return 0
 
