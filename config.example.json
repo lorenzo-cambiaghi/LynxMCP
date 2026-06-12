@@ -69,7 +69,7 @@
       "git_integration": {
         "enabled": true
       },
-      "_graph_comment": "Opt-in knowledge graph layer (call graph + import graph + inheritance graph + community detection). Set enabled=true to expose 9 extra MCP tools: get_callers_<name>, get_callees_<name>, get_subclasses_<name>, get_superclasses_<name>, get_imports_<name>, get_neighbors_<name>, shortest_path_<name>, architectural_overview_<name>, surprising_connections_<name>. Default is disabled — pure search still works without it.",
+      "_graph_comment": "Opt-in knowledge graph layer (call graph + import graph + inheritance graph + community detection). Set enabled=true to expose the graph_query MCP tool (operations: callers, callees, subclasses, superclasses, imports, neighbors, shortest_path, overview, surprising_connections, status). Default is disabled — pure search still works without it.",
       "graph": {
         "enabled": false
       }

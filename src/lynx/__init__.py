@@ -11,10 +11,16 @@ when reaching into a large codebase or unfamiliar docs.
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("lynx")
+    # Distribution name (PyPI: lynx-mcp) differs from the import package
+    # name (`lynx` was already taken on PyPI by an unrelated project).
+    __version__ = version("lynx-mcp")
 except PackageNotFoundError:
-    # Source checkout without an editable install (e.g. running tests
-    # directly from src/). Fall back to a sentinel.
-    __version__ = "0.0.0+dev"
+    try:
+        # Editable installs made before the rename registered as `lynx`.
+        __version__ = version("lynx")
+    except PackageNotFoundError:
+        # Source checkout without an editable install (e.g. running tests
+        # directly from src/). Fall back to a sentinel.
+        __version__ = "0.0.0+dev"
 
 __all__ = ["__version__"]

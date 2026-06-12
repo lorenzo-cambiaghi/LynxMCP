@@ -33,7 +33,7 @@ from . import __version__
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lynx",
-        description="Linx — self-hosted MCP server with semantic + lexical "
+        description="Lynx — self-hosted MCP server with semantic + lexical "
                     "search over your local code and documentation. Multi-source, "
                     "100 percent local, no data egress.",
     )
@@ -362,8 +362,11 @@ def _resolve_source(args, config, allow_all: bool = False) -> str:
 def _build_manager(config_path):
     """Construct SourceManager synchronously. Used by build / search / status /
     list-sources. The MCP `serve` subcommand uses its own threaded loader."""
-    from .source_manager import SourceManager
     config = _load_config_or_exit(config_path)
+    # Decide HF offline mode BEFORE the heavy imports freeze the env flags.
+    from .config import configure_hf_offline
+    configure_hf_offline(config)
+    from .source_manager import SourceManager
     return config, SourceManager(config)
 
 

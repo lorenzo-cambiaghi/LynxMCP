@@ -3,9 +3,11 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lynx"
+# Distribution name is `lynx-mcp` (the bare `lynx` name on PyPI belongs to an
+# unrelated 2014 config library). The import package and the CLI stay `lynx`.
+name = "lynx-mcp"
 version = "1.0.0"
-description = "Lynx — a self-hosted MCP server with semantic + lexical search over your local code AND library documentation (fetched from the web on demand). AST-aware chunking via tree-sitter, multi-source, 100% local except the explicit doc-fetch step. (Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)"
+description = "100% local MCP server for semantic + lexical code search: AST-aware chunking (tree-sitter), hybrid BM25+dense retrieval, optional code knowledge graph."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -14,14 +16,17 @@ authors = [
 requires-python = ">=3.10"
 keywords = [
     "mcp",
+    "mcp-server",
     "model-context-protocol",
     "rag",
+    "code-search",
     "codebase",
     "semantic-search",
+    "knowledge-graph",
+    "tree-sitter",
     "bm25",
     "local",
     "claude",
-    "antigravity",
     "cursor",
 ]
 classifiers = [
@@ -98,8 +103,9 @@ dev = [
     "reportlab>=4",  # used by the PDF test suite to generate synthetic PDFs
 ]
 # Opt-in faster / higher-quality PDF extraction backend. PyMuPDF is AGPL,
-# so we don't make it a hard dependency. Activate with `pip install lynx[pdf-fast]`
-# when working with academic two-column papers or complex layouts.
+# so we don't make it a hard dependency. Activate with
+# `pip install "lynx-mcp[pdf-fast]"` when working with academic two-column
+# papers or complex layouts.
 pdf-fast = [
     "pymupdf>=1.24",
 ]

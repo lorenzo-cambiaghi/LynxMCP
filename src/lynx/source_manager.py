@@ -8,9 +8,9 @@ exposes:
     backend and fuse results via Reciprocal Rank Fusion.
   - Lifecycle: starts each backend's watcher (if applicable).
 
-The MCP server layer auto-generates `search_<name>` / `deep_search_<name>`
-tools for each source by iterating `manager.backends`. No tool is hardcoded
-to a specific source name.
+The MCP server layer exposes a fixed tool set (`search`, `deep_search`,
+`graph_query`, ...) that routes here via a `source` argument. No tool is
+hardcoded to a specific source name.
 """
 from __future__ import annotations
 

@@ -35,8 +35,8 @@ class SourceBackend(ABC):
 
         Args:
             name: The source's identifier from `config.sources[name]`.
-                  Used as the ChromaDB collection name and as the suffix in
-                  the auto-generated MCP tool names (`search_<name>`, etc.).
+                  Used as the ChromaDB collection name and as the value the
+                  MCP tools accept in their `source` argument.
             source_config: The per-source dict from `config.sources[name]`,
                   type-specific fields included.
             shared_config: The top-level `Config` object (embedding model,

@@ -51,13 +51,13 @@ fi
 
 LYNX_BIN="$UV_TOOL_BIN_DIR/lynx"
 
-# Source of the package. Swap to "lynx" once it's published on PyPI.
+# Source of the package. Swap to "lynx-mcp" once it is published on PyPI.
 LYNX_PKG="git+https://github.com/lorenzo-cambiaghi/LynxMCP.git"
 
 cat <<'BANNER'
    /\     /\
   {  `---'  }   LynxMCP
-  {  O   O  }   Privacy-first long-term memory for your AI coding assistant
+  {  O   O  }   100% local semantic code search for your AI coding assistant
   ~~>  V  <~~
    \  \|/  /
     `-----'

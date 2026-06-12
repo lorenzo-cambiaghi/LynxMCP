@@ -28,9 +28,11 @@ os.environ.pop("OPENAI_API_KEY", None)
 # would corrupt the JSON-RPC stream MCP uses.
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-# OFFLINE MODE: the model is already cached, never contact HuggingFace again.
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# OFFLINE MODE is decided by `config.configure_hf_offline()`, which every
+# entry point calls BEFORE importing this module: offline when the needed
+# models are already cached (privacy guarantee), online for the one run
+# that has to download them. Hard-coding HF_HUB_OFFLINE=1 here used to
+# brick the first `lynx serve` on a clean machine.
 
 # Silence the recurring "llama-index-readers-file package not found" warning:
 # the default FlatReader handles plain-text files (code, markdown, JSON, etc.)

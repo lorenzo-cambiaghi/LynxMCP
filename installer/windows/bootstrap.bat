@@ -31,13 +31,13 @@ set "RAG_CONFIG_PATH=%DATA_DIR%\config.json"
 set "UV_BIN=%SCRIPT_DIR%uv.exe"
 set "LYNX_BIN=%UV_TOOL_BIN_DIR%\lynx.exe"
 
-REM Source of the package. Swap to "lynx" once it's published on PyPI.
+REM Source of the package. Swap to "lynx-mcp" once it is published on PyPI.
 set "LYNX_PKG=git+https://github.com/lorenzo-cambiaghi/LynxMCP.git"
 
 echo.
 echo    /\     /\
 echo   {  `---'  }   LynxMCP
-echo   {  O   O  }   Privacy-first long-term memory for your AI coding assistant
+echo   {  O   O  }   100%% local semantic code search for your AI coding assistant
 echo   ~~^>  V  ^<~~
 echo    \  \^|/  /
 echo     `-----'

@@ -3,7 +3,7 @@
 Three modes:
   - `lynx manager install --list` — enumerate available extras + which
     are installed
-  - `lynx manager install <extra>` — `pip install lynx[<extra>]`
+  - `lynx manager install <extra>` — pip-install the packages behind an extra
   - `lynx manager install --model [NAME]` — download a model into the
     HF cache. Without an argument, reads the embedding model from the
     active config. With `--with-reranker`, also downloads the reranker.
@@ -13,9 +13,8 @@ Why this exists
 First-run friction. Today a new user has to discover that:
   - `pdf-fast` is an opt-in extra for better PDF extraction
   - The 130MB embedding model auto-downloads on first search, blocking
-    that search until done
-  - HF_HUB_OFFLINE=1 is the default, so even a re-download requires
-    bypassing the env flag
+    that search until done — pre-fetching it here keeps the first
+    `lynx serve` snappy
 
 This command centralizes all of that into something documentable as
 "the first thing to run after install".
@@ -38,6 +37,11 @@ from .ansi import success, warn, error, bold, dim, heading, bullet
 KNOWN_EXTRAS = {
     "pdf-fast": {
         "pip_package": "pymupdf",
+        # Concrete requirement installed for this extra. We install the
+        # requirement directly rather than `pip install lynx-mcp[pdf-fast]`
+        # so the command also works on editable/git installs (and never
+        # resolves against the unrelated `lynx` package on PyPI).
+        "pip_requirement": "pymupdf>=1.24",
         "extra_name": "pdf-fast",
         "what_for": (
             "Faster PDF extraction with better reading order on "
@@ -50,7 +54,7 @@ KNOWN_EXTRAS = {
 
 
 # ---------------------------------------------------------------------------
-# Extras (pip install lynx[X])
+# Extras (pip install <requirement>)
 # ---------------------------------------------------------------------------
 
 
@@ -70,7 +74,7 @@ def list_extras() -> int:
 
 
 def install_extra(extra_name: str) -> int:
-    """`pip install lynx[<extra>]` via subprocess.
+    """Install the packages behind an extra via subprocess.
 
     We invoke `python -m pip` rather than `pip` so the install lands in
     the SAME venv that's running Lynx (the bare `pip` command on a
@@ -84,7 +88,7 @@ def install_extra(extra_name: str) -> int:
     if _is_installed(info["pip_package"]):
         print(success(f"{extra_name} already installed."))
         return 0
-    cmd = [sys.executable, "-m", "pip", "install", f"lynx[{extra_name}]"]
+    cmd = [sys.executable, "-m", "pip", "install", info["pip_requirement"]]
     print(dim(f"  running: {' '.join(cmd)}"))
     try:
         rc = subprocess.run(cmd, check=False).returncode
@@ -124,10 +128,10 @@ def _is_installed(package: str) -> bool:
 def download_model(model_name: str) -> int:
     """Explicitly fetch a HuggingFace model into the local cache.
 
-    `rag_manager.py` sets HF_HUB_OFFLINE=1 at import time to prevent
-    accidental egress during search. We bypass that here ONLY for the
-    duration of the download (restore the env var on exit so any
-    follow-up code keeps the offline guarantee).
+    Search-time code runs with HF offline mode on whenever the models are
+    already cached (see config.configure_hf_offline). We clear the flags
+    here ONLY for the duration of the download (restoring them on exit so
+    any follow-up code keeps the offline guarantee).
     """
     print(dim(f"  Downloading {model_name} (this can take a minute)..."))
 

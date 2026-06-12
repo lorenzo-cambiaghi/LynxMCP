@@ -109,7 +109,6 @@ def render_rules_for_sources(
     enabled, and diff-search tool names appear only when at least one
     source has git_integration on.
     """
-    src = source_names[0] if source_names else "myproject"
     lines: list[str] = [
         "# Code Reuse & Library Awareness",
         "",
@@ -121,13 +120,15 @@ def render_rules_for_sources(
         "",
     ]
     for n in source_names:
-        lines.append(f"- `search_{n}(query)` — semantic + lexical hybrid search.")
-        lines.append(f"- `deep_search_{n}(queries)` — fallback for ambiguous queries.")
+        lines.append(f"- `{n}` — pass it as the `source` argument of the tools below.")
     lines.append("")
+    lines.append("- `search(query, source=...)` — semantic + lexical hybrid search.")
+    lines.append("- `deep_search(queries, source=...)` — fallback for ambiguous queries.")
     if len(source_names) > 1:
-        lines.append("When unsure which source has the answer, call "
-                     "`search_all_sources(query)` once.")
         lines.append("")
+        lines.append("When unsure which source has the answer, omit `source` to "
+                     "search ALL sources at once.")
+    lines.append("")
     lines.append("## When to search")
     lines.append("")
     lines.append("Before implementing any utility, interface, or pattern,")
@@ -138,18 +139,18 @@ def render_rules_for_sources(
         lines.append("")
         lines.append("## Code-aware structural queries (graph layer enabled)")
         lines.append("")
-        lines.append(f"- `find_definition_{src}(symbol)` — where is X defined?")
-        lines.append(f"- `find_usages_{src}(symbol)` — who calls X? typeof / generics included.")
-        lines.append(f"- `find_tests_for_{src}(symbol)` — are there tests for X?")
-        lines.append(f"- `find_similar_{src}(snippet)` — is there code similar to this?")
-        lines.append(f"- `get_callers_{src}(symbol)` / `get_callees_{src}(symbol)`")
-        lines.append(f"- `get_subclasses_{src}(symbol)` / `get_superclasses_{src}(symbol)`")
-        lines.append(f"- `architectural_overview_{src}()` — god nodes + communities")
+        lines.append("- `find_definition(symbol)` — where is X defined?")
+        lines.append("- `find_usages(symbol)` — who calls X? typeof / generics included.")
+        lines.append("- `find_tests_for(symbol)` — are there tests for X?")
+        lines.append("- `find_similar(snippet)` — is there code similar to this?")
+        lines.append("- `graph_query(operation, symbol)` — operations: callers, callees,")
+        lines.append("  subclasses, superclasses, imports, neighbors, shortest_path,")
+        lines.append("  overview (god nodes + communities), surprising_connections, status.")
     if has_git:
         lines.append("")
         lines.append("## Diff-aware search (git_integration enabled)")
         lines.append("")
-        lines.append(f"- `search_diff_{src}(query)` — search only in files changed vs `main`.")
+        lines.append("- `search_diff(query)` — search only in files changed vs `main`.")
         lines.append("  Use during code review: 'I changed the discount logic — what else uses the same formula?'")
     lines.append("")
     lines.append("## How to search")

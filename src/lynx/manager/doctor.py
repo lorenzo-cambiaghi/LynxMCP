@@ -4,8 +4,8 @@ Goal: one command tells you "is this install healthy?". We check the
 things that silently break searches:
 
   - Python version (Lynx needs ≥ 3.10)
-  - HuggingFace model cache (the embedding model must be downloaded
-    OR HF_HUB_OFFLINE must be off — otherwise the first search hangs)
+  - HuggingFace model cache (the embedding model downloads automatically
+    on the first run; offline mode kicks in once it's cached)
   - Config file (exists, valid JSON, validates with the loader)
   - Per-source state (path exists, ChromaDB readable, drift status,
     git_integration optionally validated)
@@ -109,8 +109,8 @@ def check_hf_model_cache(model_name: str, label: str = "embedding model") -> Che
             details=[
                 f"Expected at {cache_dir}",
                 "Run `lynx manager install --model` to fetch it now, or "
-                "let the first `lynx serve` query download it automatically "
-                "(requires network + HF_HUB_OFFLINE=0 at that moment).",
+                "let the first `lynx serve` download it automatically "
+                "(requires network at that moment; later runs are offline).",
             ],
         )
     # Look for at least one snapshot directory with the key files.

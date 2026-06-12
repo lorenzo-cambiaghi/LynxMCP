@@ -143,9 +143,11 @@ def _get_manager(app):
         )
         return None
     try:
-        from ...config import load_config
-        from ...source_manager import SourceManager
+        from ...config import load_config, configure_hf_offline
         cfg = load_config(Path(app.state.config_path))
+        # Decide HF offline mode BEFORE the heavy imports freeze the env flags.
+        configure_hf_offline(cfg)
+        from ...source_manager import SourceManager
         app.state.manager = SourceManager(cfg)
         return app.state.manager
     except SystemExit as e:

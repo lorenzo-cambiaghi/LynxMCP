@@ -1,17 +1,17 @@
-"""Verifies that `_register_graph_tools` exposes the 10 tools we promise
-(9 query + 1 status), namespaced with the source name, and that each one
-calls through to the underlying SourceManager / GraphLayer.
+"""Verifies that `_register_graph_tools` exposes the single `graph_query`
+tool, that its description carries the operation catalog + source names,
+and that each operation calls through to SourceManager / GraphLayer.
 
 Reuses the stubbed-RAG trick from test_graph_integration so we don't
-have to load the HuggingFace embedding model.
+have to load the HuggingFace embedding model. Pytest-style: the manager
+and the FastMCP instance are built once per module via a fixture.
 """
 from __future__ import annotations
 
 import json
-import shutil
-import sys
-import tempfile
 from pathlib import Path
+
+import pytest
 
 
 def _make_codebase(root: Path, files: dict) -> None:
@@ -47,164 +47,131 @@ def _stub_rag():
     CodebaseRAG.needs_update = lambda self: False
 
 
-def main() -> int:
-    tmp = Path(tempfile.mkdtemp(prefix="lynx-mcp-tools-"))
-    print(f"[test] tempdir: {tmp}")
-    try:
-        code = tmp / "code"
-        code.mkdir()
-        # Codebase: util.py defines `helper` + an inheritance chain
-        # (Base <- Derived) used to exercise get_subclasses / get_superclasses.
-        _make_codebase(code, {
-            "util.py": (
-                "def helper(x):\n    return x + 1\n"
-                "class Base:\n    pass\n"
-            ),
-            "main.py": (
-                "from util import helper, Base\n"
-                "def go():\n    return helper(1)\n"
-                "class Derived(Base):\n    pass\n"
-            ),
-        })
+@pytest.fixture(scope="module")
+def graph_mcp(tmp_path_factory):
+    """A FastMCP with graph tools registered over a tiny synthetic codebase.
 
-        _stub_rag()
+    Codebase: util.py defines `helper` + an inheritance chain
+    (Base <- Derived) used to exercise subclasses / superclasses.
+    """
+    tmp = tmp_path_factory.mktemp("lynx-mcp-tools")
+    code = tmp / "code"
+    code.mkdir()
+    _make_codebase(code, {
+        "util.py": (
+            "def helper(x):\n    return x + 1\n"
+            "class Base:\n    pass\n"
+        ),
+        "main.py": (
+            "from util import helper, Base\n"
+            "def go():\n    return helper(1)\n"
+            "class Derived(Base):\n    pass\n"
+        ),
+    })
 
-        from lynx.config import load_config
-        cfg_path = tmp / "config.json"
-        cfg_path.write_text(json.dumps({
-            "config_version": 2,
-            "storage_path": str(tmp / "storage"),
-            "sources": {
-                "demo": {
-                    "type": "codebase",
-                    "path": str(code),
-                    "supported_extensions": [".py"],
-                    "graph": {"enabled": True},
-                    "watcher": {"enabled": False},
-                }
+    _stub_rag()
+
+    from lynx.config import load_config
+    cfg_path = tmp / "config.json"
+    cfg_path.write_text(json.dumps({
+        "config_version": 2,
+        "storage_path": str(tmp / "storage"),
+        "sources": {
+            "demo": {
+                "type": "codebase",
+                "path": str(code),
+                "supported_extensions": [".py"],
+                "graph": {"enabled": True},
+                "watcher": {"enabled": False},
             }
-        }), encoding="utf-8")
-        cfg = load_config(cfg_path)
-
-        from lynx.source_manager import SourceManager
-        mgr = SourceManager(cfg)
-        mgr.get("demo").graph.rebuild(force=True)
-
-        # ============================================================
-        # 1. Register graph tools on a real FastMCP and verify count
-        # ============================================================
-        from mcp.server.fastmcp import FastMCP
-        from lynx.server import _register_graph_tools
-
-        mcp = FastMCP("test")
-        _register_graph_tools(mcp, mgr, "demo")
-
-        # FastMCP exposes registered tools via _tool_manager._tools (dict)
-        registered = list(mcp._tool_manager._tools.keys())
-        expected = {
-            "get_callers_demo",
-            "get_callees_demo",
-            "get_subclasses_demo",
-            "get_superclasses_demo",
-            "get_imports_demo",
-            "get_neighbors_demo",
-            "shortest_path_demo",
-            "architectural_overview_demo",
-            "surprising_connections_demo",
-            "graph_status_demo",
         }
-        missing = expected - set(registered)
-        if missing:
-            print(f"[test] FAIL [1/5]: missing tools: {missing}; got {registered}")
-            return 1
-        # Each tool MUST have a non-empty description — without it the AI
-        # client has no idea when to call which tool. F-string "docstrings"
-        # silently produce empty descriptions, so we assert on actual text.
-        for name in expected:
-            desc = mcp._tool_manager._tools[name].description
-            if not desc or len(desc) < 30:
-                print(f"[test] FAIL [1/5]: tool {name!r} has empty/tiny description: {desc!r}")
-                return 1
-            if "demo" not in desc:
-                print(f"[test] FAIL [1/5]: tool {name!r} description does not mention source name: {desc!r}")
-                return 1
-        print(f"[test] OK [1/5] all 10 graph tools registered with `_demo` suffix AND non-empty descriptions")
+    }), encoding="utf-8")
+    cfg = load_config(cfg_path)
 
-        # ============================================================
-        # 2. Call get_callers_demo, verify it returns formatted text
-        # ============================================================
-        tool = mcp._tool_manager._tools["get_callers_demo"]
-        out = tool.fn(symbol="helper")
-        if "Callers of 'helper'" not in out:
-            print(f"[test] FAIL [2/5]: get_callers_demo output unexpected: {out!r}")
-            return 2
-        if "helper" not in out:
-            print(f"[test] FAIL [2/5]: get_callers_demo missing helper in output: {out!r}")
-            return 2
-        print(f"[test] OK [2/5] get_callers_demo returned formatted caller list")
+    from lynx.source_manager import SourceManager
+    mgr = SourceManager(cfg)
+    mgr.get("demo").graph.rebuild(force=True)
 
-        # ============================================================
-        # 3. architectural_overview_demo
-        # ============================================================
-        tool = mcp._tool_manager._tools["architectural_overview_demo"]
-        out = tool.fn(top_n_gods=5, min_community_size=2)
-        if "Architectural overview" not in out:
-            print(f"[test] FAIL [3/5]: architectural_overview header missing: {out!r}")
-            return 3
-        if "God nodes" not in out or "Communities" not in out:
-            print(f"[test] FAIL [3/5]: architectural_overview sections missing: {out!r}")
-            return 3
-        print(f"[test] OK [3/5] architectural_overview_demo returned overview")
+    from mcp.server.fastmcp import FastMCP
+    from lynx.server import _register_graph_tools
 
-        # ============================================================
-        # 4. shortest_path_demo with no path returns user-friendly text
-        # ============================================================
-        tool = mcp._tool_manager._tools["shortest_path_demo"]
-        out = tool.fn(source="helper", target="nonexistent", max_hops=5)
-        if "No directed path" not in out and "Error" not in out:
-            print(f"[test] FAIL [4/5]: shortest_path_demo unexpected on missing path: {out!r}")
-            return 4
-        # Real path
-        out = tool.fn(source="go", target="helper", max_hops=5)
-        if "Path from 'go'" not in out:
-            print(f"[test] FAIL [4/5]: shortest_path_demo missing path output: {out!r}")
-            return 4
-        if "helper" not in out:
-            print(f"[test] FAIL [4/5]: shortest_path_demo missing 'helper' in path: {out!r}")
-            return 4
-        print(f"[test] OK [4/5] shortest_path_demo handles both no-path and real path")
-
-        # ============================================================
-        # 5. get_subclasses_demo + get_superclasses_demo end-to-end
-        # ============================================================
-        sub_tool = mcp._tool_manager._tools["get_subclasses_demo"]
-        sup_tool = mcp._tool_manager._tools["get_superclasses_demo"]
-
-        out = sub_tool.fn(symbol="Base")
-        if "Subclasses of 'Base'" not in out:
-            print(f"[test] FAIL [5/5]: get_subclasses_demo header missing: {out!r}")
-            return 5
-        if "Derived" not in out:
-            print(f"[test] FAIL [5/5]: get_subclasses_demo did not surface 'Derived' in cross-file scenario: {out!r}")
-            return 5
-        if "inherits" not in out:
-            print(f"[test] FAIL [5/5]: get_subclasses_demo missing 'inherits' relation label: {out!r}")
-            return 5
-
-        out = sup_tool.fn(symbol="Derived")
-        if "Superclasses of 'Derived'" not in out:
-            print(f"[test] FAIL [5/5]: get_superclasses_demo header missing: {out!r}")
-            return 5
-        if "Base" not in out:
-            print(f"[test] FAIL [5/5]: get_superclasses_demo did not return 'Base' as parent: {out!r}")
-            return 5
-        print(f"[test] OK [5/5] get_subclasses / get_superclasses resolve cross-file inheritance and format edges")
-
-        print("\n[test] === SUCCESS: MCP graph tools registered and working ===")
-        return 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    mcp = FastMCP("test")
+    _register_graph_tools(mcp, mgr)
+    return mcp
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def _tool(graph_mcp):
+    # FastMCP exposes registered tools via _tool_manager._tools (dict)
+    return graph_mcp._tool_manager._tools["graph_query"]
+
+
+def test_single_graph_query_tool_with_rich_description(graph_mcp):
+    registered = list(graph_mcp._tool_manager._tools.keys())
+    assert registered == ["graph_query"], registered
+
+    # The description MUST be non-empty (f-string "docstrings" silently
+    # produce empty descriptions) and must carry both the routing info the
+    # client needs: the operation catalog and the source name.
+    desc = _tool(graph_mcp).description
+    assert desc and len(desc) > 100
+    assert "demo" in desc
+    for op in (
+        "callers", "callees", "subclasses", "superclasses", "imports",
+        "neighbors", "shortest_path", "overview", "surprising_connections",
+        "status",
+    ):
+        assert op in desc, f"operation {op!r} missing from description"
+
+
+def test_callers_operation(graph_mcp):
+    out = _tool(graph_mcp).fn(operation="callers", symbol="helper")
+    assert "Callers of 'helper'" in out
+    assert "helper" in out
+
+
+def test_source_defaults_to_only_graph_source(graph_mcp):
+    # `source` omitted → resolves to 'demo' since it's the only graph source.
+    out = _tool(graph_mcp).fn(operation="status")
+    assert "Graph status for 'demo'" in out
+
+
+def test_unknown_operation_lists_valid_ones(graph_mcp):
+    out = _tool(graph_mcp).fn(operation="explode", symbol="helper")
+    assert "unknown operation" in out
+    assert "callers" in out
+
+
+def test_missing_symbol_is_reported(graph_mcp):
+    out = _tool(graph_mcp).fn(operation="callers")
+    assert "requires `symbol`" in out
+
+
+def test_overview_operation(graph_mcp):
+    out = _tool(graph_mcp).fn(operation="overview", top_n=5, min_community_size=2)
+    assert "Architectural overview" in out
+    assert "God nodes" in out
+    assert "Communities" in out
+
+
+def test_shortest_path_operation(graph_mcp):
+    tool = _tool(graph_mcp)
+    # No path → user-friendly text, not a stack trace.
+    out = tool.fn(operation="shortest_path", symbol="helper", target="nonexistent", max_hops=5)
+    assert "No directed path" in out or "Error" in out
+    # Real path
+    out = tool.fn(operation="shortest_path", symbol="go", target="helper", max_hops=5)
+    assert "Path from 'go'" in out
+    assert "helper" in out
+
+
+def test_subclasses_and_superclasses(graph_mcp):
+    tool = _tool(graph_mcp)
+
+    out = tool.fn(operation="subclasses", symbol="Base")
+    assert "Subclasses of 'Base'" in out
+    assert "Derived" in out, "cross-file inheritance not resolved"
+    assert "inherits" in out
+
+    out = tool.fn(operation="superclasses", symbol="Derived")
+    assert "Superclasses of 'Derived'" in out
+    assert "Base" in out

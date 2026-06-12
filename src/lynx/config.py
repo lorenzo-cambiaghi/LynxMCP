@@ -49,9 +49,9 @@ from urllib.parse import urlparse
 CURRENT_CONFIG_VERSION = 2
 SUPPORTED_SOURCE_TYPES = ("codebase", "webdoc", "pdf")
 
-# MCP tool names get the source name verbatim as a suffix. Restrict to a
-# conservative subset so the generated names like `search_<name>` are always
-# valid identifiers and easy to type. See README for the full rule.
+# Source names are passed as the `source` argument of the MCP tools and used
+# as ChromaDB collection names. Restrict to a conservative subset so they are
+# always valid identifiers and easy to type. See README for the full rule.
 SOURCE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
 
 
@@ -67,9 +67,9 @@ class EmbeddingConfig:
 
 @dataclass(frozen=True)
 class DeepSearchConfig:
-    """Tunables for the `deep_search_*` fallback tools.
+    """Tunables for the `deep_search` fallback tool.
 
-    See README "Hybrid retrieval" and "deep_search_codebase" sections for
+    See the docs section on hybrid retrieval and deep_search for the
     rationale on mode-specific thresholds.
     """
     min_results: int = 2
@@ -186,8 +186,8 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
 
     # Opt-in graph layer (call graph + import graph + community analysis).
     # Default disabled — existing configs keep working without changes; the
-    # extra MCP tools (`get_callers_*`, `architectural_overview_*`, ...) are
-    # only registered when this is true.
+    # `graph_query` MCP tool is only registered when at least one source
+    # sets this to true.
     graph_raw = raw.get("graph")
     if graph_raw is None:
         graph_raw = {}
@@ -544,3 +544,74 @@ def load_config(config_path: Path | None = None) -> Config:
         search=search,
         sources=sources,
     )
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace offline-mode decision
+# ---------------------------------------------------------------------------
+
+
+def _hf_cache_dir() -> Path:
+    """Resolve the HuggingFace hub cache directory (mirrors hf defaults)."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"])
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _hf_model_cached(model_name: str) -> bool:
+    """True if at least one snapshot of `model_name` exists in the cache.
+
+    Pure-stdlib directory probe (no huggingface_hub import — see
+    `configure_hf_offline` for why importing it here would defeat the
+    purpose)."""
+    safe = model_name.replace("/", "--")
+    snapshots = _hf_cache_dir() / f"models--{safe}" / "snapshots"
+    try:
+        if not snapshots.is_dir():
+            return False
+        return any(
+            entry.is_dir() and any(entry.iterdir())
+            for entry in snapshots.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def configure_hf_offline(config) -> None:
+    """Set the HF offline env flags only when every required model is cached.
+
+    Lynx guarantees "no data egress during search" by running HuggingFace
+    in offline mode. But hard-coding HF_HUB_OFFLINE=1 broke the FIRST run:
+    with an empty cache the embedding model can never be downloaded and
+    `lynx serve` dies before answering a single query. So the rule is:
+
+      - the user already set HF_HUB_OFFLINE → always respected, no override;
+      - every model the config needs is in the local cache → go offline;
+      - something is missing → stay online for THIS run so it can be
+        fetched once; every later run flips back to offline.
+
+    MUST be called before the first import of huggingface_hub/transformers
+    (both freeze the offline flags at import time) — i.e. right after
+    `load_config()` and before importing `source_manager`. That's why this
+    lives in config.py, which is stdlib-only.
+    """
+    if os.environ.get("HF_HUB_OFFLINE") is not None:
+        return  # explicit user choice wins
+
+    models = [config.embedding.model_name]
+    if config.search.reranker.enabled:
+        models.append(config.search.reranker.model_name)
+
+    missing = [m for m in models if not _hf_model_cached(m)]
+    if not missing:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    else:
+        print(
+            f"[config] model(s) not in local cache yet: {', '.join(missing)} — "
+            f"allowing network for this run to download them once. "
+            f"Subsequent runs are fully offline.",
+            file=sys.stderr,
+        )
