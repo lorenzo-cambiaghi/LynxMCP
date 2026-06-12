@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-06-12
+
+### Changed
+- Depend on `llama-index-core` instead of the `llama-index` meta-package:
+  drops the unused OpenAI bundle (`openai`, `llama-index-llms-openai`,
+  `llama-index-embeddings-openai`) from the install. Lynx never calls any
+  remote LLM — the install log now reflects that.
+- Install instructions point at the published PyPI package
+  (`pipx install lynx-mcp`); native installers bootstrap from PyPI too.
+
 ## 1.1.0 — 2026-06-12
 
 ### Breaking
