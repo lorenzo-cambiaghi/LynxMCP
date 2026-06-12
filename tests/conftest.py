@@ -16,6 +16,19 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+# Legacy smoke tests are scripts with a `main()` that expect a locally
+# configured index (some even call load_config() at import time, which
+# sys.exit(1)s on a machine without config.json — e.g. CI). Keep them out
+# of pytest collection; they are run manually via `python tests/test_X.py`.
+# The probe is textual on purpose: converting a file to real pytest
+# (dropping its main()) automatically brings it back into collection.
+_THIS_DIR = Path(__file__).resolve().parent
+collect_ignore = [
+    p.name
+    for p in _THIS_DIR.glob("test_*.py")
+    if "def main(" in p.read_text(encoding="utf-8")
+]
+
 
 def build_rag_from_first_source(config_path):
     """Construct a CodebaseRAG bound to the FIRST codebase source in a v2 config.
