@@ -51,7 +51,7 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: Source name — pass it as the `source` filter of lynx.search.
+        description: Source name — pass it as the `source` argument of lynx.search.
         expr: { kind: path, path: [name] }
       - name: type
         type: Utf8
