@@ -94,5 +94,12 @@ def _probe(storage_path: Path) -> bool:
         # Some other operational error — log and treat as locked to be safe
         _log(f"[lock] unexpected SQLite error on probe: {e}")
         return True
+    except sqlite3.DatabaseError as e:
+        # "database disk image is malformed" and friends: the store is
+        # corrupt, not write-locked. Report not-locked so this probe never
+        # crashes the dashboard — the corruption is surfaced separately as a
+        # broken source with a Reset affordance.
+        _log(f"[lock] {chroma_sqlite} is malformed/corrupt: {e}")
+        return False
     finally:
         conn.close()

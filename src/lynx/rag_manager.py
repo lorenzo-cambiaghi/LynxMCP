@@ -608,8 +608,18 @@ class CodebaseRAG:
         """
         try:
             existing_count = self.vector_store._collection.count()
-        except Exception:
-            existing_count = 0
+        except Exception as e:
+            # A count() failure here is NOT "empty" — a fresh collection
+            # returns 0 without raising. An exception means ChromaDB cannot
+            # read the store (incompatible version, truncated segment). Don't
+            # mask it as 0 (which silently reuses a broken index and breaks the
+            # dashboard); surface it so the caller can mark the source corrupt
+            # and offer a reset.
+            from .errors import CorruptIndexError
+            raise CorruptIndexError(
+                self.collection_name, f"{type(e).__name__}: {e}",
+                str(self.storage_path),
+            ) from e
 
         if existing_count > 0:
             log(f"[rag] ChromaDB already populated ({existing_count} chunks), reusing.")

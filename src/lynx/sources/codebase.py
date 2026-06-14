@@ -137,6 +137,19 @@ class CodebaseBackend(SourceBackend):
     # Watcher
     # ------------------------------------------------------------------
 
+    def stop_watcher(self) -> None:
+        """Stop the watchdog Observer if one is running. Idempotent."""
+        observer = self._observer
+        if observer is None:
+            return
+        try:
+            observer.stop()
+            observer.join(timeout=5)
+        except Exception:
+            pass
+        finally:
+            self._observer = None
+
     def start_watcher(self) -> None:
         """Start a watchdog Observer over this source's `path`.
 

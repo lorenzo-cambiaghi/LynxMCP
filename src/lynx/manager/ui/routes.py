@@ -798,6 +798,41 @@ def _register_build_routes(app) -> None:
         )
         return HTMLResponse(_render_job_widget(job, name))
 
+    @app.post("/api/sources/{name}/reset")
+    def api_source_reset(name: str):
+        """Wipe a (possibly corrupt) source's index and rebuild from scratch.
+
+        Unlike build, this works on sources that failed to load — it goes
+        through `manager.reset_source`, which deletes the storage dir before
+        reconstructing the backend, so a corrupt index can be recovered without
+        ever opening it. The data is disposable derived embeddings."""
+        mgr = _gm(app)
+        if mgr is None:
+            return _err(app.state.manager_error or "Manager not initialized.",
+                        status=503)
+        if name not in mgr.config.sources:
+            return _err(f"source {name!r} not found", status=404)
+
+        existing = jobs_mod.has_running_job_for(f"reset:{name}")
+        if existing is not None:
+            return HTMLResponse(_render_job_widget(existing, name), status_code=200)
+
+        jobs_mod.cleanup_old(max_age_sec=3600)
+        from pathlib import Path
+        storage_path = Path(mgr.config.storage_path) / name
+
+        def _target():
+            mgr.reset_source(name, rebuild=True)
+            lock_mod.invalidate_cache(storage_path)
+
+        job = jobs_mod.create_job(
+            _target,
+            label=f"reset {name}",
+            group=f"reset:{name}",
+            metadata={"source": name},
+        )
+        return HTMLResponse(_render_job_widget(job, name))
+
     @app.get("/api/jobs/{job_id}")
     def api_job_status(job_id: str):
         """JSON view of a job — for external callers / debugging."""

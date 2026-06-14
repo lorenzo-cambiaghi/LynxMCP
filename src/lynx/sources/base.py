@@ -94,6 +94,14 @@ class SourceBackend(ABC):
         as no-op and rely on explicit `update()` calls instead.
         """
 
+    def stop_watcher(self) -> None:
+        """Stop a running watcher and release its handles, if any.
+
+        Default: no-op. Overridden by backends that start an observer, so the
+        manager can release file handles before deleting a source's storage
+        (notably on Windows, where open handles block directory removal).
+        """
+
     # ------------------------------------------------------------------
     # Status / introspection
     # ------------------------------------------------------------------
