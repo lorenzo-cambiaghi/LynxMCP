@@ -5,7 +5,7 @@
 # results with live data from other sources:
 #
 #   SELECT s.file, s.symbol, s.score
-#   FROM lynx.search WHERE query = 'retry logic for payment webhooks'
+#   FROM lynx.search(q => 'retry logic for payment webhooks')
 #   ORDER BY s.score DESC LIMIT 5
 #
 # Prerequisite: the Lynx local API must be running —
@@ -34,7 +34,7 @@ base_url: http://127.0.0.1:{{input.LYNX_PORT}}
 
 test_queries:
   - SELECT name, type, chunk_count FROM lynx.sources
-  - SELECT file, symbol, score FROM lynx.search WHERE query = 'where passwords are hashed' LIMIT 5
+  - SELECT file, symbol, score FROM lynx.search(q => 'where passwords are hashed') LIMIT 5
 
 tables:
   - name: sources
@@ -74,30 +74,42 @@ tables:
         description: Timestamp of the last index update.
         expr: { kind: path, path: [last_update] }
 
+functions:
+  # Ranked retrieval surface → must be a `kind: search` function (Coral spec),
+  # not a table with filters. Called as lynx.search(q => '...').
   - name: search
+    kind: search
     description: >-
       Semantic + lexical hybrid search over the indexed sources. Phrase the
       query as what the code DOES ("method that clamps camera zoom"), not as
-      an identifier. Omit `source` to search every source at once.
-    filters:
-      - name: query
+      an identifier. Omit `source` to search every source at once. Call it as
+      a function: lynx.search(q => '...').
+    search_limits:
+      default_top_k: 8
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
         required: true
+        bind: { arg: q }
       - name: source
         required: false
+        bind: { arg: source }
       - name: top_k
         required: false
+        bind: { arg: top_k }
     request:
       method: GET
       path: /api/v1/search
       query:
         - name: q
-          from: filter
-          key: query
+          from: arg
+          key: q
         - name: source
-          from: filter
+          from: arg
           key: source
         - name: top_k
-          from: filter
+          from: arg_int
           key: top_k
     response:
       rows_path:

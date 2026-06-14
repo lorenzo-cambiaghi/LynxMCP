@@ -13,10 +13,9 @@ data in one SQL statement:
 -- "We have a Sentry error about webhook retries — where does that live,
 --  and is there an open PR touching it?"
 SELECT s.file, s.symbol, s.score, p.html_url, p.state
-FROM lynx.search s
+FROM lynx.search(q => 'retry logic for payment webhooks') s
 CROSS JOIN github.pulls p
-WHERE s.query = 'retry logic for payment webhooks'
-  AND p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
+WHERE p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
 ORDER BY s.score DESC
 LIMIT 5
 ```
@@ -34,17 +33,23 @@ itself — so the agent cites precisely without extra reads.
    lynx manager ui --port 8765 --no-browser
    ```
 
-2. **Install the source in Coral** following Coral's
-   [custom source guide](https://withcoral.com/docs/guides/write-a-custom-source),
-   pointing it at `integrations/coral/manifest.yaml` from this repo.
-   The only input is `LYNX_PORT` (default `8765`).
+2. **Register the source in Coral** (the only input is `LYNX_PORT`, default
+   `8765`). See Coral's
+   [custom source guide](https://withcoral.com/docs/guides/write-a-custom-source):
 
-3. **Query it**:
+   ```bash
+   coral source add --file integrations/coral/manifest.yaml
+   coral source test lynx          # checks connectivity to the running API
+   ```
+
+3. **Query it.** `lynx.sources` is a table; `lynx.search` is a ranked
+   retrieval *function* — call it with `q => '...'` (optional `source => ...`,
+   `top_k => ...`), don't filter it with `WHERE`:
 
    ```sql
    SELECT name, type, chunk_count FROM lynx.sources;
-   SELECT file, symbol, score FROM lynx.search
-   WHERE query = 'where passwords are hashed' LIMIT 5;
+   SELECT file, symbol, score
+   FROM lynx.search(q => 'where passwords are hashed') LIMIT 5;
    ```
 
 ## The API behind it
