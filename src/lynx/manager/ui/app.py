@@ -101,6 +101,13 @@ def create_app(config_path: Optional[Path] = None):
     app.state.manager = None       # lazy
     app.state.manager_error = None
     app.state.templates = Jinja2Templates(directory=str(templates_dir))
+    # Cross-platform basename filter: split on BOTH separators so a Windows
+    # config path (C:\...\config.json) renders as just the filename. Python's
+    # str.split('/') alone leaves backslash paths whole, which overflowed the
+    # sidebar.
+    app.state.templates.env.filters["basename"] = (
+        lambda p: str(p).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if p else p
+    )
 
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
