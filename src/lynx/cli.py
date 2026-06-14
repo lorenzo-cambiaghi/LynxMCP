@@ -53,6 +53,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Source to rebuild. Optional when only one source is configured.",
     )
 
+    sp_reset = sub.add_parser(
+        "reset",
+        help="Wipe a source's index and rebuild from scratch (fixes a corrupt index)",
+    )
+    sp_reset.add_argument("--config", "-c", metavar="PATH")
+    sp_reset.add_argument(
+        "--source", "-s", metavar="NAME",
+        help="Source to reset. Optional when only one source is configured.",
+    )
+    sp_reset.add_argument(
+        "--all", action="store_true", help="Reset every configured source.",
+    )
+    sp_reset.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the confirmation prompt.",
+    )
+    sp_reset.add_argument(
+        "--no-rebuild", action="store_true",
+        help="Only wipe the index; don't rebuild (a later build/launch will).",
+    )
+
     sp_search = sub.add_parser("search", help="Run an ad-hoc search query")
     sp_search.add_argument("query", help="Natural-language search query")
     sp_search.add_argument("--config", "-c", metavar="PATH")
@@ -398,8 +418,53 @@ def _cmd_build(args) -> int:
     config = _load_config_or_exit(config_path)
     source_name = _resolve_source(args, config)
     _, manager = _build_manager(config_path)
+    if source_name in getattr(manager, "broken", {}):
+        print(
+            f"[cli] source {source_name!r} has a corrupt index and can't be "
+            f"incrementally built. Run `lynx reset --source {source_name}` to "
+            f"wipe and rebuild it from scratch.",
+            file=sys.stderr,
+        )
+        return 1
     manager.update(source_name, force=True)
     print(f"Source {source_name!r} ready.")
+    return 0
+
+
+def _cmd_reset(args) -> int:
+    """Wipe a source's index and rebuild it. The remedy for a corrupt /
+    version-incompatible index — the data is disposable derived embeddings."""
+    config = _load_config_or_exit(getattr(args, "config", None))
+    if getattr(args, "all", False):
+        targets = list(config.sources.keys())
+    else:
+        targets = [_resolve_source(args, config)]
+    if not targets:
+        print("[cli] no sources configured to reset", file=sys.stderr)
+        return 1
+
+    rebuild = not getattr(args, "no_rebuild", False)
+    if not getattr(args, "yes", False) and sys.stdin.isatty():
+        what = ", ".join(targets)
+        verb = "wipe and rebuild" if rebuild else "wipe"
+        answer = input(f"This will {verb} the index for [{what}]. Continue? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    _, manager = _build_manager(getattr(args, "config", None))
+    for name in targets:
+        print(f"Resetting {name!r}: wiping index...", flush=True)
+        try:
+            status = manager.reset_source(name, rebuild=rebuild)
+        except Exception as e:
+            print(f"  failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+        if rebuild:
+            print(f"  rebuilt -> {status.get('chunk_count', 'n/a')} chunks. "
+                  f"Source {name!r} ready.")
+        else:
+            print(f"  wiped. Run `lynx build --source {name}` to rebuild.")
     return 0
 
 
@@ -467,6 +532,16 @@ def _cmd_status(args) -> int:
 
     names = [requested] if requested else list(config.sources.keys())
     for name in names:
+        if name in getattr(manager, "broken", {}):
+            info = manager.broken[name]
+            print(f"=== Source: {name} (type: {info['type']}) ===")
+            print(f"Status:       CORRUPT INDEX")
+            if info.get("path"):
+                print(f"Path:         {info['path']}")
+            print(f"Error:        {info['error']}")
+            print(f"Fix:          lynx reset --source {name}")
+            print()
+            continue
         backend = manager.get(name)
         s = backend.status()
         needs = backend.needs_update() if hasattr(backend, "needs_update") else False
@@ -612,6 +687,7 @@ _DISPATCH = {
     "build": _cmd_build,
     "search": _cmd_search,
     "status": _cmd_status,
+    "reset": _cmd_reset,
     "list-sources": _cmd_list_sources,
     "graph": _cmd_graph,
     "manager": _cmd_manager,
@@ -620,6 +696,12 @@ _DISPATCH = {
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # Must run before anything imports `ssl` (transitively via requests /
+    # huggingface_hub / chromadb): strips an antivirus-injected SSLKEYLOGFILE
+    # that otherwise aborts the bundled interpreter on first TLS use.
+    from .config import sanitize_tls_keylog_env
+    sanitize_tls_keylog_env()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     command = args.command or "serve"

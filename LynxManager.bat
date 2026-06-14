@@ -83,6 +83,14 @@ pause
 exit /b 1
 
 :run
+REM HTTPS-inspecting antivirus (Avast/AVG) injects SSLKEYLOGFILE pointing at a
+REM device path like \\.\aswMonFltProxy\... . Python's `ssl` opens it via
+REM OpenSSL's file BIO on first TLS use, which aborts the bundled interpreter
+REM ("OPENSSL_Uplink: no OPENSSL_Applink") mid-startup with no traceback. Lynx
+REM never needs a TLS key-log, so clear it for this process. The Python entry
+REM point sanitizes it too, but clearing it here keeps even odd launchers safe.
+set "SSLKEYLOGFILE="
+
 echo [LynxManager] starting web UI -- your browser will open shortly.
 echo [LynxManager] press Ctrl+C in this window to stop the server.
 echo.

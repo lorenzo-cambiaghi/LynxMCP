@@ -50,7 +50,10 @@
 
     <div class="px-4 py-3 mt-auto border-t border-slate-200 text-xs text-slate-500">
       {% if config_path %}
-        <div title="{{ config_path }}">📄 {{ config_path.split('/')[-1] }}</div>
+        <div class="flex items-center gap-1 min-w-0" title="{{ config_path }}">
+          <span>📄</span>
+          <span class="truncate">{{ config_path | basename }}</span>
+        </div>
       {% else %}
         <div class="text-amber-600">No config loaded</div>
       {% endif %}

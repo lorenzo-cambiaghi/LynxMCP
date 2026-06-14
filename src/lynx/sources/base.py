@@ -94,6 +94,24 @@ class SourceBackend(ABC):
         as no-op and rely on explicit `update()` calls instead.
         """
 
+    def stop_watcher(self) -> None:
+        """Stop a running watcher and release its handles, if any.
+
+        Default: no-op. Overridden by backends that start an observer, so the
+        manager can release file handles before deleting a source's storage
+        (notably on Windows, where open handles block directory removal).
+        """
+
+    def reset(self) -> None:
+        """Rebuild this source's index from scratch, in place.
+
+        Default: a forced update. Backends with a wipeable vector store
+        override this to first empty the store (so it's a true clean rebuild,
+        not an incremental no-op) without deleting the storage directory — the
+        latter is blocked on Windows while the store handle is open.
+        """
+        self.update(force=True)
+
     # ------------------------------------------------------------------
     # Status / introspection
     # ------------------------------------------------------------------

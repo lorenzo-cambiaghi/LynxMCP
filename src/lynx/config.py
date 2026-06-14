@@ -599,6 +599,44 @@ def _hf_model_cached(model_name: str) -> bool:
         return False
 
 
+def sanitize_tls_keylog_env() -> None:
+    """Remove ``SSLKEYLOGFILE`` before anything imports ``ssl``.
+
+    Setting ``SSLKEYLOGFILE`` makes Python's ``ssl`` open that path through
+    OpenSSL's file BIO the first time a default SSL context is built. On the
+    uv / python-build-standalone interpreter we ship with — which does NOT
+    provide ``OPENSSL_Applink`` — that file-BIO call ABORTS the whole process::
+
+        OPENSSL_Uplink(...): no OPENSSL_Applink
+
+    no traceback, mid-startup. **Any** value triggers it: a normal writable path
+    crashes exactly like the ``\\\\.\\aswMonFltProxy\\...`` device path that
+    HTTPS-inspecting antivirus (Avast/AVG) injects into every process. So a
+    "keep legit-looking paths" heuristic is unsafe — verified: a normal path
+    aborts the interpreter too.
+
+    Lynx never needs a TLS key-log: it runs offline and makes no outbound TLS in
+    normal operation (the only HTTPS is the first-run model download, which works
+    fine without key logging). So we unconditionally drop the variable for this
+    process. A developer who genuinely wants TLS key logging on an
+    applink-capable interpreter can keep it with ``LYNX_KEEP_SSLKEYLOGFILE=1``.
+
+    Stdlib-only; must run before the first ``import ssl`` (transitively via
+    requests / huggingface_hub / chromadb)."""
+    value = os.environ.get("SSLKEYLOGFILE")
+    if not value:
+        return
+    if os.environ.get("LYNX_KEEP_SSLKEYLOGFILE"):
+        return  # explicit opt-in — caller accepts the applink crash risk
+    os.environ.pop("SSLKEYLOGFILE", None)
+    print(
+        f"[config] removed SSLKEYLOGFILE={value!r} from this process: it crashes "
+        f"the bundled interpreter on first TLS use (no OPENSSL_Applink) and Lynx "
+        f"never needs TLS key logging. Set LYNX_KEEP_SSLKEYLOGFILE=1 to keep it.",
+        file=sys.stderr,
+    )
+
+
 def configure_hf_offline(config) -> None:
     """Set the HF offline env flags only when every required model is cached.
 

@@ -24,9 +24,15 @@ from .sources import SOURCE_BACKENDS, SourceBackend
 class SourceManager:
     """Holds N backends and dispatches operations to them."""
 
-    def __init__(self, config: Any):
+    def __init__(self, config: Any, *, probe_integrity: bool = True):
         self.config = config
         self.backends: dict[str, SourceBackend] = {}
+        # Sources we could NOT bring up (corrupt index, construction failure).
+        # Kept separate from `backends` so one bad source never takes down the
+        # whole manager — the UI/CLI list them as "corrupt" with a reset hint.
+        # name -> {name, type, path, error, storage_dir, crashed}
+        self.broken: dict[str, dict] = {}
+        self._probe_integrity = probe_integrity
 
         storage_root = Path(config.storage_path)
         storage_root.mkdir(parents=True, exist_ok=True)
@@ -41,12 +47,142 @@ class SourceManager:
                 )
 
             per_source_storage = storage_root / name
-            self.backends[name] = backend_cls(
-                name=name,
-                source_config=src_cfg,
-                shared_config=config,
-                storage_dir=per_source_storage,
+
+            # Pre-flight integrity probe (out-of-process): a corrupt or
+            # version-incompatible Chroma index can SEGFAULT on open/count,
+            # which no try/except can catch — it would kill the whole host
+            # process. Probing in a child means a crash there only fails the
+            # probe; we mark the source broken and never touch the bad index.
+            if probe_integrity and type_name == "codebase":
+                from .integrity import check_index
+                result = check_index(per_source_storage, name)
+                if result["status"] == "corrupt":
+                    self._register_broken(
+                        name, type_name, src_cfg, per_source_storage,
+                        result["detail"], crashed=result.get("crashed", False),
+                    )
+                    continue
+
+            try:
+                self.backends[name] = backend_cls(
+                    name=name,
+                    source_config=src_cfg,
+                    shared_config=config,
+                    storage_dir=per_source_storage,
+                )
+            except Exception as e:
+                # Any failure to bring a source up (corrupt index caught
+                # in-process, bad path, etc.) is isolated: register it as
+                # broken and keep the other sources alive.
+                from .errors import CorruptIndexError
+                detail = e.detail if isinstance(e, CorruptIndexError) else f"{type(e).__name__}: {e}"
+                self._register_broken(
+                    name, type_name, src_cfg, per_source_storage, detail,
+                )
+
+    def _register_broken(self, name, type_name, src_cfg, storage_dir, detail,
+                         *, crashed: bool = False) -> None:
+        self.broken[name] = {
+            "name": name,
+            "type": type_name,
+            "path": str(src_cfg.get("path") or src_cfg.get("url") or ""),
+            "error": detail,
+            "storage_dir": str(storage_dir),
+            "crashed": crashed,
+        }
+        print(
+            f"[manager] source {name!r}: index is corrupt — {detail} "
+            f"Run `lynx reset --source {name}` (or use the dashboard's Reset "
+            f"button); the data is disposable and rebuilds from your files.",
+            file=sys.stderr,
+        )
+
+    def reset_source(self, name: str, *, rebuild: bool = True) -> dict:
+        """Wipe a source's storage dir and (optionally) rebuild from scratch.
+
+        Works whether the source is currently healthy or registered broken.
+        The vector index holds only derived embeddings, so wiping it is safe;
+        a rebuild re-reads the files on disk. Returns the fresh status() dict
+        (or a minimal dict when rebuild=False).
+
+        Two paths, because a LIVE Chroma client keeps the HNSW segment files
+        open and Windows then refuses to delete them (WinError 32):
+
+          - healthy source + rebuild → rebuild *in place* via the backend's own
+            force-update (Chroma drops & recreates the collection through its
+            API; no rmtree, no fight with the open handle).
+          - broken source, or wipe-without-rebuild → delete the storage dir.
+            A broken source was never opened, so nothing holds its files.
+        """
+        import shutil
+
+        if name not in self.config.sources:
+            raise KeyError(
+                f"Unknown source {name!r}. Available: {list(self.config.sources)}"
             )
+
+        src_cfg = self.config.sources[name]
+        backend = self.backends.get(name)
+
+        # Healthy + rebuild: clean rebuild without touching the filesystem out
+        # from under the live Chroma client. backend.reset() empties the store
+        # through Chroma's API + clears the SHA cache, then reindexes — a true
+        # wipe-and-rebuild with no rmtree (which Windows blocks on the open
+        # HNSW handle).
+        if backend is not None and rebuild:
+            backend.reset()
+            status = backend.status()
+            status.setdefault("health", "ok")
+            return status
+
+        # Otherwise we delete the storage dir. Drop the backend and stop its
+        # watcher first; a broken source has no live backend at all.
+        self.backends.pop(name, None)
+        if backend is not None:
+            try:
+                backend.stop_watcher()
+            except Exception:
+                pass
+            # Best-effort release of the Chroma client's file handles before
+            # the delete (matters only for the rare healthy + no-rebuild call).
+            backend = None
+            import gc
+            gc.collect()
+        self.broken.pop(name, None)
+
+        storage_dir = Path(self.config.storage_path) / name
+        if storage_dir.exists():
+            self._rmtree_with_retry(storage_dir)
+
+        if not rebuild:
+            return {"name": name, "type": src_cfg["type"], "health": "reset"}
+
+        backend_cls = SOURCE_BACKENDS[src_cfg["type"]]
+        backend = backend_cls(
+            name=name,
+            source_config=src_cfg,
+            shared_config=self.config,
+            storage_dir=storage_dir,
+        )
+        backend.update(force=True)
+        self.backends[name] = backend
+        status = backend.status()
+        status.setdefault("health", "ok")
+        return status
+
+    @staticmethod
+    def _rmtree_with_retry(path: Path, attempts: int = 5) -> None:
+        """rmtree that tolerates Windows' lazy handle release (WinError 32)."""
+        import shutil
+        import time
+        for i in range(attempts):
+            try:
+                shutil.rmtree(path)
+                return
+            except PermissionError:
+                if i == attempts - 1:
+                    raise
+                time.sleep(0.3)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -320,4 +456,23 @@ class SourceManager:
     # ------------------------------------------------------------------
 
     def list_sources(self) -> list[dict]:
-        return [backend.status() for backend in self.backends.values()]
+        rows: list[dict] = []
+        for backend in self.backends.values():
+            st = backend.status()
+            st.setdefault("health", "ok")
+            rows.append(st)
+        # Append sources that failed to load so the UI/CLI can surface them
+        # (with a reset affordance) instead of silently hiding them.
+        for info in self.broken.values():
+            rows.append({
+                "name": info["name"],
+                "type": info["type"],
+                "path": info["path"],
+                "health": "corrupt",
+                "error": info["error"],
+                "chunk_count": None,
+                "last_commit": None,
+                "last_update": None,
+                "drift_severity": None,
+            })
+        return rows

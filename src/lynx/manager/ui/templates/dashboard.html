@@ -72,6 +72,31 @@
 {% else %}
   <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
   {% for s in sources %}
+    {% if s.health == "corrupt" %}
+    <div class="p-4 bg-red-50 border border-red-200 rounded shadow-sm">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <span class="font-semibold text-red-900">{{ s.name }}</span>
+          <div class="text-xs text-red-600 mt-0.5">type: {{ s.type }}</div>
+        </div>
+        <span class="badge bg-red-100 text-red-800" title="The vector index can't be read (incompatible version or truncated store)">⚠ corrupt index</span>
+      </div>
+      {% if s.path %}
+        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
+      {% endif %}
+      <p class="text-xs text-red-700 mb-1">{{ s.error }}</p>
+      <p class="text-xs text-slate-600 mb-2">The index is only derived data — reset it to rebuild from your files.</p>
+      <div id="reset-status-{{ s.name }}">
+        <button
+          hx-post="/api/sources/{{ s.name }}/reset"
+          hx-target="#reset-status-{{ s.name }}"
+          hx-swap="innerHTML"
+          class="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">
+          Reset index
+        </button>
+      </div>
+    </div>
+    {% else %}
     <div class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
       <div class="flex items-start justify-between mb-2">
         <div>
@@ -117,6 +142,7 @@
         {% endif %}
       </dl>
     </div>
+    {% endif %}
   {% endfor %}
   </div>
 {% endif %}

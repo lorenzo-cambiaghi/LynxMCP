@@ -40,8 +40,13 @@ def register(app) -> None:
         else:
             from . import lock as lock_mod
             for st in mgr.list_sources():
-                storage_path = Path(mgr.config.storage_path) / st["name"]
-                st["locked"] = lock_mod.is_storage_locked(storage_path)
+                # Don't probe a corrupt store's SQLite — it's malformed and
+                # would raise. It's reported as corrupt, not locked.
+                if st.get("health") == "corrupt":
+                    st["locked"] = False
+                else:
+                    storage_path = Path(mgr.config.storage_path) / st["name"]
+                    st["locked"] = lock_mod.is_storage_locked(storage_path)
                 sources_data.append(st)
 
         # Global stats (best-effort — missing fields tolerated)
@@ -138,8 +143,13 @@ def register(app) -> None:
         if mgr is not None:
             from . import lock as lock_mod
             for st in mgr.list_sources():
-                storage_path = Path(mgr.config.storage_path) / st["name"]
-                st["locked"] = lock_mod.is_storage_locked(storage_path)
+                # Don't probe a corrupt store's SQLite — it's malformed and
+                # would raise. It's reported as corrupt, not locked.
+                if st.get("health") == "corrupt":
+                    st["locked"] = False
+                else:
+                    storage_path = Path(mgr.config.storage_path) / st["name"]
+                    st["locked"] = lock_mod.is_storage_locked(storage_path)
                 sources_data.append(st)
         return app.state.templates.TemplateResponse(
             request, "sources_list.html",
