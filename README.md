@@ -102,6 +102,58 @@ git clone --depth 1 --branch 5.2 https://github.com/django/django.git benchmarks
 python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
 ```
 
+## Lynx + Coral: SQL that joins your code to your live tools
+
+[Coral](https://github.com/withcoral/coral) is a local SQL engine over your *live* tools — GitHub, Sentry, Linear, Datadog. Point it at Lynx's [source spec](integrations/coral/manifest.yaml) and Lynx becomes a SQL schema too, so **one query can start from what's happening — an error, a ticket, a PR — and Lynx tells you where it lives in your code.**
+
+The move that makes it powerful: *you don't type the search query — the join takes it from each row of the other table*, so live data is matched to code automatically. Your code never leaves the machine; only the live-data side hits an API. Two-command setup in **[docs/CORAL.md](docs/CORAL.md)**.
+
+**Example 1 — Prep a stack of code reviews at once.**
+You maintain a repo with a dozen open PRs and vague titles (*"fix flaky retries"*, *"tweak checkout"*). Before you assign reviewers, you want to know which part of the codebase each one is actually about.
+
+```sql
+SELECT p.number, p.title, h.file, h.symbol, h.score
+FROM github.pulls p
+CROSS JOIN lynx.search(q => p.title) h    -- for each open PR, find the code its title is about
+WHERE p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
+ORDER BY p.number;
+```
+
+Coral hands each open PR's title to Lynx, which returns the code area it most likely concerns — *by meaning*, so a PR titled *"fix flaky retries"* lands on `PaymentWebhook.ScheduleRetry` even though the words don't match. Now you can route each review to whoever owns that area, or spot two PRs converging on the same file — without opening a single diff. **Without it:** open every PR, read the description and the diff, and build that map in your head.
+
+**Example 2 — A whole triage queue in one query.**
+Monday morning: 30 unresolved Sentry issues, nobody's triaged them. Where does each one live in the code?
+
+```sql
+SELECT i.title, h.file, h.symbol, h.score
+FROM sentry.issues i
+CROSS JOIN lynx.search(q => i.title) h    -- for each issue, search the code with its own title
+WHERE i.status = 'unresolved';
+```
+
+Here's the trick: for **every** issue, Coral takes its title (`i.title`) and feeds it into Lynx as the search query — one semantic code lookup per incident, all in a single statement. You get a correlation table — incident → most-likely code location — that you never had to build. **Without it:** open each issue, read it, switch to the editor, hunt for the code. Thirty times.
+
+**Example 3 — A new hire, a ticket, an unfamiliar repo.**
+You just joined the team and get assigned *"checkout shows the wrong tax."* You've never opened this codebase and have no idea where tax is computed.
+
+```sql
+SELECT t.identifier, h.file, h.symbol
+FROM linear.issues t
+CROSS JOIN lynx.search(q => t.title) h    -- search the code using the ticket's own title
+WHERE t.assignee = 'me' AND t.state = 'started'
+LIMIT 5;
+```
+
+Same move as Example 2, but driven by *your* tickets: Coral hands each ticket's title to Lynx, which finds the matching code *semantically* — so "tax" lands on `TaxCalculator.ComputeVat` even though the words don't match:
+
+| ticket | file | symbol |
+|---|---|---|
+| LIN-482 | `CheckoutTotals.cs` | `TaxCalculator.ComputeVat` |
+
+You go from *"where do I even start?"* to *"it's in `TaxCalculator`"* in one query — instead of pinging a teammate or reading half the repo to get oriented.
+
+> In SQL terms: `lynx.sources` is a table (your indexed sources); `lynx.search(q => '…')` is a ranked search **function** — add `source => '…'` or `top_k => N` to narrow it. Full setup and JOIN syntax: **[docs/CORAL.md](docs/CORAL.md)**.
+
 ## Documentation
 
 | | |
