@@ -137,6 +137,15 @@ class CodebaseBackend(SourceBackend):
     # Watcher
     # ------------------------------------------------------------------
 
+    def reset(self) -> None:
+        """Wipe this source's index + graph and rebuild from scratch, in place.
+
+        Empties the Chroma collection through its API (no storage-dir delete, so
+        it works while the client holds the store open) and clears the SHA cache
+        so the rebuild re-indexes everything; the graph is force-rebuilt too."""
+        self.rag.reset_index()
+        self.update(force=True)
+
     def stop_watcher(self) -> None:
         """Stop the watchdog Observer if one is running. Idempotent."""
         observer = self._observer

@@ -115,6 +115,13 @@ def check_index(
 
 
 if __name__ == "__main__":
+    # This runs as a fresh subprocess (not through cli.main), and an
+    # HTTPS-inspecting antivirus re-injects SSLKEYLOGFILE into every new
+    # process. Strip it here too so the probe can never itself abort on the
+    # OPENSSL_Applink crash and get misread as a corrupt index.
+    from .config import sanitize_tls_keylog_env
+    sanitize_tls_keylog_env()
+
     if len(sys.argv) < 3:
         print("usage: python -m lynx.integrity <storage_dir> <collection_name>",
               file=sys.stderr)

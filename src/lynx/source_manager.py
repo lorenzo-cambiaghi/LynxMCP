@@ -101,9 +101,18 @@ class SourceManager:
         """Wipe a source's storage dir and (optionally) rebuild from scratch.
 
         Works whether the source is currently healthy or registered broken.
-        The vector index holds only derived embeddings, so deleting it is safe;
+        The vector index holds only derived embeddings, so wiping it is safe;
         a rebuild re-reads the files on disk. Returns the fresh status() dict
         (or a minimal dict when rebuild=False).
+
+        Two paths, because a LIVE Chroma client keeps the HNSW segment files
+        open and Windows then refuses to delete them (WinError 32):
+
+          - healthy source + rebuild → rebuild *in place* via the backend's own
+            force-update (Chroma drops & recreates the collection through its
+            API; no rmtree, no fight with the open handle).
+          - broken source, or wipe-without-rebuild → delete the storage dir.
+            A broken source was never opened, so nothing holds its files.
         """
         import shutil
 
@@ -112,21 +121,39 @@ class SourceManager:
                 f"Unknown source {name!r}. Available: {list(self.config.sources)}"
             )
 
-        # Release any live handles first so Windows lets us delete the files:
-        # stop the watcher and drop the backend (closes its Chroma client).
-        existing = self.backends.pop(name, None)
-        if existing is not None:
+        src_cfg = self.config.sources[name]
+        backend = self.backends.get(name)
+
+        # Healthy + rebuild: clean rebuild without touching the filesystem out
+        # from under the live Chroma client. backend.reset() empties the store
+        # through Chroma's API + clears the SHA cache, then reindexes — a true
+        # wipe-and-rebuild with no rmtree (which Windows blocks on the open
+        # HNSW handle).
+        if backend is not None and rebuild:
+            backend.reset()
+            status = backend.status()
+            status.setdefault("health", "ok")
+            return status
+
+        # Otherwise we delete the storage dir. Drop the backend and stop its
+        # watcher first; a broken source has no live backend at all.
+        self.backends.pop(name, None)
+        if backend is not None:
             try:
-                existing.stop_watcher()
+                backend.stop_watcher()
             except Exception:
                 pass
+            # Best-effort release of the Chroma client's file handles before
+            # the delete (matters only for the rare healthy + no-rebuild call).
+            backend = None
+            import gc
+            gc.collect()
         self.broken.pop(name, None)
 
         storage_dir = Path(self.config.storage_path) / name
         if storage_dir.exists():
-            shutil.rmtree(storage_dir)
+            self._rmtree_with_retry(storage_dir)
 
-        src_cfg = self.config.sources[name]
         if not rebuild:
             return {"name": name, "type": src_cfg["type"], "health": "reset"}
 
@@ -142,6 +169,20 @@ class SourceManager:
         status = backend.status()
         status.setdefault("health", "ok")
         return status
+
+    @staticmethod
+    def _rmtree_with_retry(path: Path, attempts: int = 5) -> None:
+        """rmtree that tolerates Windows' lazy handle release (WinError 32)."""
+        import shutil
+        import time
+        for i in range(attempts):
+            try:
+                shutil.rmtree(path)
+                return
+            except PermissionError:
+                if i == attempts - 1:
+                    raise
+                time.sleep(0.3)
 
     # ------------------------------------------------------------------
     # Lifecycle

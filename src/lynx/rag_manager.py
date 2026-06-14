@@ -461,6 +461,20 @@ class CodebaseRAG:
         self.vector_store = ChromaVectorStore(chroma_collection=collection)
         self.storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
 
+    def reset_index(self):
+        """Empty the collection and forget the SHA cache so the next build is a
+        full destructive rebuild.
+
+        Uses ChromaDB's delete API (no file removal), so it is safe to call
+        while this process holds the store open — unlike deleting the storage
+        directory, which Windows blocks while the open HNSW segment handle is
+        live (WinError 32). Used by the `reset` flow to recover/clean a source
+        in place."""
+        with self._write_lock:
+            self._reset_collection()
+            self._file_hashes = {}
+            self._save_file_hashes()
+
     def _list_candidate_files(self) -> list:
         """Return abs paths of files we would index, mirroring SimpleDirectoryReader.
 

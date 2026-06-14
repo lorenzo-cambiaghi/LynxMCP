@@ -102,6 +102,16 @@ class SourceBackend(ABC):
         (notably on Windows, where open handles block directory removal).
         """
 
+    def reset(self) -> None:
+        """Rebuild this source's index from scratch, in place.
+
+        Default: a forced update. Backends with a wipeable vector store
+        override this to first empty the store (so it's a true clean rebuild,
+        not an incremental no-op) without deleting the storage directory — the
+        latter is blocked on Windows while the store handle is open.
+        """
+        self.update(force=True)
+
     # ------------------------------------------------------------------
     # Status / introspection
     # ------------------------------------------------------------------

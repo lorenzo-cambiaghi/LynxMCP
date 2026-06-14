@@ -600,45 +600,41 @@ def _hf_model_cached(model_name: str) -> bool:
 
 
 def sanitize_tls_keylog_env() -> None:
-    """Drop a hostile ``SSLKEYLOGFILE`` before anything imports ``ssl``.
+    """Remove ``SSLKEYLOGFILE`` before anything imports ``ssl``.
 
-    Some HTTPS-inspecting antivirus products (notably Avast/AVG) inject
-    ``SSLKEYLOGFILE`` into the environment pointing at a Windows device path
-    like ``\\\\.\\aswMonFltProxy\\...`` so they can capture TLS session keys.
-    Python's ``ssl`` module honours that variable and opens the path through
-    OpenSSL's file BIO on the first ``create_default_context()`` call. The
-    uv/python-build-standalone interpreter we ship with does NOT provide
-    ``OPENSSL_Applink``, so that file-BIO call aborts the whole process with::
+    Setting ``SSLKEYLOGFILE`` makes Python's ``ssl`` open that path through
+    OpenSSL's file BIO the first time a default SSL context is built. On the
+    uv / python-build-standalone interpreter we ship with — which does NOT
+    provide ``OPENSSL_Applink`` — that file-BIO call ABORTS the whole process::
 
         OPENSSL_Uplink(...): no OPENSSL_Applink
 
-    which is why `lynx` (and the UI) die mid-startup with no traceback.
+    no traceback, mid-startup. **Any** value triggers it: a normal writable path
+    crashes exactly like the ``\\\\.\\aswMonFltProxy\\...`` device path that
+    HTTPS-inspecting antivirus (Avast/AVG) injects into every process. So a
+    "keep legit-looking paths" heuristic is unsafe — verified: a normal path
+    aborts the interpreter too.
 
-    Lynx never needs a TLS key-log, so if the variable points at anything that
-    is not a writable regular file (a device path, a pipe, a missing dir) we
-    remove it from this process's environment. A normal user-set keylog path
-    that actually works is left untouched. Stdlib-only and must run before the
-    first ``import ssl`` (transitively via requests/huggingface_hub/etc.)."""
+    Lynx never needs a TLS key-log: it runs offline and makes no outbound TLS in
+    normal operation (the only HTTPS is the first-run model download, which works
+    fine without key logging). So we unconditionally drop the variable for this
+    process. A developer who genuinely wants TLS key logging on an
+    applink-capable interpreter can keep it with ``LYNX_KEEP_SSLKEYLOGFILE=1``.
+
+    Stdlib-only; must run before the first ``import ssl`` (transitively via
+    requests / huggingface_hub / chromadb)."""
     value = os.environ.get("SSLKEYLOGFILE")
     if not value:
         return
-    # Device / extended-length namespaces (\\.\, \\?\) are never legitimate
-    # keylog files; bail fast without touching the path.
-    looks_hostile = value.startswith("\\\\.\\") or value.startswith("\\\\?\\")
-    if not looks_hostile:
-        # Otherwise only keep it if the directory exists and is writable as a
-        # plain file target; anything else would hit the same OpenSSL file-BIO
-        # path and crash on interpreters without applink.
-        parent = os.path.dirname(value) or "."
-        looks_hostile = not (os.path.isdir(parent) and os.access(parent, os.W_OK))
-    if looks_hostile:
-        os.environ.pop("SSLKEYLOGFILE", None)
-        print(
-            f"[config] removed hostile SSLKEYLOGFILE={value!r} from the "
-            f"environment (likely injected by HTTPS-inspecting antivirus); "
-            f"it crashes the bundled interpreter on first TLS use.",
-            file=sys.stderr,
-        )
+    if os.environ.get("LYNX_KEEP_SSLKEYLOGFILE"):
+        return  # explicit opt-in — caller accepts the applink crash risk
+    os.environ.pop("SSLKEYLOGFILE", None)
+    print(
+        f"[config] removed SSLKEYLOGFILE={value!r} from this process: it crashes "
+        f"the bundled interpreter on first TLS use (no OPENSSL_Applink) and Lynx "
+        f"never needs TLS key logging. Set LYNX_KEEP_SSLKEYLOGFILE=1 to keep it.",
+        file=sys.stderr,
+    )
 
 
 def configure_hf_offline(config) -> None:
