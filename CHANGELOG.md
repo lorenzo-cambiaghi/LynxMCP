@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1 — 2026-06-15
+
+### Fixed
+- **Coral integration docs.** The README examples used
+  `lynx.search(q => other_table.column)`, but Coral resolves table-function
+  arguments to constants at plan time, so row-driven (per-row) search isn't
+  possible — `lynx.search`'s query must be a literal. Rewrote the README around
+  the verified-valid pattern: a literal search query exposed as a SQL table you
+  filter, sort, and join with live data. (No code change; the `/api/v1` API and
+  the `manifest.yaml` were already correct.)
+
 ## 1.4.0 — 2026-06-14
 
 ### Added
