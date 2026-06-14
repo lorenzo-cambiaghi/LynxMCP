@@ -1,15 +1,19 @@
 # Changelog
 
-## 1.4.0 — 2026-06-12
+## 1.4.0 — 2026-06-14
 
 ### Added
 - **Stable local JSON API** (`GET /api/v1/search`, `GET /api/v1/sources`)
   served by `lynx manager ui` — versioned, additive-only, 127.0.0.1 only.
   The integration surface for external tools.
 - **Coral source spec** (`integrations/coral/manifest.yaml`): use Lynx from
-  [Coral](https://github.com/withcoral/coral) as SQL tables —
-  `SELECT file, symbol, score FROM lynx.search WHERE query = '...'` joined
-  with live GitHub/Sentry/Datadog data. Recipe in `docs/CORAL.md`.
+  [Coral](https://github.com/withcoral/coral) as a SQL schema — join semantic
+  code search with live GitHub / Sentry / Linear data in one query, e.g.
+  `SELECT file, symbol, score FROM lynx.search(q => '...') LIMIT 5`. Recipe and
+  worked examples in `docs/CORAL.md` and the README.
+
+This release also carries everything from 1.3.1 below (antivirus startup-crash
+fix, corrupt-index detection + `lynx reset`, UI fixes).
 
 ## 1.3.1 — 2026-06-14
 
