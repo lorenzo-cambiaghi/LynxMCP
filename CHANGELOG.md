@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.1 — 2026-06-14
+
+### Fixed
+- **Windows startup crash with HTTPS-inspecting antivirus.** Avast/AVG (and
+  similar) inject `SSLKEYLOGFILE` pointing at a device path into every process;
+  Python's `ssl` opens it through OpenSSL's file BIO on first TLS use, which
+  aborts the bundled interpreter (`no OPENSSL_Applink`) mid-startup with no
+  traceback. Lynx now strips `SSLKEYLOGFILE` before any TLS use — it runs
+  offline and never needs TLS key logging. Opt out with
+  `LYNX_KEEP_SSLKEYLOGFILE=1`.
+- **Long config paths no longer overflow the sidebar.** The footer shows the
+  config filename, with the full path on hover.
+
+### Added
+- **Corrupt-index detection, recovery, and `lynx reset`.** A
+  version-incompatible or truncated ChromaDB index used to break the dashboard
+  silently (blank page) or crash the process. Lynx now probes each index in a
+  subprocess before opening it, so even a segfaulting store can't take down the
+  UI/MCP server; the dashboard shows the source as **corrupt** (other sources
+  keep working) with a **Reset** button, and the CLI gains
+  `lynx reset --source <name>` to wipe and rebuild from scratch. The index is
+  disposable derived data — a reset rebuilds it from your files.
+
 ## 1.3.0 — 2026-06-12
 
 ### Added
