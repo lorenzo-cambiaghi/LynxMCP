@@ -620,6 +620,12 @@ _DISPATCH = {
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # Must run before anything imports `ssl` (transitively via requests /
+    # huggingface_hub / chromadb): strips an antivirus-injected SSLKEYLOGFILE
+    # that otherwise aborts the bundled interpreter on first TLS use.
+    from .config import sanitize_tls_keylog_env
+    sanitize_tls_keylog_env()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     command = args.command or "serve"

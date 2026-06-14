@@ -599,6 +599,48 @@ def _hf_model_cached(model_name: str) -> bool:
         return False
 
 
+def sanitize_tls_keylog_env() -> None:
+    """Drop a hostile ``SSLKEYLOGFILE`` before anything imports ``ssl``.
+
+    Some HTTPS-inspecting antivirus products (notably Avast/AVG) inject
+    ``SSLKEYLOGFILE`` into the environment pointing at a Windows device path
+    like ``\\\\.\\aswMonFltProxy\\...`` so they can capture TLS session keys.
+    Python's ``ssl`` module honours that variable and opens the path through
+    OpenSSL's file BIO on the first ``create_default_context()`` call. The
+    uv/python-build-standalone interpreter we ship with does NOT provide
+    ``OPENSSL_Applink``, so that file-BIO call aborts the whole process with::
+
+        OPENSSL_Uplink(...): no OPENSSL_Applink
+
+    which is why `lynx` (and the UI) die mid-startup with no traceback.
+
+    Lynx never needs a TLS key-log, so if the variable points at anything that
+    is not a writable regular file (a device path, a pipe, a missing dir) we
+    remove it from this process's environment. A normal user-set keylog path
+    that actually works is left untouched. Stdlib-only and must run before the
+    first ``import ssl`` (transitively via requests/huggingface_hub/etc.)."""
+    value = os.environ.get("SSLKEYLOGFILE")
+    if not value:
+        return
+    # Device / extended-length namespaces (\\.\, \\?\) are never legitimate
+    # keylog files; bail fast without touching the path.
+    looks_hostile = value.startswith("\\\\.\\") or value.startswith("\\\\?\\")
+    if not looks_hostile:
+        # Otherwise only keep it if the directory exists and is writable as a
+        # plain file target; anything else would hit the same OpenSSL file-BIO
+        # path and crash on interpreters without applink.
+        parent = os.path.dirname(value) or "."
+        looks_hostile = not (os.path.isdir(parent) and os.access(parent, os.W_OK))
+    if looks_hostile:
+        os.environ.pop("SSLKEYLOGFILE", None)
+        print(
+            f"[config] removed hostile SSLKEYLOGFILE={value!r} from the "
+            f"environment (likely injected by HTTPS-inspecting antivirus); "
+            f"it crashes the bundled interpreter on first TLS use.",
+            file=sys.stderr,
+        )
+
+
 def configure_hf_offline(config) -> None:
     """Set the HF offline env flags only when every required model is cached.
 
