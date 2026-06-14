@@ -49,6 +49,10 @@ config.json.bak
 # Project: smoke test artifact
 _test_watch_stderr.log
 
+# Project: local tooling binaries (downloaded, not source) — e.g. the MCP
+# Registry publisher used to push server.json.
+/mcp-publisher.exe
+
 # OS
 .DS_Store
 Thumbs.db
