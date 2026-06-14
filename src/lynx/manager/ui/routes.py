@@ -13,7 +13,33 @@ from typing import Optional
 # treats `request: Request` as a query parameter and returns 422.
 from fastapi import Request
 
+from pydantic import BaseModel
+
 from .app import _get_manager
+
+
+class BatchSearchRequest(BaseModel):
+    """Body for POST /api/v1/search (multi-query). Module-level so FastAPI can
+    resolve the annotation under `from __future__ import annotations`."""
+    queries: list[str]
+    source: Optional[str] = None
+    top_k: int = 8
+
+
+def _format_v1_hit(h: dict) -> dict:
+    """Shape a backend hit into the stable /api/v1 JSON row."""
+    return {
+        "source": h.get("source", ""),
+        "file": h.get("file", ""),
+        "file_path": str(h.get("file_path", "")),
+        "symbol": h.get("symbol_name", ""),
+        "kind": h.get("symbol_kind", ""),
+        "language": h.get("language", ""),
+        "start_line": h.get("start_line") or 0,
+        "end_line": h.get("end_line") or 0,
+        "score": float(h.get("score") or 0.0),
+        "content": h.get("content", ""),
+    }
 
 
 def register(app) -> None:
@@ -82,20 +108,49 @@ def register(app) -> None:
                 hits = mgr.search_all(q, top_k=k)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        results = [_format_v1_hit(h) for h in hits]
+        return {"results": results}
+
+    @app.post("/api/v1/search")
+    def api_v1_search_batch(body: BatchSearchRequest):
+        """Batch search: embed many queries in ONE model call.
+
+        Body: `{"queries": [...], "source": "name"|null, "top_k": N}`.
+        Returns `{"results": [{"query": "...", "hits": [...]}, ...]}` aligned to
+        `queries`. For external multi-query consumers — e.g. an agent/script
+        fanning one question across rows of another data source. (Coral calls
+        the single-query GET per row and can't use this; see docs/CORAL.md.)
+        """
+        mgr = _get_manager(app)
+        if mgr is None:
+            raise HTTPException(
+                status_code=503,
+                detail=app.state.manager_error or "manager not initialized",
+            )
+        queries = [q for q in (body.queries or []) if isinstance(q, str) and q.strip()]
+        if not queries:
+            raise HTTPException(
+                status_code=400, detail="`queries` must be a non-empty list of strings"
+            )
+        if len(queries) > 100:
+            raise HTTPException(status_code=400, detail="at most 100 queries per batch")
+        k = max(1, min(int(body.top_k), 50))
+        try:
+            if body.source:
+                mgr.get(body.source)  # raises KeyError with available names
+                per_query = mgr.search_batch(body.source, queries, top_k=k)
+                for hits in per_query:
+                    for h in hits:
+                        h.setdefault("source", body.source)
+            else:
+                # No source → fan across all sources per query (correct, but no
+                # embedding batching across sources).
+                per_query = [mgr.search_all(q, top_k=k) for q in queries]
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
         results = [
-            {
-                "source": h.get("source", ""),
-                "file": h.get("file", ""),
-                "file_path": str(h.get("file_path", "")),
-                "symbol": h.get("symbol_name", ""),
-                "kind": h.get("symbol_kind", ""),
-                "language": h.get("language", ""),
-                "start_line": h.get("start_line") or 0,
-                "end_line": h.get("end_line") or 0,
-                "score": float(h.get("score") or 0.0),
-                "content": h.get("content", ""),
-            }
-            for h in hits
+            {"query": q, "hits": [_format_v1_hit(h) for h in hits]}
+            for q, hits in zip(queries, per_query)
         ]
         return {"results": results}
 

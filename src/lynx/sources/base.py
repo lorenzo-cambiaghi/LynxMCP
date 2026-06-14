@@ -69,6 +69,15 @@ class SourceBackend(ABC):
         their absence.
         """
 
+    def search_batch(self, queries, top_k: int = 5, **kwargs) -> list:
+        """Search multiple queries, returning one result list per query.
+
+        Default: loop `search()` (correct, but no speed-up). The codebase
+        backend overrides this to batch the query embedding into one model
+        call — the real win for N > 1 (e.g. an external agent/script fanning
+        a question across many rows of another data source)."""
+        return [self.search(q, top_k=top_k, **kwargs) for q in queries]
+
     @abstractmethod
     def deep_search(
         self,

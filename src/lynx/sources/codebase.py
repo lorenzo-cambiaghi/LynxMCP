@@ -91,6 +91,26 @@ class CodebaseBackend(SourceBackend):
             path_contains=path_contains,
         )
 
+    def search_batch(
+        self,
+        queries,
+        top_k: int = 5,
+        *,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+        **_ignored,
+    ) -> list:
+        """Search multiple queries with a single batched embedding call.
+        Returns one result list per query (aligned to `queries`)."""
+        return self.rag.search_batch(
+            queries,
+            top_k=top_k,
+            file_glob=file_glob,
+            extensions=extensions,
+            path_contains=path_contains,
+        )
+
     def deep_search(
         self,
         queries: list[str],

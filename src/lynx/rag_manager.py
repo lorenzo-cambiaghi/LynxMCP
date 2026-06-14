@@ -945,15 +945,110 @@ class CodebaseRAG:
     # Retrieval primitives: dense (vectors), sparse (BM25), fusion (RRF)
     # ------------------------------------------------------------------
 
-    def _dense_lookup(self, query: str, top_n: int) -> list:
+    def search_batch(
+        self,
+        queries,
+        top_k: int = 5,
+        *,
+        mode=None,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+        paths=None,
+    ) -> list:
+        """Search many queries at once, batching the query EMBEDDING into a
+        single model call (the dominant per-query cost — ~13ms each on CPU).
+
+        Returns a list aligned to `queries`: one result list per query, each
+        ranked + post-filtered exactly like `search()`. Dense retrieval reuses
+        the precomputed batch embeddings; BM25 and RRF fusion still run per
+        query (they don't vectorize across queries). Equivalent results to
+        calling `search()` once per query, just faster for N > 1.
+        """
+        if not isinstance(queries, (list, tuple)) or len(queries) == 0:
+            raise ValueError("queries must be a non-empty list of strings")
+        if not all(isinstance(q, str) and q.strip() for q in queries):
+            raise ValueError("every query must be a non-empty string")
+
+        mode = mode or self.search_mode
+        if mode not in ("hybrid", "dense", "sparse"):
+            raise ValueError(
+                f"mode must be one of 'hybrid' | 'dense' | 'sparse', got {mode!r}"
+            )
+
+        has_filters = bool(file_glob or extensions or path_contains or paths)
+        fetch_n = top_k * 5 if has_filters else top_k
+        pool = max(fetch_n, self.candidate_pool_size) if mode == "hybrid" else fetch_n
+
+        # The win: one batched embedding call for every query instead of N.
+        embeddings = None
+        if mode in ("hybrid", "dense"):
+            embeddings = self._embed_queries_batch(list(queries))
+
+        out = []
+        for i, q in enumerate(queries):
+            if mode == "dense":
+                results = self._dense_lookup(q, pool, embedding=embeddings[i])
+            elif mode == "sparse":
+                results = self._bm25_lookup(q, pool)
+            else:  # hybrid
+                dense_hits = self._dense_lookup(q, pool, embedding=embeddings[i])
+                sparse_hits = self._bm25_lookup(q, pool)
+                results = self._rrf_fuse(
+                    [dense_hits, sparse_hits], k=self.rrf_k, top_k=pool
+                )
+            if has_filters:
+                results = [
+                    r for r in results
+                    if _matches_filters(r, file_glob, extensions, path_contains, paths=paths)
+                ]
+            out.append(results[:top_k])
+        return out
+
+    def _embed_queries_batch(self, queries: list) -> list:
+        """Embed N queries in one model call, using the SAME prompt the
+        single-query path uses, so batch results match `search()`.
+
+        BGE-style models apply a *query* prompt ("Represent this question for
+        searching…") that `get_query_embedding` adds but `get_text_embedding`
+        does NOT — they produce different vectors (cosine ~0.92). LlamaIndex's
+        `_embed(..., prompt_name="query")` is the batched query path; we fall
+        back to per-query embedding if that private hook isn't available."""
+        embed_model = Settings.embed_model
+        embed_fn = getattr(embed_model, "_embed", None)
+        if callable(embed_fn):
+            try:
+                return embed_fn(queries, prompt_name="query")
+            except TypeError:
+                # Older signature without prompt_name.
+                try:
+                    return embed_fn(queries)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        # Correct but unbatched fallback.
+        return [embed_model.get_query_embedding(q) for q in queries]
+
+    def _dense_lookup(self, query: str, top_n: int, embedding=None) -> list:
         """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline.
 
         Propagates the AST-aware chunker metadata (symbol_name, symbol_kind,
         language, start_line, end_line) so the formatter can cite results
         precisely (e.g. "MyClass.handleClick at L42-58").
+
+        When `embedding` is provided (a precomputed query vector), the retriever
+        skips re-embedding and uses it directly — this is what `search_batch`
+        relies on to embed N queries in a single model call.
         """
         retriever = self.index.as_retriever(similarity_top_k=top_n)
-        results = retriever.retrieve(query)
+        if embedding is not None:
+            from llama_index.core import QueryBundle
+            results = retriever.retrieve(
+                QueryBundle(query_str=query, embedding=list(embedding))
+            )
+        else:
+            results = retriever.retrieve(query)
         return [
             {
                 "id": getattr(getattr(r, "node", None), "id_", None) or r.metadata.get("file_path", ""),

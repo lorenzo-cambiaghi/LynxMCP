@@ -214,6 +214,11 @@ class SourceManager:
     def search(self, source: str, query: str, top_k: int = 5, **kw) -> list[dict]:
         return self.get(source).search(query, top_k=top_k, **kw)
 
+    def search_batch(self, source: str, queries, top_k: int = 5, **kw) -> list:
+        """Batch search: one result list per query. The codebase backend
+        embeds all queries in a single model call."""
+        return self.get(source).search_batch(queries, top_k=top_k, **kw)
+
     def deep_search(
         self, source: str, queries: list[str], top_k: int = 5, **kw
     ) -> dict:

@@ -56,8 +56,13 @@ itself — so the agent cites precisely without extra reads.
 
 The spec talks to Lynx's stable local JSON API (additive-only within v1):
 
-- `GET /api/v1/search?q=...&source=...&top_k=...`
+- `GET /api/v1/search?q=...&source=...&top_k=...` — single query.
 - `GET /api/v1/sources`
+- `POST /api/v1/search` — **batch**: body `{"queries": [...], "source": ..., "top_k": ...}`,
+  returns `{"results": [{"query": ..., "hits": [...]}, ...]}`. Embeds all queries in
+  one model call, so it's faster than N single calls. For external multi-query
+  consumers (e.g. an agent fanning one question across rows of another source);
+  Coral can't use it — it calls the single-query `GET` per row.
 
 You can use these endpoints directly from any tool — Coral is one consumer,
 not a dependency.
