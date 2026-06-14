@@ -66,3 +66,27 @@ The spec talks to Lynx's stable local JSON API (additive-only within v1):
 
 You can use these endpoints directly from any tool — Coral is one consumer,
 not a dependency.
+
+## Build your own: row-driven search from Python
+
+Coral can't drive `lynx.search` from another table's column (the per-row
+correlation — its SQL resolves table-function arguments to constants at plan
+time). You can, in a few lines: ask Coral for the rows, then batch them into
+Lynx. [`integrations/coral/toolkit.py`](../integrations/coral/toolkit.py) gives
+you two thin clients — **bricks, not a framework** — to compose whatever logic
+you want:
+
+```python
+from toolkit import Lynx, Coral
+lynx, coral = Lynx(port=8765), Coral(exe="coral")
+
+rows = coral.sql("SELECT number, title FROM github.pulls WHERE state = 'open'")
+hits = lynx.search_batch([r["title"] for r in rows], source="framework", top_k=3)
+for row, res in zip(rows, hits):
+    print(row["number"], "->", [h["file"] for h in res["hits"]])
+```
+
+`python integrations/coral/toolkit.py` runs a credential-free demo of exactly
+this pattern (it uses an inline `VALUES` list as the stand-in for live data).
+Stdlib only — nothing to install. Lynx stays local; only the Coral side reaches
+live APIs.
