@@ -26,6 +26,7 @@ import os
 import sys
 import warnings
 import threading
+from typing import Annotated
 
 # Silence EVERYTHING before any library writes to stdout/stderr.
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -45,6 +46,7 @@ os.dup2(2, 1)
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from .config import load_config
 
@@ -70,6 +72,35 @@ _ANN_FEEDBACK = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False,
     idempotentHint=False, openWorldHint=False,
 )
+
+
+# ----------------------------------------------------------------------
+# Reusable per-parameter descriptions. MCP clients (and directory quality
+# scorers like Glama) read the `description` of each input-schema property;
+# the prose tool description alone doesn't populate those. FastMCP only picks
+# them up from `Annotated[..., Field(description=...)]`, not from docstrings.
+# ----------------------------------------------------------------------
+
+_SourceArg = Annotated[
+    str | None,
+    Field(description="Source name from `list_sources`. Omit to use the default: "
+                      "all sources for `search`/`deep_search` (RRF-fused), or the "
+                      "single applicable source for the others."),
+]
+_FileGlobArg = Annotated[
+    str | None,
+    Field(description="fnmatch glob to restrict results by path/filename, "
+                      "e.g. `*.cs` or `**/Editor/*`."),
+]
+_ExtensionsArg = Annotated[
+    list[str] | None,
+    Field(description="Restrict results to these file extensions, "
+                      "e.g. `['.cs', '.shader']`."),
+]
+_PathContainsArg = Annotated[
+    str | None,
+    Field(description="Keep only results whose file path contains this substring."),
+]
 
 
 def _restore_real_stdout():
@@ -309,12 +340,12 @@ def _register_search_tools(mcp, manager):
 
     @mcp.tool(name="search", description=_desc_search, annotations=_ANN_READ)
     def _search(
-        query: str,
-        source: str | None = None,
-        top_k: int | None = None,
-        file_glob: str | None = None,
-        extensions: list[str] | None = None,
-        path_contains: str | None = None,
+        query: Annotated[str, Field(description="Natural-language description of the behavior to find (e.g. 'method that handles player damage calculation'), NOT an identifier — use grep for exact names.")],
+        source: _SourceArg = None,
+        top_k: Annotated[int | None, Field(description="Maximum number of results to return. Defaults to the server's configured value.")] = None,
+        file_glob: _FileGlobArg = None,
+        extensions: _ExtensionsArg = None,
+        path_contains: _PathContainsArg = None,
     ) -> str:
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
@@ -352,16 +383,16 @@ def _register_search_tools(mcp, manager):
 
     @mcp.tool(name="deep_search", description=_desc_deep, annotations=_ANN_READ)
     def _deep_search(
-        queries: list[str],
-        source: str | None = None,
-        top_k: int | None = None,
-        mode: str | None = None,
-        file_glob: str | None = None,
-        extensions: list[str] | None = None,
-        path_contains: str | None = None,
-        min_score: float | None = None,
-        min_results: int | None = None,
-        return_all_variants: bool = False,
+        queries: Annotated[list[str], Field(description="2-4 genuinely different phrasings of the same need (different angles, not paraphrases), tried in priority order.")],
+        source: _SourceArg = None,
+        top_k: Annotated[int | None, Field(description="Maximum number of results to return. Defaults to the configured value.")] = None,
+        mode: Annotated[str | None, Field(description="Retrieval mode override (single-source only): 'dense', 'sparse', or 'hybrid'. Defaults to the server's configured mode.")] = None,
+        file_glob: _FileGlobArg = None,
+        extensions: _ExtensionsArg = None,
+        path_contains: _PathContainsArg = None,
+        min_score: Annotated[float | None, Field(description="Override the weakness threshold: a variant's results must beat this score to count as strong.")] = None,
+        min_results: Annotated[int | None, Field(description="Override the minimum number of results a variant must return to be considered strong.")] = None,
+        return_all_variants: Annotated[bool, Field(description="If true, include per-variant diagnostics in the response (single-source only).")] = False,
     ) -> str:
         try:
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
@@ -431,7 +462,10 @@ def _register_global_tools(mcp, manager):
         return "\n".join(lines)
 
     @mcp.tool(annotations=_ANN_REBUILD)
-    def update_source_index(source: str, force: bool = False) -> str:
+    def update_source_index(
+        source: Annotated[str, Field(description="Name of the source to rebuild (see `list_sources`).")],
+        force: Annotated[bool, Field(description="If true, rebuild even when no new git commits are detected.")] = False,
+    ) -> str:
         """Force a full rebuild of a specific source's index.
 
         Day-to-day the watcher keeps the index in sync automatically; you rarely need this.
@@ -454,7 +488,9 @@ def _register_global_tools(mcp, manager):
             return f"Error rebuilding source {source!r}: {str(e)}"
 
     @mcp.tool(annotations=_ANN_READ)
-    def get_rag_status(source: str | None = None) -> str:
+    def get_rag_status(
+        source: Annotated[str | None, Field(description="Source name to inspect (see `list_sources`). Omit to report the status of every configured source.")] = None,
+    ) -> str:
         """Report state of the RAG index for one source or all sources.
 
         Use this to check if the index is up to date before deciding whether to
@@ -509,7 +545,11 @@ def _register_global_tools(mcp, manager):
     )
 
     @mcp.tool(name="feedback", description=_desc_feedback, annotations=_ANN_FEEDBACK)
-    def _feedback(trying_to_do: str, tried: str, stuck: str) -> str:
+    def _feedback(
+        trying_to_do: Annotated[str, Field(description="What you were trying to find or answer.")],
+        tried: Annotated[str, Field(description="Which tools and queries you already tried.")],
+        stuck: Annotated[str, Field(description="Where exactly you got blocked, or what was missing.")],
+    ) -> str:
         try:
             import json as _json
             from datetime import datetime as _dt
@@ -605,16 +645,16 @@ def _register_graph_tools(mcp, manager):
 
     @mcp.tool(name="graph_query", description=_desc, annotations=_ANN_READ)
     def _graph_query(
-        operation: str,
-        source: str | None = None,
-        symbol: str | None = None,
-        target: str | None = None,
-        relation_filter: str | None = None,
-        depth: int = 1,
-        limit: int = 50,
-        max_hops: int = 8,
-        top_n: int = 10,
-        min_community_size: int = 3,
+        operation: Annotated[str, Field(description="Graph operation to run, e.g. callers, callees, subclasses, superclasses, imports, neighbors, shortest_path, architectural_overview, surprising_connections, status. See the tool description for the full list and which require `symbol`.")],
+        source: _SourceArg = None,
+        symbol: Annotated[str | None, Field(description="The symbol the operation acts on (required for callers/callees/subclasses/superclasses/imports/neighbors/shortest_path).")] = None,
+        target: Annotated[str | None, Field(description="Destination symbol for `shortest_path` (the path runs from `symbol` to `target`).")] = None,
+        relation_filter: Annotated[str | None, Field(description="For `neighbors`: restrict to one edge relation, e.g. 'calls', 'inherits', 'imports'.")] = None,
+        depth: Annotated[int, Field(description="For `neighbors`: how many hops out to traverse.")] = 1,
+        limit: Annotated[int, Field(description="Maximum number of edges/results to return.")] = 50,
+        max_hops: Annotated[int, Field(description="For `shortest_path`: maximum path length to search.")] = 8,
+        top_n: Annotated[int, Field(description="For `architectural_overview` / `surprising_connections`: how many top items to return.")] = 10,
+        min_community_size: Annotated[int, Field(description="For `architectural_overview`: minimum size of a detected community/cluster.")] = 3,
     ) -> str:
         try:
             src = _resolve_source(
@@ -829,7 +869,11 @@ def _register_combined_tools(mcp, manager):
     )
 
     @mcp.tool(name="find_definition", description=_desc_find_def, annotations=_ANN_READ)
-    def _find_def(symbol: str, source: str | None = None, limit: int = 10) -> str:
+    def _find_def(
+        symbol: Annotated[str, Field(description="Identifier to locate the definition of, e.g. `MyClass` or `MyClass.handleClick`.")],
+        source: _SourceArg = None,
+        limit: Annotated[int, Field(description="Maximum number of results to return.")] = 10,
+    ) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             results = manager.find_definition(src, symbol, limit=limit)
@@ -846,7 +890,11 @@ def _register_combined_tools(mcp, manager):
     )
 
     @mcp.tool(name="find_usages", description=_desc_find_usages, annotations=_ANN_READ)
-    def _find_usages(symbol: str, source: str | None = None, limit: int = 50) -> str:
+    def _find_usages(
+        symbol: Annotated[str, Field(description="Identifier to find all uses of (calls plus textual references).")],
+        source: _SourceArg = None,
+        limit: Annotated[int, Field(description="Maximum number of results to return.")] = 50,
+    ) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             results = manager.find_usages(src, symbol, limit=limit)
@@ -865,10 +913,10 @@ def _register_combined_tools(mcp, manager):
 
     @mcp.tool(name="find_tests_for", description=_desc_find_tests, annotations=_ANN_READ)
     def _find_tests(
-        symbol: str,
-        source: str | None = None,
-        limit: int = 20,
-        test_path_pattern: str | None = None,
+        symbol: Annotated[str, Field(description="Identifier to find tests for.")],
+        source: _SourceArg = None,
+        limit: Annotated[int, Field(description="Maximum number of results to return.")] = 20,
+        test_path_pattern: Annotated[str | None, Field(description="Custom regex for test file paths, overriding the default conventional patterns.")] = None,
     ) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
@@ -890,7 +938,11 @@ def _register_combined_tools(mcp, manager):
     )
 
     @mcp.tool(name="find_similar", description=_desc_find_similar, annotations=_ANN_READ)
-    def _find_similar(snippet: str, source: str | None = None, top_k: int = 10) -> str:
+    def _find_similar(
+        snippet: Annotated[str, Field(description="Code block to find structurally / semantically similar code to (truncated above 2000 chars).")],
+        source: _SourceArg = None,
+        top_k: Annotated[int, Field(description="Maximum number of results to return.")] = 10,
+    ) -> str:
         try:
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             results = manager.find_similar(src, snippet, top_k=top_k)
@@ -922,10 +974,10 @@ def _register_combined_tools(mcp, manager):
 
         @mcp.tool(name="search_diff", description=_desc_search_diff, annotations=_ANN_READ)
         def _search_diff(
-            query: str,
-            source: str | None = None,
-            base: str | None = None,
-            top_k: int = 8,
+            query: Annotated[str, Field(description="Natural-language description of the behavior to find, restricted to files changed vs the base branch.")],
+            source: _SourceArg = None,
+            base: Annotated[str | None, Field(description="Base branch to diff against. Defaults to the auto-detected `main` / `master` / `develop`.")] = None,
+            top_k: Annotated[int, Field(description="Maximum number of hits to return.")] = 8,
         ) -> str:
             try:
                 src = _resolve_source(
