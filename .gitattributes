@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Container/build files must use LF — they run inside Linux images and CRLF in
+# RUN shell lines or the entrypoint can break the build/boot on some toolchains.
+Dockerfile        text eol=lf
+.dockerignore     text eol=lf
+docker/**         text eol=lf
+*.sh              text eol=lf
