@@ -109,7 +109,15 @@ class Coral:
                 f"coral sql failed: {(proc.stderr or proc.stdout).strip()}"
             )
         out = proc.stdout.strip()
-        return json.loads(out) if out else []
+        if not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"coral did not return JSON (is --format json supported by your "
+                f"Coral version?): {out[:200]}"
+            ) from e
 
 
 def _demo():

@@ -120,6 +120,10 @@ def register(app) -> None:
         `queries`. For external multi-query consumers — e.g. an agent/script
         fanning one question across rows of another data source. (Coral calls
         the single-query GET per row and can't use this; see docs/CORAL.md.)
+
+        A batch is atomic: queries are validated up front and, if the search
+        fails, the whole call errors (no partial per-query error rows — keeps
+        the response contract simple). Max 100 queries per call.
         """
         mgr = _get_manager(app)
         if mgr is None:

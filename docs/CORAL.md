@@ -88,5 +88,8 @@ for row, res in zip(rows, hits):
 
 `python integrations/coral/toolkit.py` runs a credential-free demo of exactly
 this pattern (it uses an inline `VALUES` list as the stand-in for live data).
-Stdlib only — nothing to install. Lynx stays local; only the Coral side reaches
-live APIs.
+
+Stdlib only — nothing to `pip install`. These bricks live in the **repo**, not
+in the installed `lynx-mcp` wheel: copy `toolkit.py` next to your own script (or
+run it from `integrations/coral/`), then `from toolkit import Lynx, Coral`. Lynx
+stays local; only the Coral side reaches live APIs.
