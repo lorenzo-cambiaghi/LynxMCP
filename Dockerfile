@@ -29,6 +29,13 @@ ENV HF_HOME=/data/hf \
 
 WORKDIR /app
 
+# CPU-only torch FIRST, from PyTorch's CPU wheel index. sentence-transformers
+# pulls torch transitively and, by default, the CUDA build drags in the whole
+# nvidia-*/cuda-toolkit stack (~7GB) that a CPU-only local server never uses.
+# Installing the CPU wheel up front satisfies the dependency, so the next step
+# won't fetch the GPU variant — cutting the image from ~9GB to ~2.5GB.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
+
 # Install Lynx from the source in the build context — this is what Glama builds,
 # so the image always matches the committed code (not a floating PyPI version).
 COPY pyproject.toml README.md LICENSE ./
