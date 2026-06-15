@@ -1,0 +1,26 @@
+# Keep the build context small and the image clean.
+.git
+.gitignore
+.github
+.dockerignore
+
+# Indexes, caches, build artifacts — rebuilt inside the image / at runtime.
+rag_storage
+**/rag_storage
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.venv
+venv
+dist
+build
+*.egg-info
+
+# Benchmark fixtures (huge external checkouts) and local scratch.
+benchmarks/_target
+2026-*-lynx.txt
+mcp-publisher.exe
+
+# Tests and docs aren't needed to build/run the server image.
+tests
