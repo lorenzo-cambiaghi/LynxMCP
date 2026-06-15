@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1 — 2026-06-15
+
+### Changed
+- **Per-parameter descriptions on every MCP tool.** Each tool's JSON input
+  schema now documents its parameters (`source`, `top_k`, `query`, `symbol`,
+  filters, etc.) via `Annotated[..., Field(description=...)]`, which the prose
+  tool description alone didn't provide. Improves the in-client parameter hints
+  and tool-definition quality scoring. Tool behavior is unchanged.
+
 ## 1.5.0 — 2026-06-15
 
 ### Added
