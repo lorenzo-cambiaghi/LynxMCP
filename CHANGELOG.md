@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.5.0 — 2026-06-15
+
+### Added
+- **Batch search API** — `POST /api/v1/search` accepts
+  `{"queries": [...], "source": ..., "top_k": ...}` and embeds every query in a
+  single model call, returning ranked hits per query
+  (`{"results": [{"query": ..., "hits": [...]}, ...]}`). Results match the
+  single-query `GET` endpoint: both now route through one shared retrieval core,
+  and the batched query embedding is self-checked against the single-query path
+  (so it's correct for any embedding model, not just BGE). For multi-query
+  consumers fanning a question across rows of another data source.
+- **Coral Python toolkit** (`integrations/coral/toolkit.py`) — two thin,
+  stdlib-only clients (`Lynx`, `Coral`) so you can compose row-driven search and
+  joins in a few lines of Python. Coral's SQL can't drive `lynx.search` from
+  another table's column (table-function args resolve to constants at plan
+  time); these bricks let you do it: query Coral for the rows, batch them into
+  Lynx. Ships with a runnable, credential-free demo. See `docs/CORAL.md`.
+
 ## 1.4.1 — 2026-06-15
 
 ### Fixed
