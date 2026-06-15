@@ -248,6 +248,11 @@ class CodebaseRAG:
         self.reranker_config = reranker_config
         self._reranker = None
 
+        # Tri-state cache for batched-query embedding (search_batch):
+        #   None  = not yet checked, True = batched path verified to match the
+        #   single-query embedding, False = it diverged → use per-query fallback.
+        self._batch_embed_ok = None
+
         # BM25 sparse index, lazily built from chunks living in ChromaDB.
         # _bm25_docs maps chunk_id -> tokenized content; the BM25Okapi object
         # is rebuilt on demand from this dict whenever it goes stale.
@@ -763,6 +768,34 @@ class CodebaseRAG:
         `mode` is explicit (rather than reading self.search_mode) so deep_search
         can override it per call without mutating instance state.
         """
+        return self._retrieve_one(
+            query, top_k, mode,
+            file_glob=file_glob, extensions=extensions,
+            path_contains=path_contains, paths=paths,
+        )
+
+    def _retrieve_one(
+        self,
+        query: str,
+        top_k: int,
+        mode: str,
+        *,
+        file_glob=None,
+        extensions=None,
+        path_contains=None,
+        paths=None,
+        embedding=None,
+    ):
+        """The single shared retrieval core for ONE query: dense/sparse/hybrid
+        + post-filters + optional cross-encoder rerank, returning the final
+        top_k hits.
+
+        `search()`/`deep_search()` (single) and `search_batch()` BOTH route
+        through here, so the two paths can never drift (mode dispatch, over-fetch,
+        filters, rerank all live in one place). `embedding` lets the batch path
+        pass a precomputed query vector to skip re-embedding; when None the dense
+        retriever embeds the query itself.
+        """
         has_filters = bool(file_glob or extensions or path_contains or paths)
         rerank_enabled = bool(
             self.reranker_config is not None and self.reranker_config.enabled
@@ -777,12 +810,12 @@ class CodebaseRAG:
             fetch_n = max(fetch_n, self.reranker_config.top_n_before_rerank)
 
         if mode == "dense":
-            results = self._dense_lookup(query, fetch_n)
+            results = self._dense_lookup(query, fetch_n, embedding=embedding)
         elif mode == "sparse":
             results = self._bm25_lookup(query, fetch_n)
         elif mode == "hybrid":
             pool = max(fetch_n, self.candidate_pool_size)
-            dense_hits = self._dense_lookup(query, pool)
+            dense_hits = self._dense_lookup(query, pool, embedding=embedding)
             sparse_hits = self._bm25_lookup(query, pool)
             results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
         else:
@@ -807,8 +840,7 @@ class CodebaseRAG:
                     model_name=self.reranker_config.model_name,
                 )
             pool = results[: self.reranker_config.top_n_before_rerank]
-            results = self._reranker.rerank(query, pool, top_k=top_k)
-            return results  # reranker already sliced to top_k
+            return self._reranker.rerank(query, pool, top_k=top_k)  # already top_k
 
         return results[:top_k]
 
@@ -959,11 +991,11 @@ class CodebaseRAG:
         """Search many queries at once, batching the query EMBEDDING into a
         single model call (the dominant per-query cost — ~13ms each on CPU).
 
-        Returns a list aligned to `queries`: one result list per query, each
-        ranked + post-filtered exactly like `search()`. Dense retrieval reuses
-        the precomputed batch embeddings; BM25 and RRF fusion still run per
-        query (they don't vectorize across queries). Equivalent results to
-        calling `search()` once per query, just faster for N > 1.
+        Returns a list aligned to `queries`: one result list per query. Each
+        query runs through the SAME `_retrieve_one` core as `search()` (dense/
+        sparse/hybrid + filters + rerank), so results are identical to calling
+        `search()` once per query — just faster for N > 1, because the embedding
+        is batched (BM25 / RRF / rerank still run per query).
         """
         if not isinstance(queries, (list, tuple)) or len(queries) == 0:
             raise ValueError("queries must be a non-empty list of strings")
@@ -976,59 +1008,75 @@ class CodebaseRAG:
                 f"mode must be one of 'hybrid' | 'dense' | 'sparse', got {mode!r}"
             )
 
-        has_filters = bool(file_glob or extensions or path_contains or paths)
-        fetch_n = top_k * 5 if has_filters else top_k
-        pool = max(fetch_n, self.candidate_pool_size) if mode == "hybrid" else fetch_n
-
         # The win: one batched embedding call for every query instead of N.
         embeddings = None
         if mode in ("hybrid", "dense"):
             embeddings = self._embed_queries_batch(list(queries))
 
-        out = []
-        for i, q in enumerate(queries):
-            if mode == "dense":
-                results = self._dense_lookup(q, pool, embedding=embeddings[i])
-            elif mode == "sparse":
-                results = self._bm25_lookup(q, pool)
-            else:  # hybrid
-                dense_hits = self._dense_lookup(q, pool, embedding=embeddings[i])
-                sparse_hits = self._bm25_lookup(q, pool)
-                results = self._rrf_fuse(
-                    [dense_hits, sparse_hits], k=self.rrf_k, top_k=pool
-                )
-            if has_filters:
-                results = [
-                    r for r in results
-                    if _matches_filters(r, file_glob, extensions, path_contains, paths=paths)
-                ]
-            out.append(results[:top_k])
-        return out
+        return [
+            self._retrieve_one(
+                q, top_k, mode,
+                file_glob=file_glob, extensions=extensions,
+                path_contains=path_contains, paths=paths,
+                embedding=(embeddings[i] if embeddings is not None else None),
+            )
+            for i, q in enumerate(queries)
+        ]
 
     def _embed_queries_batch(self, queries: list) -> list:
-        """Embed N queries in one model call, using the SAME prompt the
-        single-query path uses, so batch results match `search()`.
+        """Embed N queries in one model call, producing the SAME vectors the
+        single-query path (`get_query_embedding`) would — so batch results match
+        `search()` for ANY embedding model, not just the default.
 
         BGE-style models apply a *query* prompt ("Represent this question for
         searching…") that `get_query_embedding` adds but `get_text_embedding`
-        does NOT — they produce different vectors (cosine ~0.92). LlamaIndex's
-        `_embed(..., prompt_name="query")` is the batched query path; we fall
-        back to per-query embedding if that private hook isn't available."""
+        does NOT (cosine ~0.92 apart). LlamaIndex's private
+        `_embed(..., prompt_name="query")` is the batched query path. We verify
+        it once against `get_query_embedding` (cosine ≥ 0.999) and, if a model
+        ever embeds queries differently in batch, fall back to per-query for the
+        rest of the session — correctness over speed.
+        """
         embed_model = Settings.embed_model
+
+        def per_query():
+            return [embed_model.get_query_embedding(q) for q in queries]
+
+        if self._batch_embed_ok is False:
+            return per_query()
+
         embed_fn = getattr(embed_model, "_embed", None)
-        if callable(embed_fn):
+        if not callable(embed_fn):
+            self._batch_embed_ok = False
+            return per_query()
+
+        try:
+            vecs = embed_fn(queries, prompt_name="query")
+        except TypeError:
             try:
-                return embed_fn(queries, prompt_name="query")
-            except TypeError:
-                # Older signature without prompt_name.
-                try:
-                    return embed_fn(queries)
-                except Exception:
-                    pass
+                vecs = embed_fn(queries)  # older signature without prompt_name
             except Exception:
-                pass
-        # Correct but unbatched fallback.
-        return [embed_model.get_query_embedding(q) for q in queries]
+                vecs = None
+        except Exception:
+            vecs = None
+        if not vecs:
+            self._batch_embed_ok = False
+            return per_query()
+
+        # One-time correctness check: the batched query vector MUST match the
+        # single-query path, else retrieval would silently diverge.
+        if self._batch_embed_ok is None:
+            ref = embed_model.get_query_embedding(queries[0])
+            a, b = vecs[0], ref
+            dot = sum(x * y for x, y in zip(a, b))
+            na = sum(x * x for x in a) ** 0.5
+            nb = sum(y * y for y in b) ** 0.5
+            cos = dot / (na * nb) if na and nb else 0.0
+            if cos < 0.999:
+                self._batch_embed_ok = False
+                return per_query()
+            self._batch_embed_ok = True
+
+        return vecs
 
     def _dense_lookup(self, query: str, top_n: int, embedding=None) -> list:
         """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline.
