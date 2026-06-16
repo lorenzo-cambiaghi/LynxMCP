@@ -3,7 +3,17 @@
 [Coral](https://github.com/withcoral/coral) gives agents a local SQL runtime
 over live data sources (GitHub, Sentry, Datadog, Linear, ...). Lynx covers
 the part Coral doesn't: **semantic retrieval over unstructured local content**
-— your code, your library docs, your PDFs.
+— your code, your library docs, your PDFs. Together you get to **correlate
+code search with the tools your team already lives in**, all on your machine:
+
+- 🔎 Find logic by behavior, not keywords — ranked code locations for a
+  plain-language question.
+- 🔁 Locate the code behind a feature and line it up against the repo's open
+  PRs before you refactor.
+- 🚨 Take the behavior from a Sentry alert and get the ranked code that
+  implements it.
+- 🎫 Pull open tickets from Coral and (with the Python helper) batch-search
+  Lynx to map each to its likely code area.
 
 With the source spec in [`integrations/coral/manifest.yaml`](../integrations/coral/manifest.yaml),
 Lynx becomes a Coral schema, and your agent can JOIN code search with live

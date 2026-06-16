@@ -103,31 +103,38 @@ git clone --depth 1 --branch 5.2 https://github.com/django/django.git benchmarks
 python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
 ```
 
-## Lynx + Coral: code search as a SQL data source
+## Lynx + Coral: your code, joined with everything else
 
-[Coral](https://github.com/withcoral/coral) is a local SQL engine over your live tools (GitHub, Sentry, Linear, …). Point it at Lynx's [source spec](integrations/coral/manifest.yaml) and your semantic code search becomes a SQL table: you ask a question as a string and get back structured rows — `file`, `symbol`, line range, `score`, and the code `content` — that you can filter, sort, and **join with live data**. Everything stays local; only the live-data side touches an API. Setup in **[docs/CORAL.md](docs/CORAL.md)**.
+[Coral](https://github.com/withcoral/coral) turns your live tools — GitHub, Sentry, Jira, Linear — into one local SQL interface. Plug in Lynx ([source spec](integrations/coral/manifest.yaml)) and **your codebase becomes a queryable source too**: ask in plain language, get ranked code locations back, and **correlate them with the tools your team already lives in** — without a byte leaving your machine.
+
+What that unlocks:
+
+- 🔎 **Find logic by behavior, not keywords.** *"Where do we validate session tokens?"* returns the actual functions — file, symbol, line, score — even when nothing matches literally.
+- 🔁 **Refactor without surprises.** Locate the code behind a feature and line it up against the repo's open PRs in one query — see who's already in there before you touch it.
+- 🚨 **Triage crashes to code.** Take the behavior from a Sentry alert and get the ranked code locations; when your source exposes a file column, correlate them with the live issues.
+- 🎫 **Turn a backlog into a map.** Pull your open tickets from Coral and — with the included Python helper — batch-search Lynx to surface the likely code area for each.
+- 🔒 **100% local.** Repo and embeddings never leave your machine; only the live-data side hits an API.
+
+Once the idea clicks, the syntax is just SQL:
 
 ```sql
--- semantic search, then keep only the C# hits, ranked:
+-- ranked code for a behavioral question (C# only)
 SELECT file, symbol, score
 FROM lynx.search(q => 'where the camera zoom is clamped')
 WHERE language = 'c_sharp'
 ORDER BY score DESC
 LIMIT 5;
 ```
-
-Because the results are just a SQL table, you can correlate them with anything else Coral exposes — for example, line up a code search against the repo's open PRs:
-
 ```sql
-SELECT s.file, s.symbol, s.score, p.html_url, p.state
+-- top code matches for a question, next to the repo's open PRs
+SELECT s.file, s.symbol, s.score, p.html_url
 FROM lynx.search(q => 'retry logic for payment webhooks') s
 CROSS JOIN github.pulls p
 WHERE p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
-ORDER BY s.score DESC
-LIMIT 5;
+ORDER BY s.score DESC;
 ```
 
-One query turns a behavioral question into ranked code locations an agent can cite precisely — and, when useful, alongside live context. The search string is a literal you provide (Coral resolves table-function arguments at plan time), so this is *code search as a queryable, joinable source*, not a per-row enrichment of other tables. `lynx.sources` lists your indexed sources; `lynx.search(q => '…')` is the ranked search function (`source => '…'`, `top_k => N` to narrow it). More in **[docs/CORAL.md](docs/CORAL.md)**.
+*The search string is a literal you pass (Coral resolves table-function arguments at plan time) — so it's code search as a **joinable** source, not a per-row enrichment. For one search per row of another table, use the batch endpoint + the Python helper. `lynx.sources` lists your indexed sources; `lynx.search(q => '…')` is the ranked search function (`source => '…'`, `top_k => N` to narrow it). Full setup in **[docs/CORAL.md](docs/CORAL.md)**.*
 
 ## Documentation
 
