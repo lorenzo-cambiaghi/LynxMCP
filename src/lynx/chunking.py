@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import tree_sitter
+import tree_sitter_bash as ts_bash
 import tree_sitter_c as ts_c
 import tree_sitter_c_sharp as ts_cs
 import tree_sitter_cpp as ts_cpp
@@ -33,10 +34,13 @@ import tree_sitter_go as ts_go
 import tree_sitter_java as ts_java
 import tree_sitter_javascript as ts_js
 import tree_sitter_kotlin as ts_kt
+import tree_sitter_lua as ts_lua
 import tree_sitter_php as ts_php
 import tree_sitter_python as ts_py
 import tree_sitter_ruby as ts_rb
 import tree_sitter_rust as ts_rs
+import tree_sitter_scala as ts_scala
+import tree_sitter_sql as ts_sql
 import tree_sitter_swift as ts_sw
 import tree_sitter_typescript as ts_ts
 
@@ -283,6 +287,64 @@ _LANG_RULES: dict = {
         },
         "name_node_types": ["simple_identifier", "type_identifier", "identifier"],
     },
+    "bash": {
+        "parser_factory": lambda: _ts_language(ts_bash.language),
+        # Shell has no classes/namespaces — only functions. Both `foo() { }`
+        # and `function foo { }` parse to function_definition; the name is a
+        # `word` child.
+        "container_types": set(),
+        "chunk_types": {"function_definition"},
+        "name_node_types": ["word"],
+    },
+    "sql": {
+        "parser_factory": lambda: _ts_language(ts_sql.language),
+        # SQL has no nesting we chunk into; each DDL object is its own chunk.
+        # The object name lives in an `object_reference` child (which wraps an
+        # identifier). Dialect-specific bodies (e.g. plpgsql) may parse with
+        # ERROR nodes — those regions just don't produce clean AST chunks.
+        "container_types": set(),
+        "chunk_types": {
+            "create_function",
+            "create_procedure",
+            "create_view",
+            "create_table",
+            "create_trigger",
+            "create_index",
+        },
+        "name_node_types": ["object_reference", "identifier"],
+    },
+    "scala": {
+        "parser_factory": lambda: _ts_language(ts_scala.language),
+        # object/class/trait are containers (recurse through their
+        # template_body); def/val/var/type at any level become chunks.
+        "container_types": {
+            "object_definition",
+            "class_definition",
+            "trait_definition",
+        },
+        "chunk_types": {
+            "function_definition",
+            "function_declaration",
+            "val_definition",
+            "var_definition",
+            "type_definition",
+        },
+        "name_node_types": ["identifier", "type_identifier"],
+    },
+    "lua": {
+        "parser_factory": lambda: _ts_language(ts_lua.language),
+        # Lua has no classes (tables are dynamic). Named functions — `function
+        # f()`, `local function f()`, `function M.f()`, `function T:m()` — are
+        # function_declaration; the name is an identifier, dot_index_expression
+        # (M.f) or method_index_expression (T:m).
+        "container_types": set(),
+        "chunk_types": {"function_declaration"},
+        "name_node_types": [
+            "identifier",
+            "dot_index_expression",
+            "method_index_expression",
+        ],
+    },
 }
 
 
@@ -310,6 +372,12 @@ _EXT_TO_LANG: dict = {
     ".kt":    "kotlin",
     ".kts":   "kotlin",
     ".swift": "swift",
+    ".sh":    "bash",
+    ".bash":  "bash",
+    ".sql":   "sql",
+    ".scala": "scala",
+    ".sc":    "scala",
+    ".lua":   "lua",
 }
 
 

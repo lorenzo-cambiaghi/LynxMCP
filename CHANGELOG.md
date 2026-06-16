@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.6.0 — 2026-06-16
+
+### Added
+- **Four more languages for AST-aware chunking: Bash/Shell, SQL, Scala, Lua.**
+  Lynx now parses **17+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
+  `.scala`/`.sc`, and `.lua` files are indexed as whole functions / DDL objects
+  (`CREATE TABLE`/`FUNCTION`/`VIEW`) with qualified symbol names, instead of
+  falling back to plain-text windows. Add the extensions to a source's
+  `supported_extensions` to index them (the manager UI auto-detects them).
+- **Self-host Docker image.** A `Dockerfile` to run Lynx on your own server
+  (CPU-only torch, ~2.7 GB); the indexed code and embeddings stay on the
+  machine — "local" = local to your server, not a hosted service.
+
+### Changed
+- README/docs: the Coral section now leads with cross-source use cases
+  (correlate code search with live GitHub/Sentry/… data). Added `ROADMAP.md`
+  (items under evaluation + explicit non-goals) and a Glama directory listing.
+
 ## 1.5.1 — 2026-06-15
 
 ### Changed
