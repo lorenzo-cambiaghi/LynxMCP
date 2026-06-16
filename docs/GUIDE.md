@@ -65,9 +65,10 @@ each source the server auto-generates the right set of MCP tools at boot.
 
 ### Always-on: semantic + lexical search
 
-For every source, two search tools:
+Two search tools (a fixed set — they take a `source` argument, they are not
+generated per source):
 
-| Tool generated per source `<name>` | What it does |
+| Tool | What it does |
 |---|---|
 | `search(query, top_k, ...)` | **Default** semantic search over that source. Hybrid retrieval (dense + BM25 + RRF), one query. |
 | `deep_search(queries, ...)` | **Fallback** for the same source. Tries multiple query variants in order, stops at the first strong result. Use when `search` returned weak or empty results. |
@@ -93,9 +94,10 @@ docstring of each `search`.
 
 Search tells you *where* something is. The optional **graph layer** tells
 you *how things are connected*. Add `graph: { enabled: true }` to a
-codebase source in `config.json` and 9 extra tools per source come online:
+codebase source in `config.json` and 9 extra graph operations come online,
+all under the single `graph_query(operation, ...)` tool:
 
-| Graph tool per source `<name>` | What it answers |
+| `graph_query` operation | What it answers |
 |---|---|
 | `graph_query("callers")(symbol)` | "Who calls X?" |
 | `graph_query("callees")(symbol)` | "What does X call?" |
@@ -548,11 +550,11 @@ diff search, multiple sources, reranker) is built on the same surface
   Refuses to start when the SQLite write lock is held by another
   process — guards against the classic "I left `lynx serve` running
   and the build corrupted the DB" footgun.
-- **Playground** — tabbed forms for every per-source tool the MCP
-  server exposes: hybrid search, `find_definition` / `find_usages` /
-  `find_tests_for` / `find_similar`, `architectural_overview` /
-  `get_callers` / `get_callees`, and `search_diff`. Faster than
-  spinning up a client to validate that a query works.
+- **Playground** — tabbed forms for the tools the MCP server exposes:
+  hybrid search, `find_definition` / `find_usages` / `find_tests_for` /
+  `find_similar`, the `graph_query` operations (callers / callees / overview
+  / …), and `search_diff`. Faster than spinning up a client to validate that
+  a query works.
 - **Config** — JSON editor with backup-then-overwrite save and the
   exact same validation the CLI uses (validates to a tempfile before
   touching the real config).
@@ -628,11 +630,11 @@ Minimum useful config (single source):
 | `storage_path` | Where per-source ChromaDB folders live (each at `<storage_path>/<source_name>/`). Relative paths are resolved against the config file's directory. Default `./rag_storage`. |
 | `loading_timeout_seconds` | Max time to wait for the first index build before MCP tool calls give up. Default `600`. |
 | `embedding.model_name` | Any HuggingFace sentence-transformer model. **Changing this invalidates all existing vectors across every source** — see [Config drift detection](#config-drift-detection). |
-| `search.default_top_k` | Default number of chunks any `search_*` tool returns when `top_k` is not passed. |
+| `search.default_top_k` | Default number of chunks the `search` tool returns when `top_k` is not passed. |
 | `search.mode` | `"hybrid"` (default), `"dense"`, or `"sparse"`. See [Hybrid retrieval](#hybrid-retrieval). |
 | `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`). |
 | `search.candidate_pool_size` | Per-retriever candidate pool size (default `30`). |
-| `search.deep.min_results` | For every `deep_search_*` tool: minimum results required for a variant to count as "strong" (default `2`). |
+| `search.deep.min_results` | For `deep_search`: minimum results required for a variant to count as "strong" (default `2`). |
 | `search.deep.score_thresholds` | Mode-specific "weak" thresholds. Defaults: `dense=0.45`, `hybrid=0.012`, `sparse=3.0`. |
 
 ### Per-source (one entry under `sources`)
@@ -645,7 +647,7 @@ client will see clearly in its tool list (e.g. `myproject`, `unityDoc`,
 
 | Field (codebase type) | What it does |
 |---|---|
-| `type` | **Required.** `"codebase"` for a local directory of files. Other supported types: `"webdoc"` (see [Webdoc sources](#webdoc-sources)). Future: `"pdf"`. |
+| `type` | **Required.** `"codebase"` for a local directory of files. Other supported types: `"webdoc"` (see [Webdoc sources](#webdoc-sources)) and `"pdf"` (see [PDF sources](#pdf-sources)). |
 | `path` | **Required.** Absolute path of the directory to index. |
 | `supported_extensions` | File extensions to include (e.g. `[".py", ".md"]`). Anything else is ignored. |
 | `ignored_path_fragments` | Substrings: any path containing one is skipped by the watcher (forward slashes are auto-normalized). |
@@ -788,27 +790,30 @@ local copies of two documentation sets in addition to their code:
 }
 ```
 
-This boots the server with **six per-source tools** plus the globals:
+This boots the server with the **same fixed tool set** regardless of how many
+sources you configure:
 
 ```
-search         deep_search
-search          deep_search
-search          deep_search
-
-list_sources             search       deep_search
-update_source_index      get_rag_status
+search    deep_search    list_sources    get_rag_status
+update_source_index    feedback
 ```
 
-Each `search` has a docstring that names the source by type and path,
-so the AI client picks the right tool without you having to tell it. Pair
-this with an AI integration rules file (see the [section below](#get-the-most-out-of-it-ai-integration-rules))
-to bias the AI toward `search` for Unity API questions, etc.
+Plus, when a **codebase** source is present: `find_definition`,
+`find_usages`, `find_tests_for`, `find_similar`, `search_diff` — and
+`graph_query` when that source has `graph.enabled=true`. Each tool takes a
+`source` argument (omit it to fan out across all sources); the handshake
+`instructions` describe every configured source so the AI client picks the
+right `source`. Pair this with an AI integration rules file (see the
+[section below](#get-the-most-out-of-it-ai-integration-rules)) to bias the
+AI toward a given source for Unity API questions, etc.
 
 > **`type: "webdoc"` is now available** (since v0.4): fetch a public docs
 > site on demand, dump the extracted main content to a local folder,
 > and index it through the same hybrid pipeline as code. See the
 > [Webdoc sources](#webdoc-sources) section for the config schema and
-> the refresh model. `type: "pdf"` is on the roadmap.
+> the refresh model. `type: "pdf"` is also available — point it at a local
+> folder of PDFs and they're indexed through the same pipeline (see the PDF
+> sources section).
 
 ---
 
@@ -883,7 +888,7 @@ library version bump.
 | Server-rendered SSR | ✅ | Anything that ships HTML directly |
 | JS-rendered SPAs | ✅ opt-in | Set `render_js: true` on the source: pages load in headless Chromium (Playwright) so client-side rendering runs before extraction, and link discovery sees the post-JS DOM. Requires the `webdoc-js` extra (`lynx manager install webdoc-js`, downloads Chromium ~150MB). Roughly 10x slower per page than plain HTTP — leave it off for server-rendered sites. Tunables: `render_wait_until` (`load` / `domcontentloaded` / `networkidle`, default `networkidle`) and `render_timeout_seconds` (default 30). |
 | Auth-gated docs | ❌ | The crawler sends a plain UA, no cookie / token support. PRs welcome if you need it. |
-| PDFs / images | ❌ | The crawler skips any URL whose content-type isn't HTML. PDF support is planned as a separate `type: "pdf"` source. |
+| PDFs / images | ⚠️ not via crawl | The webdoc crawler skips any URL whose content-type isn't HTML. PDFs are fully supported, but through a separate **`type: "pdf"`** source pointed at a local folder of `.pdf` files (see the PDF source section) — not by crawling them off a docs site. |
 | robots.txt | ⚠️ Not consulted | Crawl is rate-limited and identifies itself, but currently doesn't parse robots.txt. Use `request_delay_seconds` to stay polite. |
 | Partial / JS-rendered TOCs | ✅ with `render_js` | If the site's index page lists its sub-pages via JavaScript (Unity 6 ScriptReference is one example), the plain-HTTP crawler sees the static HTML only — no link discovery past the seed. Enable `render_js: true` and the crawler discovers links from the rendered DOM; or, without the extra, point at a non-index page / sitemap URL as the seed. |
 
@@ -917,10 +922,11 @@ library version bump.
 }
 ```
 
-Boots the server with `search`, `search`,
-`search` (plus the corresponding `deep_search_*`), each with a
-docstring that names the source's type — your AI client picks based on
-the question.
+Boots the server with the fixed tool set. `search(query, source=...)` targets
+one of `myproject` / `unityDoc` / `avalonia`, or omit `source` to search all
+three at once (RRF-fused); `deep_search` works the same way. The handshake
+`instructions` list each source's type, so your AI client picks the right
+`source` based on the question.
 
 ---
 
@@ -1362,20 +1368,21 @@ real index is left untouched. Expected ending:
 
 ## The MCP tools you get
 
-For each source `<name>` configured in `config.json`, the server
-auto-registers **two search tools** at boot. If the source also has
-`graph: { enabled: true }`, **10 graph tools** are registered too. Add
-three sources with graph enabled → 36 per-source tools. Plus the five
-globals. The AI client sees the whole set in its tool list and picks
-based on the docstrings.
+The MCP tool set is **fixed** — it does **not** grow with the number of
+sources. Tools take a `source` argument where relevant (omit it to fan out
+across every source, RRF-fused). The graph layer adds a single
+`graph_query(operation, ...)` tool, registered only when at least one source
+has `graph: { enabled: true }`. So three sources with graph enabled expose
+the same compact tool list as one — the client picks the right `source` from
+the handshake instructions, not from a wall of per-source tool names.
 
-### Per-source search tools (always on, auto-generated)
+### Search tools (always on)
 
 #### `search(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
 
-Semantic search over the source named `<name>`. Returns the top-K most
-relevant chunks with file name, score, and (for cross-source results) the
-`source` tag. **Use natural language**, not exact identifiers — that's
+Semantic search over a source (pass `source="<name>"`; omit `source` to
+search every source at once). Returns the top-K most relevant chunks with
+file name, score, and (for cross-source results) the `source` tag. **Use natural language**, not exact identifiers — that's
 where semantic search beats grep:
 
 - ❌ `search("CalculateDistance")` — too lexical
@@ -1485,7 +1492,7 @@ Report state of the RAG index. Pass `source="<name>"` to inspect one;
 omit to get the status of every source. Reports git state, last update
 time, and config drift.
 
-### Graph tools (opt-in, per source)
+### Graph tools (opt-in)
 
 When a codebase source has `graph: { enabled: true }`, the server
 auto-registers **10 extra tools** for it (9 query tools + 1 status tool).
@@ -2060,11 +2067,12 @@ call/inheritance/import structure to extract). Other unsupported file types
 (markdown, shaders, JSON) are silently skipped — they don't contribute to the
 graph but still feed search.
 
-### The 10 MCP tools you get per source
+### The graph_query operations
 
-When `graph.enabled=true` on source `myproject`, Lynx auto-registers these
-extra tools on top of the usual `search_*` / `deep_search_*` (9 query
-tools plus `graph_query("status")()` for diagnostics):
+When `graph.enabled=true` on a source, Lynx exposes these graph operations on
+top of the usual `search` / `deep_search` — all through the single
+`graph_query(operation, ...)` tool (9 query operations plus
+`graph_query("status")` for diagnostics):
 
 | Tool | Answers |
 |------|---------|
@@ -2127,7 +2135,7 @@ edges to both get `confidence="ambiguous"` so the AI client can flag it).
 ### Disabling it
 
 Drop the `graph` block (or set `enabled: false`) and restart the server:
-the 10 graph tools simply aren't registered. Search and deep_search work
+the `graph_query` tool simply isn't registered. Search and deep_search work
 exactly as before — the layer is genuinely optional.
 
 ---
@@ -2318,8 +2326,8 @@ lynx/
 │       ├── __init__.py        Package version
 │       ├── __main__.py        Enables `python -m lynx`
 │       ├── cli.py             argparse-based CLI dispatcher (incl. graph + migrate-config)
-│       ├── server.py          FastMCP server, dynamic per-source tool registration
-│       │                      (search + deep_search + 10 graph tools when opt-in)
+│       ├── server.py          FastMCP server, fixed tool set (source-arg tools;
+│       │                      graph_query + find_* registered only when applicable)
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
 │       │                      + graph layer pass-through
 │       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
