@@ -9,6 +9,10 @@
   (`CREATE TABLE`/`FUNCTION`/`VIEW`) with qualified symbol names, instead of
   falling back to plain-text windows. Add the extensions to a source's
   `supported_extensions` to index them (the manager UI auto-detects them).
+  The optional **code knowledge graph** also covers the new languages:
+  **Scala** with full call + inheritance (`extends`/`with`) edges, **Lua** and
+  **Bash** with the call graph between defined functions. (SQL is
+  search/chunk-only — its DDL has no call/inheritance/import structure.)
 - **Self-host Docker image.** A `Dockerfile` to run Lynx on your own server
   (CPU-only torch, ~2.7 GB); the indexed code and embeddings stay on the
   machine — "local" = local to your server, not a hosted service.

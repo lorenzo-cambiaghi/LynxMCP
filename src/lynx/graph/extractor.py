@@ -905,13 +905,60 @@ def _handle_rust_inheritance(container_node, source: bytes,
     })
 
 
+def _handle_scala_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
+    """Scala: `import a.b.C` / `import a.b.{C, D}`. The dotted prefix is a
+    sequence of `path` fields; emit one `imports` edge labelled with the full
+    dotted module path, targeting its first segment (best-effort, like the
+    other languages)."""
+    if node.type != "import_declaration":
+        return
+    parts = [_text(c, source).strip() for c in node.children_by_field_name("path")]
+    parts = [p for p in parts if p]
+    if not parts:
+        return
+    mod = ".".join(parts)
+    edges.append({
+        "source": file_id,
+        "target": _make_id(parts[0]),
+        "relation": "imports",
+        "module": mod,
+    })
+
+
+def _handle_scala_inheritance(container_node, source: bytes, container_id: str,
+                              file_path: str, raw_inherits: list) -> None:
+    """Scala: `class A(...) extends Base with Trait1`. The bases live in an
+    `extend` field (an `extends_clause`) whose `type` children are the
+    supertypes. Scala doesn't syntactically separate class extension from
+    trait mixin, so every entry is emitted as `extends`."""
+    if container_node.type not in (
+        "class_definition", "object_definition", "trait_definition",
+    ):
+        return
+    ext = container_node.child_by_field_name("extend")
+    if ext is None:
+        return
+    for t in ext.children_by_field_name("type"):
+        name = _innermost_identifier(t, source)
+        if not name:
+            continue
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": name,
+            "base_kind": "extends",
+            "file": file_path,
+            "line": t.start_point[0] + 1,
+        })
+
+
 # ---------------------------------------------------------------------------
 # Rules table
 # ---------------------------------------------------------------------------
 #
 # Keep in sync with `chunking._LANG_RULES`: same language keys, same node
-# types where possible. Languages without a graph rule (markdown, shaders,
-# JSON) are simply skipped by `extract_file`.
+# types where possible. SQL is intentionally absent — its DDL has no
+# call/inheritance/import graph to extract. Languages without a graph rule
+# (markdown, shaders, JSON, SQL) are simply skipped by `extract_file`.
 
 
 GRAPH_RULES: dict = {
@@ -1106,6 +1153,46 @@ GRAPH_RULES: dict = {
         function_boundary_types=frozenset({"function_declaration", "init_declaration", "closure_expression"}),
         import_handler=_handle_swift_import,
         inheritance_handler=_handle_swift_inheritance,
+    ),
+    "scala": LangGraphRules(
+        container_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
+        function_types=frozenset({"function_definition", "function_declaration"}),
+        import_types=frozenset({"import_declaration"}),
+        call_types=frozenset({"call_expression"}),
+        call_function_field="function",
+        # `a.speak()` → function: field_expression → field: identifier.
+        call_accessor_types=frozenset({"field_expression"}),
+        call_accessor_field="field",
+        function_boundary_types=frozenset({"function_definition", "function_declaration"}),
+        import_handler=_handle_scala_import,
+        inheritance_handler=_handle_scala_inheritance,
+    ),
+    "lua": LangGraphRules(
+        # No classes — function nodes + a call graph. `M.f(...)` resolves via
+        # dot_index_expression's `field`; `t:m()` via method_index_expression
+        # (last-child fallback). The callee field is `name`, not `function`.
+        container_types=frozenset(),
+        function_types=frozenset({"function_declaration"}),
+        import_types=frozenset(),
+        call_types=frozenset({"function_call"}),
+        call_function_field="name",
+        call_accessor_types=frozenset({"dot_index_expression", "method_index_expression"}),
+        call_accessor_field="field",
+        function_boundary_types=frozenset({"function_declaration"}),
+    ),
+    "bash": LangGraphRules(
+        # Shell: function nodes + a call graph between defined functions. Every
+        # `command` is a candidate call; only those resolving to a defined
+        # function become edges (echo/ls/source/... are dropped at resolution).
+        # The callee name is the `command_name`'s inner word (last-child fallback).
+        container_types=frozenset(),
+        function_types=frozenset({"function_definition"}),
+        import_types=frozenset(),
+        call_types=frozenset({"command"}),
+        call_function_field="name",
+        call_accessor_types=frozenset({"command_name"}),
+        call_accessor_field="name",
+        function_boundary_types=frozenset({"function_definition"}),
     ),
 }
 

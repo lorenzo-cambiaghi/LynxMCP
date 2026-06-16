@@ -468,6 +468,81 @@ class Derived extends Base implements IFoo, Runnable {}
 
     print(f"[test] OK [11/11] inheritance extracted: C#({len(ri_cs)}), Python({len(ri_py)}), TS({len(ri_ts)}), Java({len(ri_java)})")
 
+    # ============================================================
+    # 12. Scala — functions, calls, inheritance (extends / with), import
+    # ============================================================
+    scala_src = (
+        "import scala.collection.mutable.Map\n"
+        "class Animal(name: String) extends Base with Trait1 {\n"
+        "  def speak(): String = helper(name)\n"
+        "  def helper(s: String): String = s\n"
+        "}\n"
+        "object Main { def run(): Unit = { val a = new Animal(\"x\"); a.speak() } }\n"
+        "trait Trait1 { def f(): Unit }\n"
+    )
+    r = extract_file("demo.scala", scala_src)
+    if r is None:
+        print("[test] FAIL [12/14]: extract_file returned None for demo.scala")
+        return 12
+    labels = _ids_by_label(r["nodes"])
+    for want in ("Animal.speak", "Animal.helper", "Main.run"):
+        if want not in labels:
+            print(f"[test] FAIL [12/14]: Scala node {want!r} missing from {list(labels)}")
+            return 12
+    if len(_edges(r, "calls")) < 2:
+        print(f"[test] FAIL [12/14]: Scala expected >=2 call edges, got {len(_edges(r, 'calls'))}")
+        return 12
+    bases = {i["base_name"] for i in r["raw_inherits"]}
+    if "Base" not in bases or "Trait1" not in bases:
+        print(f"[test] FAIL [12/14]: Scala inheritance bases missing, got {bases}")
+        return 12
+    if not _edges(r, "imports"):
+        print("[test] FAIL [12/14]: Scala import edge missing")
+        return 12
+    print(f"[test] OK [12/14] Scala: functions + {len(_edges(r,'calls'))} calls + extends(Base,Trait1) + import")
+
+    # ============================================================
+    # 13. Lua — functions + intra-file call graph
+    # ============================================================
+    lua_src = (
+        "local function add(a, b) return a + b end\n"
+        "function greet(name) return add(1, 2) end\n"
+    )
+    r = extract_file("demo.lua", lua_src)
+    if r is None:
+        print("[test] FAIL [13/14]: extract_file returned None for demo.lua")
+        return 13
+    labels = _ids_by_label(r["nodes"])
+    if "add" not in labels or "greet" not in labels:
+        print(f"[test] FAIL [13/14]: Lua functions missing from {list(labels)}")
+        return 13
+    if len(_edges(r, "calls")) < 1:
+        print("[test] FAIL [13/14]: Lua call edge greet->add missing")
+        return 13
+    print(f"[test] OK [13/14] Lua: {len(labels)} functions, call graph greet->add")
+
+    # ============================================================
+    # 14. Bash — functions + call graph (commands resolving to functions)
+    # ============================================================
+    sh_src = (
+        "greet() { echo hi; }\n"
+        "helper() { greet; }\n"
+        "main() { greet; helper; }\n"
+    )
+    r = extract_file("demo.sh", sh_src)
+    if r is None:
+        print("[test] FAIL [14/14]: extract_file returned None for demo.sh")
+        return 14
+    labels = _ids_by_label(r["nodes"])
+    for want in ("greet", "helper", "main"):
+        if want not in labels:
+            print(f"[test] FAIL [14/14]: Bash function {want!r} missing from {list(labels)}")
+            return 14
+    if len(_edges(r, "calls")) < 3:
+        print(f"[test] FAIL [14/14]: Bash expected >=3 call edges, got {len(_edges(r,'calls'))}")
+        return 14
+    print(f"[test] OK [14/14] Bash: {len(labels)} functions, {len(_edges(r,'calls'))} call edges, 'echo' dropped")
+
     print("\n[test] === SUCCESS: graph extractor works as expected ===")
     return 0
 
