@@ -53,8 +53,9 @@ itself — so the agent cites precisely without extra reads.
    ```
 
 3. **Query it.** `lynx.sources` is a table; `lynx.search` is a ranked
-   retrieval *function* — call it with `q => '...'` (optional `source => ...`,
-   `top_k => ...`), don't filter it with `WHERE`:
+   retrieval *function* — call it with `q => '...'` (optional `source => ...`),
+   don't filter it with `WHERE`. Control the row count with SQL `LIMIT`
+   (Coral maps it to Lynx's `top_k`, clamped to 50):
 
    ```sql
    SELECT name, type, chunk_count FROM lynx.sources;
