@@ -147,7 +147,7 @@ ORDER BY s.score DESC;
 
 ## Status
 
-Actively developed by one author; APIs may still move before 1.x stabilizes. Issues and PRs welcome — the test suite runs with `pytest` and CI must stay green.
+Actively developed by one author; APIs may still move before 1.x stabilizes. Issues and PRs welcome — the test suite runs with `pytest` and CI must stay green. See [ROADMAP.md](ROADMAP.md) for what's under consideration (and what's explicitly *not* planned).
 
 ## License
 
