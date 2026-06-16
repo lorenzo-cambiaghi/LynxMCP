@@ -38,6 +38,25 @@ quality, we're considering **blessing and documenting a step-up preset**
   carry retrieval alone — the marginal gain from a larger embedder is smaller
   here than in a dense-only system.
 
+## On the radar (additive, lower-risk)
+
+### Coral community source
+Submit Lynx as an official source in Coral's
+[`sources/community/`](https://github.com/withcoral/coral/tree/main/sources/community)
+directory (manifest + README), so Coral users can add it without leaving the
+directory. The source spec already exists
+([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml)) and
+works; the open question is the convention for sources that point at a **local**
+service (the directory's CI `test_queries` can't reach `127.0.0.1`) — to be
+sorted out with the Coral maintainers first.
+
+### More language parsers
+Lynx ships tree-sitter grammars for 13+ languages today (Python, TypeScript,
+JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift). Adding more
+is cheap and additive — each grammar is a small wheel bundled in the install,
+no runtime download. Candidates are demand-driven (e.g. Scala, Lua, Bash, SQL,
+HTML/CSS, Elixir, Zig). Open an issue with the language you need and it moves up.
+
 ## Non-goals
 
 To set expectations honestly, some things we **don't** plan to do:
