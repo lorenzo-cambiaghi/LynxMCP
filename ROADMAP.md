@@ -51,9 +51,9 @@ service (the directory's CI `test_queries` can't reach `127.0.0.1`) — to be
 sorted out with the Coral maintainers first.
 
 ### More language parsers
-Lynx ships tree-sitter grammars for 17+ languages today (Python, TypeScript,
-JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift, **Bash, SQL,
-Scala, Lua**). Adding more is cheap and additive — each grammar is a small wheel
+Lynx ships tree-sitter grammars for 18+ languages today (Python, TypeScript,
+JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift, Bash, SQL,
+Scala, Lua, **Objective-C**). Adding more is cheap and additive — each grammar is a small wheel
 bundled in the install, no runtime download. Remaining demand-driven candidates
 (e.g. Elixir, Zig, R, Dart, HTML/CSS) — open an issue with the language you need
 and it moves up.

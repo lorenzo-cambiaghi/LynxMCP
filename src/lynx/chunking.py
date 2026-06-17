@@ -35,6 +35,7 @@ import tree_sitter_java as ts_java
 import tree_sitter_javascript as ts_js
 import tree_sitter_kotlin as ts_kt
 import tree_sitter_lua as ts_lua
+import tree_sitter_objc as ts_objc
 import tree_sitter_php as ts_php
 import tree_sitter_python as ts_py
 import tree_sitter_ruby as ts_rb
@@ -61,6 +62,10 @@ CHUNKER_VERSION = 4
 #       declarations correctly report the method name (not the return type).
 #   4 — added Ruby/PHP/Kotlin/Swift; exposed parse_file() helper so the new
 #       graph layer can reuse the AST instead of re-parsing every file.
+# NOTE: purely-additive language support (new extensions / grammars, e.g. the
+# 1.6.0 batch Bash/SQL/Scala/Lua and Objective-C) does NOT bump this — existing
+# chunks are unchanged; the new grammar applies to new/edited files, and a
+# manual `lynx build --source <name>` reindexes existing ones on demand.
 
 # Soft cap on chunk size. Anything bigger gets split with SentenceSplitter so
 # huge auto-generated methods don't produce a single 50k-token chunk. ~8000
@@ -345,6 +350,27 @@ _LANG_RULES: dict = {
             "method_index_expression",
         ],
     },
+    "objc": {
+        "parser_factory": lambda: _ts_language(ts_objc.language),
+        # @interface / @implementation / @protocol bodies are walked into. The
+        # class name is the first `identifier` child; the superclass, when
+        # present, sits under a `superclass` field so it is never mistaken for
+        # the name. Methods inside become the chunks. (@implementation wraps
+        # each method in an implementation_definition — reached by the generic
+        # descent, so no special handling is needed.)
+        "container_types": {
+            "class_interface",
+            "class_implementation",
+            "protocol_declaration",
+        },
+        # method_declaration is the header signature (.h / @protocol);
+        # method_definition is the implementation with a body (.m).
+        "chunk_types": {
+            "method_declaration",
+            "method_definition",
+        },
+        "name_node_types": ["identifier"],
+    },
 }
 
 
@@ -378,6 +404,11 @@ _EXT_TO_LANG: dict = {
     ".scala": "scala",
     ".sc":    "scala",
     ".lua":   "lua",
+    ".m":     "objc",   # Objective-C implementation (.mm ObjC++ handled too)
+    ".mm":    "objc",
+    # NOTE: `.h` is shared by C / C++ / Objective-C. It stays mapped to C in
+    # this table; `language_for_path` upgrades it to objc when the file content
+    # carries Objective-C markers (see `_looks_like_objc`).
 }
 
 
@@ -392,9 +423,28 @@ def _get_parser(lang_key: str) -> tree_sitter.Parser:
     return _PARSER_CACHE[lang_key]
 
 
-def language_for_path(abs_path: str) -> Optional[str]:
-    """Return the language key for this path, or None if no AST parser available."""
-    return _EXT_TO_LANG.get(Path(abs_path).suffix.lower())
+def _looks_like_objc(content: str) -> bool:
+    """Cheap structural test to disambiguate a `.h` header. Objective-C
+    interfaces / protocols use `@interface`, `@protocol` or `@implementation`,
+    which never appear in plain C or C++ headers."""
+    return (
+        "@interface" in content
+        or "@protocol" in content
+        or "@implementation" in content
+    )
+
+
+def language_for_path(abs_path: str, content: Optional[str] = None) -> Optional[str]:
+    """Return the language key for this path, or None if no AST parser available.
+
+    `.h` is shared by C, C++ and Objective-C. When `content` is supplied and
+    carries Objective-C markers, the header is routed to the objc grammar;
+    otherwise `.h` stays mapped to C as before.
+    """
+    suffix = Path(abs_path).suffix.lower()
+    if suffix == ".h" and content is not None and _looks_like_objc(content):
+        return "objc"
+    return _EXT_TO_LANG.get(suffix)
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +623,7 @@ def parse_file(abs_path: str, content: str) -> "Optional[tuple]":
     the AST (e.g. the graph layer) can avoid parsing the file twice.
     `chunk_file` uses it internally for exactly that reason.
     """
-    lang_key = language_for_path(abs_path)
+    lang_key = language_for_path(abs_path, content)
     if lang_key is None:
         return None
     parser = _get_parser(lang_key)
@@ -615,7 +665,7 @@ def chunk_file(abs_path: str, content: str) -> list:
         # we fall back; the language tag preserves the original extension
         # mapping when we know it (so search filters by language still work).
         chunks = _fallback_chunks(abs_path, content)
-        lang_for_meta = language_for_path(abs_path) or "text"
+        lang_for_meta = language_for_path(abs_path, content) or "text"
         for c in chunks:
             c["language"] = lang_for_meta
             c["chunker"] = "sentence_splitter"

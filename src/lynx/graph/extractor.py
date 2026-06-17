@@ -955,6 +955,48 @@ def _handle_scala_inheritance(container_node, source: bytes, container_id: str,
 # Rules table
 # ---------------------------------------------------------------------------
 #
+def _handle_objc_inheritance(container_node, source: bytes,
+                             container_id: str, file_path: str,
+                             raw_inherits: list) -> None:
+    """Objective-C inheritance / protocol adoption:
+
+      @interface Foo : Bar <ProtoA, ProtoB>   → extends Bar, implements ProtoA/B
+      @interface Foo (Category) <Proto>         → implements Proto (no superclass)
+      @protocol P <NSObject>                     → implements NSObject
+
+    The superclass sits under a `superclass` field; adopted protocols are
+    identifiers inside a `parameterized_arguments` (class) or
+    `protocol_reference_list` (protocol) child.
+    """
+    sup = container_node.child_by_field_name("superclass")
+    if sup is not None:
+        name = _innermost_identifier(sup, source)
+        if name:
+            raw_inherits.append({
+                "child": container_id,
+                "base_name": name,
+                "base_kind": "extends",
+                "file": file_path,
+                "line": sup.start_point[0] + 1,
+            })
+    for c in container_node.children:
+        if c.type not in ("parameterized_arguments", "protocol_reference_list"):
+            continue
+        for t in c.children:
+            if not t.is_named:
+                continue
+            name = _innermost_identifier(t, source)
+            if not name:
+                continue
+            raw_inherits.append({
+                "child": container_id,
+                "base_name": name,
+                "base_kind": "implements",
+                "file": file_path,
+                "line": t.start_point[0] + 1,
+            })
+
+
 # Keep in sync with `chunking._LANG_RULES`: same language keys, same node
 # types where possible. SQL is intentionally absent — its DDL has no
 # call/inheritance/import graph to extract. Languages without a graph rule
@@ -1090,6 +1132,26 @@ GRAPH_RULES: dict = {
         function_boundary_types=frozenset({"function_definition", "lambda_expression"}),
         import_handler=_handle_c_include,
         inheritance_handler=_handle_cpp_inheritance,
+    ),
+    "objc": LangGraphRules(
+        container_types=frozenset({
+            "class_interface", "class_implementation", "protocol_declaration",
+        }),
+        function_types=frozenset({"method_declaration", "method_definition"}),
+        import_types=frozenset({"preproc_include"}),
+        # `[obj msg:arg]` is a message_expression whose selector is the `method`
+        # field (no accessor wrapper); plain C `f()` is a call_expression.
+        call_types=frozenset({"message_expression", "call_expression"}),
+        call_function_field="function",
+        call_accessor_types=frozenset({"field_expression"}),
+        call_accessor_field="field",
+        direct_member_call_types=frozenset({"message_expression"}),
+        direct_member_call_field="method",
+        function_boundary_types=frozenset({
+            "method_declaration", "method_definition", "function_definition",
+        }),
+        import_handler=_handle_c_include,
+        inheritance_handler=_handle_objc_inheritance,
     ),
     "ruby": LangGraphRules(
         container_types=frozenset({"class", "module"}),

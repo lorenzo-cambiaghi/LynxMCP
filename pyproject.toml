@@ -76,6 +76,7 @@ dependencies = [
     "tree-sitter-sql",
     "tree-sitter-scala",
     "tree-sitter-lua",
+    "tree-sitter-objc",
     # Pure-Python graph library used by the opt-in graph layer (call graph +
     # import graph + community detection). Small (~2MB), no native code.
     "networkx>=3.0",

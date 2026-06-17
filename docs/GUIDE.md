@@ -1325,7 +1325,7 @@ To verify directly without an AI client, run any of the unit tests
 
 ```bash
 # Self-contained unit tests (no real codebase needed, ~5 seconds each)
-python -m tests.test_tree_sitter         # AST chunker, 17 languages
+python -m tests.test_tree_sitter         # AST chunker, 18 languages
 python -m tests.test_graph_extractor     # single-file graph extraction
 python -m tests.test_graph_builder       # build + persist + SHA cache + cross-file
 python -m tests.test_graph_analyzer      # god_nodes / communities / surprising
@@ -1867,6 +1867,7 @@ their own pip packages — no runtime downloads, no network calls (the
 | `.php` | PHP | methods, free functions (qualified by namespace / class / interface / trait) |
 | `.kt`, `.kts` | Kotlin | functions, secondary constructors (qualified by class / object) |
 | `.swift` | Swift | functions, init, deinit, protocol-method signatures, property declarations (inside class / struct / extension / enum / protocol) |
+| `.m`, `.mm`, ObjC `.h` | Objective-C | methods (qualified by `@interface` / `@implementation` / `@protocol`); a `.h` header parses as Objective-C when it contains `@interface`/`@protocol`, otherwise as C |
 | `.sh`, `.bash` | Bash/Shell | functions |
 | `.sql` | SQL | `CREATE` table / function / view / procedure / trigger / index (named by the object reference) |
 | `.scala`, `.sc` | Scala | def, val, var, type (qualified by object / class / trait) |
@@ -2059,9 +2060,11 @@ it in sync the same way it does the RAG index.
 ### Languages supported
 
 The graph extractor reuses the chunker's tree-sitter parsers. Languages with
-a graph rule: **C#, Python, TypeScript/TSX, JavaScript, C/C++, Go, Rust, Java,
-Ruby, PHP, Kotlin, Swift, Scala, Lua, Bash** — Scala adds inheritance
-(`extends` / `with`); for Lua and Bash it's the call graph only (no classes).
+a graph rule: **C#, Python, TypeScript/TSX, JavaScript, C/C++, Objective-C, Go,
+Rust, Java, Ruby, PHP, Kotlin, Swift, Scala, Lua, Bash** — Scala and
+Objective-C also add inheritance edges (Scala `extends` / `with`; Objective-C
+superclass + adopted protocols); for Lua and Bash it's the call graph only (no
+classes).
 **SQL** is chunked and searched but has no graph rule (its DDL has no
 call/inheritance/import structure to extract). Other unsupported file types
 (markdown, shaders, JSON) are silently skipped — they don't contribute to the
@@ -2213,7 +2216,7 @@ Graph layer (opt-in, `graph: { enabled: true }`):
 ```
 
 Both layers parse the source files via the **same tree-sitter parsers**
-(17 languages, sharing the parser cache), and both are kept in sync by
+(18 languages, sharing the parser cache), and both are kept in sync by
 the same file watcher (~2s after each save). The graph layer is
 backward-compatible: leave it off and nothing changes.
 
@@ -2332,7 +2335,7 @@ lynx/
 │       │                      + graph layer pass-through
 │       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
 │       │                      per-file SHA-256 incremental cache
-│       ├── chunking.py        AST-aware chunker (tree-sitter for 17 languages +
+│       ├── chunking.py        AST-aware chunker (tree-sitter for 18 languages +
 │       │                      SentenceSplitter fallback) with CHUNKER_VERSION,
 │       │                      exposes `parse_file()` shared with graph layer
 │       ├── config.py          v2 config loader with per-type validation
@@ -2365,7 +2368,7 @@ lynx/
 │   ├── test_deep_search.py         Smoke test for the deep_search fallback ladder
 │   ├── test_multi_source.py        Smoke test for multi-source dispatch + isolation
 │   ├── test_sha_incremental.py     Smoke test for the per-file SHA rebuild cache
-│   ├── test_tree_sitter.py         Unit tests for the AST chunker (17 languages)
+│   ├── test_tree_sitter.py         Unit tests for the AST chunker (18 languages)
 │   ├── test_webdoc.py              Webdoc backend (crawl + extract) with mocked HTTP
 │   ├── test_hybrid_vs_dense.py     Side-by-side dense vs hybrid benchmark
 │   ├── test_graph_extractor.py     Graph extractor unit tests (14 scenarios, 16 langs)
@@ -2417,7 +2420,7 @@ lynx/
   is the explicit `webdoc` fetch, which the user triggers themselves —
   there is no implicit egress for `codebase` sources.
 - **AST chunking, not token windows.** Code is split at function / method /
-  class boundaries via tree-sitter (17 languages supported); other text falls
+  class boundaries via tree-sitter (18 languages supported); other text falls
   back to the legacy sentence-window splitter. Each chunk carries a
   qualified `symbol_name` and a 1-based `start_line`/`end_line` range so the
   AI can cite precisely (`Container.cs:L555-580`). Bumping `CHUNKER_VERSION`

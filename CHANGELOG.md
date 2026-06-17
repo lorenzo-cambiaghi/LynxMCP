@@ -3,8 +3,16 @@
 ## 1.6.0 — 2026-06-16
 
 ### Added
+- **Objective-C AST chunking and code graph.** `.m` / `.mm` files (and `.h`
+  headers that contain `@interface` / `@protocol`) are indexed as
+  `@interface` / `@implementation` / `@protocol` methods with qualified symbol
+  names, instead of falling back to plain-text windows. The **code knowledge
+  graph** covers Objective-C too: `#import` edges, the message-send call graph
+  (`[self foo]` resolves caller → callee), and inheritance (superclass
+  `extends` + adopted-protocol `implements`). Shared `.h` headers still parse
+  as C unless Objective-C markers are present.
 - **Four more languages for AST-aware chunking: Bash/Shell, SQL, Scala, Lua.**
-  Lynx now parses **17+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
+  Lynx now parses **18+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
   `.scala`/`.sc`, and `.lua` files are indexed as whole functions / DDL objects
   (`CREATE TABLE`/`FUNCTION`/`VIEW`) with qualified symbol names, instead of
   falling back to plain-text windows. Add the extensions to a source's
