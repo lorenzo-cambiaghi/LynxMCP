@@ -645,7 +645,7 @@ def _register_graph_tools(mcp, manager):
 
     @mcp.tool(name="graph_query", description=_desc, annotations=_ANN_READ)
     def _graph_query(
-        operation: Annotated[str, Field(description="Graph operation to run, e.g. callers, callees, subclasses, superclasses, imports, neighbors, shortest_path, architectural_overview, surprising_connections, status. See the tool description for the full list and which require `symbol`.")],
+        operation: Annotated[str, Field(description="Graph operation to run, e.g. callers, callees, subclasses, superclasses, imports, neighbors, shortest_path, overview, surprising_connections, status. See the tool description for the full list and which require `symbol`.")],
         source: _SourceArg = None,
         symbol: Annotated[str | None, Field(description="The symbol the operation acts on (required for callers/callees/subclasses/superclasses/imports/neighbors/shortest_path).")] = None,
         target: Annotated[str | None, Field(description="Destination symbol for `shortest_path` (the path runs from `symbol` to `target`).")] = None,
@@ -653,8 +653,8 @@ def _register_graph_tools(mcp, manager):
         depth: Annotated[int, Field(description="For `neighbors`: how many hops out to traverse.")] = 1,
         limit: Annotated[int, Field(description="Maximum number of edges/results to return.")] = 50,
         max_hops: Annotated[int, Field(description="For `shortest_path`: maximum path length to search.")] = 8,
-        top_n: Annotated[int, Field(description="For `architectural_overview` / `surprising_connections`: how many top items to return.")] = 10,
-        min_community_size: Annotated[int, Field(description="For `architectural_overview`: minimum size of a detected community/cluster.")] = 3,
+        top_n: Annotated[int, Field(description="For `overview` / `surprising_connections`: how many top items to return.")] = 10,
+        min_community_size: Annotated[int, Field(description="For `overview`: minimum size of a detected community/cluster.")] = 3,
     ) -> str:
         try:
             src = _resolve_source(
@@ -716,7 +716,7 @@ def _register_graph_tools(mcp, manager):
                     lines.append(f"  • {_format_node_brief(n)}")
                 return "\n".join(lines)
 
-            if op == "overview":
+            if op in ("overview", "architectural_overview"):
                 ov = manager.architectural_overview(
                     src, top_n_gods=top_n, min_community_size=min_community_size,
                 )

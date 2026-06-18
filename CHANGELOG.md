@@ -10,7 +10,10 @@
   graph** covers Objective-C too: `#import` edges, the message-send call graph
   (`[self foo]` resolves caller → callee), and inheritance (superclass
   `extends` + adopted-protocol `implements`). Shared `.h` headers still parse
-  as C unless Objective-C markers are present.
+  as C unless Objective-C markers are present. Adding a language is additive, so
+  `CHUNKER_VERSION` is unchanged and existing indexes are **not** auto-flagged —
+  to pick up Objective-C on an already-indexed source, run
+  `lynx build --source <name>` once to re-chunk its `.m`/`.h` files.
 - **`GET /api/v1/graph` endpoint.** Exposes the code knowledge graph (`callers`,
   `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`) as flat JSON
   rows over the stable v1 API, so an external consumer (e.g. a Coral graph
