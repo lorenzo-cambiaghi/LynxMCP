@@ -109,6 +109,67 @@ print(con.execute(
 That's the "DuckDB + Python helper" pattern: batch the per-row searches once,
 then do all the joining/shaping in SQL.
 
+## Joining with git history (regression hunting)
+
+Vectors tell you what the code *does*; git tells you what's *moving*. Cross them
+to isolate likely regressions: code that is both semantically related to an area
+and churning. Dump per-file commit counts for a window to CSV:
+
+```bash
+git log --since="3 days ago" --name-only --pretty=format: \
+  | grep -v '^$' | sort | uniq -c | sort -rn \
+  | awk '{print $2 "," $1}' > recent.csv          # rows: path,commits
+```
+
+Then join that churn against a semantic search — the search query is a constant,
+so the join is plain SQL:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+
+WITH recent AS (
+  SELECT * FROM read_csv('recent.csv', header = false,
+                         columns = {'path': 'VARCHAR', 'commits': 'INT'})
+),
+hits AS (
+  SELECT * FROM read_ndjson_auto(
+    'http://127.0.0.1:8765/api/v1/search?q=user%20login%20and%20token%20validation&top_k=40&format=ndjson')
+)
+SELECT r.path, r.commits, h.symbol, h.score
+FROM hits h
+JOIN recent r ON h.file = regexp_replace(r.path, '.*/', '')   -- match on basename
+WHERE r.commits >= 2
+ORDER BY r.commits DESC, h.score DESC;
+```
+
+> Joining on basename is robust across OSes but can collide for same-named files
+> in different folders; on a single platform you can tighten it to
+> `h.file_path LIKE '%' || r.path`.
+
+## Joining with logs (error → the code that caused it)
+
+Surface the noisiest errors from your app's local JSON logs, then jump straight
+to the code, no copy-paste:
+
+```sql
+-- 1. Top errors (DuckDB only)
+SELECT message, count(*) AS n
+FROM read_ndjson_auto('app.log.jsonl')
+WHERE level = 'error'
+GROUP BY message ORDER BY n DESC LIMIT 10;
+
+-- 2. The code behind one of them (paste the message, URL-encoded)
+SELECT file, symbol, start_line, score
+FROM read_ndjson_auto(
+  'http://127.0.0.1:8765/api/v1/search?q=null%20reference%20when%20refreshing%20the%20auth%20token&format=ndjson')
+ORDER BY score DESC LIMIT 5;
+```
+
+To resolve **all** the errors in one shot, feed their messages to the batch
+endpoint with the Python helper above — DuckDB (like Coral) resolves
+table-function arguments at plan time, so you can't drive `read_ndjson_auto` from
+a log column inside a join.
+
 ## Notes
 
 - **Local-first.** The codebase and embeddings never leave your machine; DuckDB
