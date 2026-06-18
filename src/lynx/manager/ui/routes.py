@@ -11,7 +11,7 @@ from typing import Optional
 # Module-level imports so FastAPI can resolve `Request` type annotations
 # under `from __future__ import annotations`. Without this, FastAPI
 # treats `request: Request` as a query parameter and returns 422.
-from fastapi import Request
+from fastapi import Query, Request
 
 from pydantic import BaseModel
 
@@ -72,6 +72,21 @@ def _format_v1_edge(e: dict) -> dict:
     }
 
 
+def _rows_payload(rows: list, fmt: str, wrapper_key: str = "results"):
+    """Render v1 rows as the default wrapped object (`{wrapper_key: [...]}`) or,
+    when `fmt` is `ndjson`/`jsonl`, as newline-delimited JSON (one row per line).
+
+    NDJSON drops straight into DuckDB (`read_json_auto(..., format='nd')`), `jq`
+    and `pandas.read_json(lines=True)` without unwrapping. The default preserves
+    the existing contract (Coral and other current consumers rely on it)."""
+    if (fmt or "").strip().lower() in ("ndjson", "jsonl", "nd"):
+        import json
+        from fastapi.responses import Response
+        body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+        return Response(content=body, media_type="application/x-ndjson")
+    return {wrapper_key: rows}
+
+
 def register(app) -> None:
     """Attach the JSON routes to the given FastAPI app.
 
@@ -115,11 +130,17 @@ def register(app) -> None:
     # ------------------------------------------------------------------
 
     @app.get("/api/v1/search")
-    def api_v1_search(q: str, source: Optional[str] = None, top_k: int = 8):
+    def api_v1_search(
+        q: str,
+        source: Optional[str] = None,
+        top_k: int = 8,
+        fmt: str = Query("json", alias="format"),
+    ):
         """Hybrid search as plain JSON rows.
 
         `source` omitted → all sources, RRF-fused (each row carries its
-        source name). `top_k` clamped to [1, 50].
+        source name). `top_k` clamped to [1, 50]. `format=ndjson` streams one
+        row per line (DuckDB / jq / pandas friendly).
         """
         mgr = _get_manager(app)
         if mgr is None:
@@ -139,7 +160,7 @@ def register(app) -> None:
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         results = [_format_v1_hit(h) for h in hits]
-        return {"results": results}
+        return _rows_payload(results, fmt)
 
     @app.post("/api/v1/search")
     def api_v1_search_batch(body: BatchSearchRequest):
@@ -196,6 +217,7 @@ def register(app) -> None:
         relation: Optional[str] = None,
         depth: int = 1,
         limit: int = 50,
+        fmt: str = Query("json", alias="format"),
     ):
         """Code knowledge-graph edges as plain JSON rows.
 
@@ -273,11 +295,11 @@ def register(app) -> None:
             raise HTTPException(status_code=404, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"results": [_format_v1_edge(e) for e in edges]}
+        return _rows_payload([_format_v1_edge(e) for e in edges], fmt)
 
     @app.get("/api/v1/sources")
-    def api_v1_sources():
-        """Configured sources as plain JSON rows."""
+    def api_v1_sources(fmt: str = Query("json", alias="format")):
+        """Configured sources as plain JSON rows (`format=ndjson` supported)."""
         mgr = _get_manager(app)
         if mgr is None:
             raise HTTPException(
@@ -294,7 +316,7 @@ def register(app) -> None:
             }
             for st in mgr.list_sources()
         ]
-        return {"sources": rows}
+        return _rows_payload(rows, fmt, "sources")
 
     @app.get("/api/sources/{name}/status")
     def api_source_status(name: str):

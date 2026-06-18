@@ -84,7 +84,9 @@ The spec talks to Lynx's stable local JSON API (additive-only within v1):
   source has the graph layer; graph-enabled sources only.
 
 You can use these endpoints directly from any tool — Coral is one consumer,
-not a dependency.
+not a dependency. All three GET endpoints also accept `format=ndjson` (one JSON
+row per line) so they drop straight into DuckDB / `jq` / pandas; see
+[DUCKDB.md](DUCKDB.md) for join recipes.
 
 > A first-class Coral table-function over the graph (e.g. `lynx.callers(symbol)`)
 > is planned as a follow-up to the initial `lynx.search` / `lynx.sources` source;

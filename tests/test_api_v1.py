@@ -6,6 +6,7 @@ no embedding model, no ChromaDB.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -261,3 +262,46 @@ def test_v1_graph_imports_exposes_module(client):
     row = r.json()["results"][0]
     assert row["relation"] == "imports"
     assert row["module"] == "os"
+
+
+# ---------------------------------------------------------------------------
+# format=ndjson (DuckDB / jq / pandas friendly)
+# ---------------------------------------------------------------------------
+
+
+def test_v1_search_ndjson(client):
+    r = client.get(
+        "/api/v1/search",
+        params={"q": "x", "source": "code", "format": "ndjson"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    rows = [json.loads(ln) for ln in r.text.splitlines() if ln.strip()]
+    assert rows[0]["symbol"] == "Foo.bar"
+
+
+def test_v1_graph_ndjson(client):
+    r = client.get(
+        "/api/v1/graph",
+        params={"operation": "callers", "symbol": "Foo.bar", "format": "ndjson"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    rows = [json.loads(ln) for ln in r.text.splitlines() if ln.strip()]
+    assert rows[0]["relation"] == "calls"
+
+
+def test_v1_sources_ndjson(client):
+    r = client.get("/api/v1/sources", params={"format": "ndjson"})
+    assert r.status_code == 200
+    names = {json.loads(ln)["name"] for ln in r.text.splitlines() if ln.strip()}
+    assert names == {"code", "docs"}
+
+
+def test_v1_default_format_stays_wrapped(client):
+    # Regression: the default JSON keeps its envelope (Coral's rows_path relies
+    # on `results` / `sources`).
+    assert "results" in client.get(
+        "/api/v1/search", params={"q": "x", "source": "code"}
+    ).json()
+    assert "sources" in client.get("/api/v1/sources").json()

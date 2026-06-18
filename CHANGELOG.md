@@ -16,6 +16,11 @@
   rows over the stable v1 API, so an external consumer (e.g. a Coral graph
   source) can pivot from a `lynx.search` hit's symbol to its structural blast
   radius and JOIN it with live data. Additive to v1; no reindex.
+- **`format=ndjson` on the v1 GET endpoints** (`search`, `sources`, `graph`).
+  Returns one JSON row per line so the results drop straight into DuckDB
+  (`read_json_auto(..., format='newline_delimited')`), `jq` and pandas without
+  unwrapping. Opt-in; the default wrapped JSON is unchanged. See `docs/DUCKDB.md`
+  for join recipes.
 - **Four more languages for AST-aware chunking: Bash/Shell, SQL, Scala, Lua.**
   Lynx now parses **18+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
   `.scala`/`.sc`, and `.lua` files are indexed as whole functions / DDL objects
