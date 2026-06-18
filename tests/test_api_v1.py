@@ -18,7 +18,11 @@ from lynx.manager.ui.app import create_app
 class FakeManager:
     def __init__(self):
         self.config = SimpleNamespace(storage_path="/tmp/x")
-        self.backends = {"code": object(), "docs": object()}
+        # "code" has the graph layer, "docs" does not.
+        self.backends = {
+            "code": SimpleNamespace(graph=object()),
+            "docs": SimpleNamespace(graph=None),
+        }
 
     def get(self, source):
         if source not in self.backends:
@@ -49,6 +53,42 @@ class FakeManager:
             {"name": "docs", "type": "webdoc", "url": "https://example.com",
              "chunk_count": None, "last_update": None},
         ]
+
+    # --- graph layer (edge-returning ops mirror the real SourceManager) ---
+    def _edge(self, frm, to, relation, **extra):
+        e = {
+            "source": {"label": frm, "kind": "method",
+                       "file": "/repo/a.py", "start_line": 10, "end_line": 20},
+            "target": {"label": to, "kind": "method",
+                       "file": "/repo/b.py", "start_line": 5, "end_line": 8},
+            "relation": relation,
+            "confidence": "extracted",
+            "from_file": "/repo/a.py", "from_line": 15,
+        }
+        e.update(extra)
+        return e
+
+    def get_callers(self, source, symbol, limit=50):
+        return [self._edge("Caller.run", symbol, "calls")][:limit]
+
+    def get_callees(self, source, symbol, limit=50):
+        return [self._edge(symbol, "Helper.do", "calls")][:limit]
+
+    def get_subclasses(self, source, symbol, limit=50):
+        return [self._edge("Derived", symbol, "inherits", base_kind="extends")][:limit]
+
+    def get_superclasses(self, source, symbol, limit=50):
+        return [self._edge(symbol, "Base", "inherits", base_kind="extends")][:limit]
+
+    def get_imports(self, source, file_or_symbol, limit=100):
+        return [self._edge(file_or_symbol, "os", "imports", module="os")][:limit]
+
+    def get_neighbors(self, source, symbol, relation_filter=None, depth=1, limit=100):
+        es = [self._edge(symbol, "Helper.do", "calls"),
+              self._edge("Caller.run", symbol, "inherits", base_kind="extends")]
+        if relation_filter:
+            es = [e for e in es if e["relation"] == relation_filter]
+        return es[:limit]
 
 
 @pytest.fixture()
@@ -133,3 +173,91 @@ def test_v1_unavailable_manager_is_503():
     c = TestClient(app)
     assert c.get("/api/v1/search", params={"q": "x"}).status_code == 503
     assert c.get("/api/v1/sources").status_code == 503
+    assert c.get(
+        "/api/v1/graph", params={"operation": "callers", "symbol": "x"}
+    ).status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/graph
+# ---------------------------------------------------------------------------
+
+
+def test_v1_graph_callers_flattened_rows(client):
+    r = client.get(
+        "/api/v1/graph",
+        params={"operation": "callers", "symbol": "Foo.bar", "source": "code"},
+    )
+    assert r.status_code == 200
+    row = r.json()["results"][0]
+    assert row["relation"] == "calls"
+    assert row["from_symbol"] == "Caller.run"
+    assert row["to_symbol"] == "Foo.bar"
+    assert row["from_file"] == "/repo/a.py"
+    assert row["to_file"] == "/repo/b.py"
+    assert row["call_site_line"] == 15
+
+
+def test_v1_graph_source_omitted_uses_single_graph_source(client):
+    # Only "code" has the graph layer, so `source` can be omitted.
+    r = client.get("/api/v1/graph", params={"operation": "callees", "symbol": "Foo.bar"})
+    assert r.status_code == 200
+    assert r.json()["results"][0]["to_symbol"] == "Helper.do"
+
+
+def test_v1_graph_nongraph_source_is_404(client):
+    r = client.get(
+        "/api/v1/graph",
+        params={"operation": "callers", "symbol": "x", "source": "docs"},
+    )
+    assert r.status_code == 404
+    assert "docs" in r.json()["detail"]
+
+
+def test_v1_graph_unknown_source_is_404(client):
+    r = client.get(
+        "/api/v1/graph",
+        params={"operation": "callers", "symbol": "x", "source": "nope"},
+    )
+    assert r.status_code == 404
+
+
+def test_v1_graph_unknown_operation_is_400(client):
+    r = client.get("/api/v1/graph", params={"operation": "frobnicate", "symbol": "x"})
+    assert r.status_code == 400
+
+
+def test_v1_graph_requires_symbol(client):
+    assert client.get(
+        "/api/v1/graph", params={"operation": "callers"}
+    ).status_code == 422
+
+
+def test_v1_graph_neighbors_relation_filter(client):
+    r = client.get(
+        "/api/v1/graph",
+        params={"operation": "neighbors", "symbol": "Foo.bar", "relation": "calls"},
+    )
+    assert r.status_code == 200
+    rows = r.json()["results"]
+    assert rows and all(row["relation"] == "calls" for row in rows)
+
+
+def test_v1_graph_inherits_carries_base_kind(client):
+    r = client.get(
+        "/api/v1/graph", params={"operation": "superclasses", "symbol": "Derived"}
+    )
+    assert r.status_code == 200
+    assert r.json()["results"][0]["base_kind"] == "extends"
+
+
+def test_v1_graph_imports_exposes_module(client):
+    # The imported module string lives in `module` (the target node is often
+    # synthetic for imports), so it must survive the flattening.
+    r = client.get(
+        "/api/v1/graph", params={"operation": "imports", "symbol": "a.py"}
+    )
+    assert r.status_code == 200
+    row = r.json()["results"][0]
+    assert row["relation"] == "imports"
+    assert row["module"] == "os"

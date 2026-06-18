@@ -11,6 +11,11 @@
   (`[self foo]` resolves caller → callee), and inheritance (superclass
   `extends` + adopted-protocol `implements`). Shared `.h` headers still parse
   as C unless Objective-C markers are present.
+- **`GET /api/v1/graph` endpoint.** Exposes the code knowledge graph (`callers`,
+  `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`) as flat JSON
+  rows over the stable v1 API, so an external consumer (e.g. a Coral graph
+  source) can pivot from a `lynx.search` hit's symbol to its structural blast
+  radius and JOIN it with live data. Additive to v1; no reindex.
 - **Four more languages for AST-aware chunking: Bash/Shell, SQL, Scala, Lua.**
   Lynx now parses **18+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
   `.scala`/`.sc`, and `.lua` files are indexed as whole functions / DDL objects

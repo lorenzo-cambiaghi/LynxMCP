@@ -74,9 +74,21 @@ The spec talks to Lynx's stable local JSON API (additive-only within v1):
   one model call, so it's faster than N single calls. For external multi-query
   consumers (e.g. an agent fanning one question across rows of another source);
   Coral can't use it — it calls the single-query `GET` per row.
+- `GET /api/v1/graph?operation=...&symbol=...&source=...&limit=...` — the **code
+  knowledge graph** as flat JSON rows (`from_*` → `to_*` with `relation`).
+  Operations: `callers`, `callees`, `subclasses`, `superclasses`, `imports`,
+  `neighbors` (the last also accepts `relation` and `depth`). This is what lets a
+  caller pivot from a `lynx.search` hit's `symbol` to its structural blast radius
+  — who calls it, what it depends on, what breaks if it changes — and JOIN that
+  with live data (tickets, PRs, owners). `source` is optional when exactly one
+  source has the graph layer; graph-enabled sources only.
 
 You can use these endpoints directly from any tool — Coral is one consumer,
 not a dependency.
+
+> A first-class Coral table-function over the graph (e.g. `lynx.callers(symbol)`)
+> is planned as a follow-up to the initial `lynx.search` / `lynx.sources` source;
+> the `GET /api/v1/graph` endpoint above is the bridge it will sit on.
 
 ## Build your own: row-driven search from Python
 

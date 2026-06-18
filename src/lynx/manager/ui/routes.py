@@ -42,6 +42,36 @@ def _format_v1_hit(h: dict) -> dict:
     }
 
 
+def _format_v1_edge(e: dict) -> dict:
+    """Flatten a graph edge into a stable, JOIN-friendly /api/v1 JSON row.
+
+    Edges come from the manager as `{source: node, target: node, relation,
+    ...}`; Coral wants flat columns, so we expose `from_*` / `to_*` plus the
+    call-site location (`from_file`/`from_line` on the edge itself)."""
+    src = e.get("source") or {}
+    tgt = e.get("target") or {}
+    return {
+        "relation": e.get("relation", ""),
+        "base_kind": e.get("base_kind") or "",
+        "confidence": e.get("confidence") or "",
+        # For `imports` edges the imported module/path lives here (the target
+        # node is often synthetic), so it's the meaningful column for imports.
+        "module": e.get("module") or "",
+        "from_symbol": src.get("label", ""),
+        "from_kind": src.get("kind") or "",
+        "from_file": src.get("file") or "",
+        "from_start_line": src.get("start_line") or 0,
+        "from_end_line": src.get("end_line") or 0,
+        "to_symbol": tgt.get("label", ""),
+        "to_kind": tgt.get("kind") or "",
+        "to_file": tgt.get("file") or "",
+        "to_start_line": tgt.get("start_line") or 0,
+        "to_end_line": tgt.get("end_line") or 0,
+        "call_site_file": e.get("from_file") or "",
+        "call_site_line": e.get("from_line") or 0,
+    }
+
+
 def register(app) -> None:
     """Attach the JSON routes to the given FastAPI app.
 
@@ -157,6 +187,93 @@ def register(app) -> None:
             for q, hits in zip(queries, per_query)
         ]
         return {"results": results}
+
+    @app.get("/api/v1/graph")
+    def api_v1_graph(
+        operation: str,
+        symbol: str,
+        source: Optional[str] = None,
+        relation: Optional[str] = None,
+        depth: int = 1,
+        limit: int = 50,
+    ):
+        """Code knowledge-graph edges as plain JSON rows.
+
+        Lets a SQL caller pivot from a `lynx.search` hit (a `symbol`) to its
+        structural neighbourhood. `operation` is one of: `callers`, `callees`,
+        `subclasses`, `superclasses`, `imports`, `neighbors`. `source` may be
+        omitted when exactly one source has the graph layer. Symbol matching is
+        fuzzy (case-insensitive substring), same as the `graph_query` MCP tool.
+        Rows are flat edges (`from_*` → `to_*` with `relation`) so they JOIN
+        cleanly with other Coral sources.
+        """
+        mgr = _get_manager(app)
+        if mgr is None:
+            raise HTTPException(
+                status_code=503,
+                detail=app.state.manager_error or "manager not initialized",
+            )
+        op = (operation or "").strip().lower()
+        valid_ops = {
+            "callers", "callees", "subclasses", "superclasses",
+            "imports", "neighbors",
+        }
+        if op not in valid_ops:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown operation {op!r}; expected one of {sorted(valid_ops)}",
+            )
+        if not symbol or not symbol.strip():
+            raise HTTPException(status_code=400, detail="`symbol` is required")
+        k = max(1, min(int(limit), 200))
+
+        # Resolve the graph-enabled source (same policy as the MCP tool).
+        graph_sources = [
+            name for name, b in mgr.backends.items()
+            if getattr(b, "graph", None) is not None
+        ]
+        if source is None:
+            if len(graph_sources) == 1:
+                source = graph_sources[0]
+            elif not graph_sources:
+                raise HTTPException(
+                    status_code=404,
+                    detail="no graph-enabled source is configured",
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"multiple graph sources; pass `source` (one of {graph_sources})",
+                )
+        elif source not in graph_sources:
+            raise HTTPException(
+                status_code=404,
+                detail=f"source {source!r} has no graph layer (graph sources: {graph_sources})",
+            )
+
+        try:
+            if op == "callers":
+                edges = mgr.get_callers(source, symbol, limit=k)
+            elif op == "callees":
+                edges = mgr.get_callees(source, symbol, limit=k)
+            elif op == "subclasses":
+                edges = mgr.get_subclasses(source, symbol, limit=k)
+            elif op == "superclasses":
+                edges = mgr.get_superclasses(source, symbol, limit=k)
+            elif op == "imports":
+                edges = mgr.get_imports(source, symbol, limit=k)
+            else:  # neighbors
+                edges = mgr.get_neighbors(
+                    source, symbol,
+                    relation_filter=relation,
+                    depth=max(1, min(int(depth), 6)),
+                    limit=k,
+                )
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"results": [_format_v1_edge(e) for e in edges]}
 
     @app.get("/api/v1/sources")
     def api_v1_sources():
