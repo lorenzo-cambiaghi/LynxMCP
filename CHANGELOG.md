@@ -21,6 +21,11 @@
   (`read_json_auto(..., format='newline_delimited')`), `jq` and pandas without
   unwrapping. Opt-in; the default wrapped JSON is unchanged. See `docs/DUCKDB.md`
   for join recipes.
+- **PR impact-analysis GitHub Action** (`integrations/github-action/`). On every
+  pull request it indexes the repo on the runner (model + index cached) and
+  comments with the cross-file callers of the changed symbols (blast radius) and
+  the semantically related code, via the `/api/v1` endpoints. Runs 100% on the
+  runner; a self-hosted Lynx is the lighter option for big monorepos.
 - **Four more languages for AST-aware chunking: Bash/Shell, SQL, Scala, Lua.**
   Lynx now parses **18+ languages** with tree-sitter — `.sh`/`.bash`, `.sql`,
   `.scala`/`.sc`, and `.lua` files are indexed as whole functions / DDL objects

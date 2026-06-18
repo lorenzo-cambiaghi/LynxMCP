@@ -145,6 +145,7 @@ ORDER BY s.score DESC;
 | [Use Lynx from Coral](docs/CORAL.md) | SQL over your code search: `SELECT ... FROM lynx.search` joined with live GitHub/Sentry data |
 | [Use Lynx from DuckDB](docs/DUCKDB.md) | `read_ndjson_auto('…/api/v1/search?format=ndjson')` — join code search + the code graph with any local data |
 | [MCP recipes](docs/MCP_RECIPES.md) | Agent patterns combining Lynx with GitHub/Sentry/Jira MCP servers (triage, PR impact, ticket→code) |
+| [PR impact analysis (GitHub Action)](integrations/github-action/) | On every PR, comment with the downstream callers + semantically related code, indexed locally on the runner |
 | [config.example.json](config.example.json) | Annotated example configuration |
 
 ## Status
