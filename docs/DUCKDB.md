@@ -73,6 +73,12 @@ FROM read_ndjson_auto(
   'http://127.0.0.1:8765/api/v1/graph?operation=callers&symbol=ApplyDamage&format=ndjson');
 ```
 
+> 💡 **Looking for an AST / dependency table?** You don't need to build one. The
+> `/api/v1/graph` endpoint *is* the dependency graph (callers / callees /
+> inheritance / imports, from tree-sitter) — stream it with `read_ndjson_auto`
+> and join it with `lynx_search` results to combine code *topology* with
+> *semantics* (e.g. "methods near 'token validation' that call `X`").
+
 ## Per-row correlation (one search per ticket)
 
 A SQL `JOIN` can't drive `lynx.search` from another table's column — the query
@@ -113,12 +119,13 @@ then do all the joining/shaping in SQL.
 
 Vectors tell you what the code *does*; git tells you what's *moving*. Cross them
 to isolate likely regressions: code that is both semantically related to an area
-and churning. Dump per-file commit counts for a window to CSV:
+and churning. Dump each commit×file with its date (so you get both churn and
+recency) to CSV:
 
 ```bash
-git log --since="3 days ago" --name-only --pretty=format: \
-  | grep -v '^$' | sort | uniq -c | sort -rn \
-  | awk '{print $2 "," $1}' > recent.csv          # rows: path,commits
+git log --since="7 days ago" --date=short --pretty=format:'%ad' --name-only \
+  | awk '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ {d=$0; next} NF {print $0 "," d}' \
+  > churn.csv                                      # rows: path,date
 ```
 
 Then join that churn against a semantic search — the search query is a constant,
@@ -127,19 +134,21 @@ so the join is plain SQL:
 ```sql
 INSTALL httpfs; LOAD httpfs;
 
-WITH recent AS (
-  SELECT * FROM read_csv('recent.csv', header = false,
-                         columns = {'path': 'VARCHAR', 'commits': 'INT'})
+WITH churn AS (
+  SELECT path, count(*) AS commits, max(date) AS last_modified
+  FROM read_csv('churn.csv', header = false,
+                columns = {'path': 'VARCHAR', 'date': 'DATE'})
+  GROUP BY path
 ),
 hits AS (
   SELECT * FROM read_ndjson_auto(
     'http://127.0.0.1:8765/api/v1/search?q=user%20login%20and%20token%20validation&top_k=40&format=ndjson')
 )
-SELECT r.path, r.commits, h.symbol, h.score
+SELECT c.path, c.commits, c.last_modified, h.symbol, h.score
 FROM hits h
-JOIN recent r ON h.file = regexp_replace(r.path, '.*/', '')   -- match on basename
-WHERE r.commits >= 2
-ORDER BY r.commits DESC, h.score DESC;
+JOIN churn c ON h.file = regexp_replace(c.path, '.*/', '')   -- match on basename
+WHERE c.commits >= 2
+ORDER BY c.last_modified DESC, c.commits DESC, h.score DESC;
 ```
 
 > Joining on basename is robust across OSes but can collide for same-named files
