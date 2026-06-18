@@ -18,6 +18,13 @@ permissions:
   contents: read
   pull-requests: write   # to post the comment
 
+env:
+  # Pin Lynx so the cached index stays valid across runs. A newer Lynx may bump
+  # CHUNKER_VERSION, which triggers a one-time full re-index — bump this on
+  # purpose. Requires >= 1.6.0 (this action uses the /api/v1/graph and
+  # format=ndjson endpoints added there). Latest: https://pypi.org/project/lynx-mcp/
+  LYNX_VERSION: "1.6.0"
+
 jobs:
   impact:
     runs-on: ubuntu-latest
@@ -31,7 +38,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Lynx
-        run: pip install lynx-mcp
+        run: pip install "lynx-mcp==${{ env.LYNX_VERSION }}"
 
       # Embedding model (~hundreds of MB) + the index. The first run is slow;
       # later runs restore this and Lynx only re-embeds changed files.
