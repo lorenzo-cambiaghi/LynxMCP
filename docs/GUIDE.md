@@ -2274,7 +2274,7 @@ backward-compatible: leave it off and nothing changes.
      |   |               |              |
      |   | extractor.py  | tree-sitter walk: classes, functions,
      |   |               | calls, inherits, imports, contains.
-     |   |               | 16 langs, reuses chunking._get_parser.
+     |   |               | 17 langs, reuses chunking._get_parser.
      |   |               |
      |   | builder.py    | GraphLayer: nx.DiGraph in RAM + JSON on
      |   |               | disk. SHA-incremental rebuild. Cross-file
@@ -2299,7 +2299,7 @@ backward-compatible: leave it off and nothing changes.
 | chunking.    |--->|   metadata.json        drift snapshot         |
 | chunk_file:  |    |   file_hashes.json     SHA-256 per file       |
 | tree-sitter  |    |   graph/               (only if graph.enabled)|
-| 16 langs +   |    |     nodes.json         all nodes              |
+| 17 langs +   |    |     nodes.json         all nodes              |
 | SentenceSplit|    |     edges.json         all edges              |
 |              |    |     raw_calls.json     unresolved calls       |
 | HF embeddings|    |     raw_inherits.json  unresolved bases       |
@@ -2351,7 +2351,7 @@ lynx/
 │       └── graph/             Opt-in knowledge graph layer (new in v0.5 / extended in v0.6)
 │           ├── __init__.py    Public API: GraphLayer + 7 query funcs + 3 analyzers
 │           ├── extractor.py   LangGraphRules + extract_file(): single-file walker,
-│           │                  16 langs, classes / functions / imports / calls /
+│           │                  17 langs, classes / functions / imports / calls /
 │           │                  base-lists (inherits)
 │           ├── builder.py     GraphLayer: SHA cache, cross-file resolution,
 │           │                  atomic JSON persistence, watcher sync, bootstrap
@@ -2371,7 +2371,7 @@ lynx/
 │   ├── test_tree_sitter.py         Unit tests for the AST chunker (18 languages)
 │   ├── test_webdoc.py              Webdoc backend (crawl + extract) with mocked HTTP
 │   ├── test_hybrid_vs_dense.py     Side-by-side dense vs hybrid benchmark
-│   ├── test_graph_extractor.py     Graph extractor unit tests (14 scenarios, 16 langs)
+│   ├── test_graph_extractor.py     Graph extractor unit tests (15 scenarios, 17 langs)
 │   ├── test_graph_builder.py       GraphLayer build / persist / SHA / cross-file
 │   ├── test_graph_analyzer.py      god_nodes / communities / surprising_connections
 │   ├── test_graph_query.py         get_callers / get_callees / shortest_path / ...
