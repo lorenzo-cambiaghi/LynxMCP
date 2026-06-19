@@ -35,7 +35,8 @@ class FakeManager:
             "file": "a.py", "file_path": "/repo/a.py",
             "symbol_name": "Foo.bar", "symbol_kind": "method",
             "language": "python", "start_line": 10, "end_line": 20,
-            "score": 0.031, "content": "def bar(): ...",
+            "score": 0.031,
+            "content": 'def bar(self, x):\n    """Return x, doubled."""\n    return x * 2',
         }][:top_k]
 
     def search_batch(self, source, queries, top_k=8, **kw):
@@ -305,3 +306,41 @@ def test_v1_default_format_stays_wrapped(client):
         "/api/v1/search", params={"q": "x", "source": "code"}
     ).json()
     assert "sources" in client.get("/api/v1/sources").json()
+
+
+# ---------------------------------------------------------------------------
+# view=outline (signature triage; body fetched on demand)
+# ---------------------------------------------------------------------------
+
+
+def test_v1_search_outline_drops_body_for_signature(client):
+    r = client.get(
+        "/api/v1/search",
+        params={"q": "x", "source": "code", "view": "outline"},
+    )
+    assert r.status_code == 200
+    row = r.json()["results"][0]
+    assert "content" not in row                       # body dropped
+    assert row["signature"] == "def bar(self, x)"     # compact declaration
+    assert row["doc"] == "Return x, doubled."         # in-chunk docstring
+    # navigation fields kept so the agent can read the real body on demand
+    assert row["file_path"] == "/repo/a.py"
+    assert row["start_line"] == 10 and row["end_line"] == 20
+
+
+def test_v1_search_default_view_keeps_body(client):
+    row = client.get(
+        "/api/v1/search", params={"q": "x", "source": "code"}
+    ).json()["results"][0]
+    assert "content" in row and "signature" not in row
+
+
+def test_v1_search_outline_composes_with_ndjson(client):
+    r = client.get(
+        "/api/v1/search",
+        params={"q": "x", "source": "code", "view": "outline", "format": "ndjson"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    row = json.loads(r.text.splitlines()[0])
+    assert "content" not in row and row["signature"] == "def bar(self, x)"

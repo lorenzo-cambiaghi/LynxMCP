@@ -6,6 +6,7 @@ endpoints focused: status, doctor, search. Mutations land in Phase 5+.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Module-level imports so FastAPI can resolve `Request` type annotations
@@ -40,6 +41,61 @@ def _format_v1_hit(h: dict) -> dict:
         "score": float(h.get("score") or 0.0),
         "content": h.get("content", ""),
     }
+
+
+def _signature_of(content: str, language: str = "") -> str:
+    """Best-effort one-line declaration: the chunk text up to the body opener
+    (`{` for brace languages, a line-ending `:` for Python/Ruby-style headers),
+    whitespace-collapsed. Falls back to the first non-empty line. Query-time
+    only — no reindex, no AST re-parse."""
+    if not content:
+        return ""
+    cut = len(content)
+    brace = content.find("{")
+    if brace != -1:
+        cut = min(cut, brace)
+    m = re.search(r":\s*(?:\n|$)", content)   # `def foo(...):` end, not a type hint
+    if m:
+        cut = min(cut, m.start())
+    sig = re.sub(r"\s+", " ", content[:cut]).strip()
+    if not sig:                                # opener on the very first char
+        lines = [ln for ln in content.splitlines() if ln.strip()]
+        sig = lines[0].strip() if lines else ""
+    return sig[:400]
+
+
+def _doc_of(content: str, language: str = "") -> str:
+    """First line of an in-chunk docstring / leading comment, if any. Python &
+    co. keep the docstring inside the body (so it lands in the chunk); C#-style
+    `///` doc usually precedes the node and won't appear here — that's fine, the
+    signature alone is already a big token saving."""
+    if not content:
+        return ""
+    for quote in ('"""', "'''"):
+        m = re.search(re.escape(quote) + r"(.*?)" + re.escape(quote), content, re.S)
+        if m and m.group(1).strip():
+            return m.group(1).strip().splitlines()[0][:200]
+    m = re.search(r"^\s*///\s?(.+)$", content, re.M)
+    if m:
+        return m.group(1).strip()[:200]
+    return ""
+
+
+def _to_outline(row: dict) -> dict:
+    """Drop the body, add a compact `signature` + `doc` for cheap triage. The
+    row keeps `file_path` / `start_line` / `end_line`, so an agent reads the
+    full body on demand instead of paying for every hit's body up front."""
+    out = {k: v for k, v in row.items() if k != "content"}
+    content = row.get("content", "")
+    if row.get("kind") == "text_window":
+        # Non-AST chunk (plain text / unsupported file): there's no real
+        # signature — give a clean first-line preview, not a mid-text fragment.
+        line = next((ln.strip() for ln in content.splitlines() if ln.strip()), "")
+        out["signature"] = re.sub(r"\s+", " ", line)[:200]
+    else:
+        out["signature"] = _signature_of(content, row.get("language", ""))
+    out["doc"] = _doc_of(content, row.get("language", ""))
+    return out
 
 
 def _format_v1_edge(e: dict) -> dict:
@@ -134,6 +190,7 @@ def register(app) -> None:
         q: str,
         source: Optional[str] = None,
         top_k: int = 8,
+        view: str = "full",
         fmt: str = Query("json", alias="format"),
     ):
         """Hybrid search as plain JSON rows.
@@ -141,6 +198,11 @@ def register(app) -> None:
         `source` omitted → all sources, RRF-fused (each row carries its
         source name). `top_k` clamped to [1, 50]. `format=ndjson` streams one
         row per line (DuckDB / jq / pandas friendly).
+
+        `view=outline` drops each hit's `content` (the body) and returns a
+        compact `signature` + `doc` instead — let an agent triage by signature
+        and read the body on demand via `file_path`/`start_line`/`end_line`.
+        Typically ~2.4x fewer tokens than the full bodies (see docs/OUTLINE.md).
         """
         mgr = _get_manager(app)
         if mgr is None:
@@ -160,6 +222,8 @@ def register(app) -> None:
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         results = [_format_v1_hit(h) for h in hits]
+        if (view or "").strip().lower() == "outline":
+            results = [_to_outline(r) for r in results]
         return _rows_payload(results, fmt)
 
     @app.post("/api/v1/search")

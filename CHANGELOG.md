@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`view=outline` on `GET /api/v1/search`.** Returns each hit's `signature` +
+  `doc` instead of its body, so an agent triages candidates by signature and
+  reads the full code of only the one it picks (via `file_path` / `start_line` /
+  `end_line`). Measured **~2.4× fewer tokens** for the search step on a public
+  repo (psf/requests: ≈59% triage; ≈53% even after reading the one chosen body)
+  — see `docs/OUTLINE.md` for the data + chart, `benchmarks/outline_tokens.py`
+  to reproduce. Query-time transform
+  (no reindex, no `CHUNKER_VERSION` bump, no LLM); composes with `format=ndjson`;
+  the default `view=full` is unchanged.
+
 ## 1.6.0 — 2026-06-19
 
 ### Added

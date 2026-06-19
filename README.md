@@ -11,6 +11,7 @@ Your AI assistant greps file names and guesses. Lynx gives it real retrieval ove
 
 - **AST-aware indexing** — tree-sitter parses 18+ languages and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
+- **Token-efficient triage** — `view=outline` returns signatures instead of bodies, so an agent scans the candidates for **~2.4× fewer tokens** and reads only the code it picks ([measured](docs/OUTLINE.md)).
 - **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius.
 - **Joinable as SQL** — search and the graph are also served as rows over a local HTTP API, so you can correlate your code with tickets, PRs, or logs in [DuckDB](docs/DUCKDB.md) or [Coral](docs/CORAL.md) — no data leaves your machine.
 - **Multi-source** — index codebases, public docs sites (fetched once, on demand; JS-rendered SPAs supported via optional headless Chromium), and PDFs side by side.
@@ -104,6 +105,32 @@ git clone --depth 1 --branch 5.2 https://github.com/django/django.git benchmarks
 python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
 ```
 
+## Two ways to read a result: full vs outline
+
+Every Lynx search ranks the same way (hybrid dense + BM25 over whole functions). What differs is **how much of each hit you pull into the model's context**:
+
+- **Full search** (default) returns the matching functions *with their bodies* — `file`, `symbol`, line range, `score`, and the real `content`. The model has the code immediately: one tool call and it can explain, review, or edit.
+- **Outline search** (`view=outline`) returns the same ranked hits but **drops the bodies** — just a one-line `signature` plus the first line of the docstring. The model scans the candidates to decide *which* one it needs, then reads that single body on demand (every row still carries `file_path` + `start_line`/`end_line`).
+
+It's **progressive disclosure**: triage cheap, fetch deep only where it pays. Most of the bodies in a result set are ones the model will never use — outline stops paying for them up front. On a public repo (`psf/requests`) it cut the search step to **~2.4× fewer tokens** — [measured, with the chart](docs/OUTLINE.md).
+
+```jsonc
+// full          →  { …, "content": "<the whole 64-line iter_content method>" }
+// view=outline  →  { …, "signature": "def iter_content(self, chunk_size=1, decode_unicode=False)",
+//                        "doc": "Iterates over the response data." }
+```
+
+**When to use which — there's no silver bullet:**
+
+| Use **full** (default) when… | Use **outline** when… |
+|---|---|
+| You'll use the code *now* — explain, review, or edit a specific area | You're navigating: "where is X / which function does Y" |
+| Few, precise results; you already know roughly what you want | Broad or exploratory queries, or a large `top_k` |
+| The body *is* the answer (a one-shot question) | Building a mental map, or chaining many searches |
+| | Context budget is tight (large repos, long sessions) |
+
+Rule of thumb for an agent: **triage with `outline`, then pull the one body you need** — a follow-up `full` search or a direct read of the cited line range. (`view` is opt-in; the default is unchanged, so Coral / DuckDB are unaffected.)
+
 ## Lynx + Coral: your code, joined with everything else
 
 [Coral](https://github.com/withcoral/coral) turns your live tools — GitHub, Sentry, Jira, Linear — into one local SQL interface. Plug in Lynx ([source spec](integrations/coral/manifest.yaml)) and **your codebase becomes a queryable source too**: ask in plain language, get ranked code locations back, and **correlate them with the tools your team already lives in** — without a byte leaving your machine.
@@ -178,6 +205,7 @@ The code graph is one URL away too (`…/api/v1/graph?operation=callers&symbol=�
 | [Manager UI](docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09) | Guided setup, playground, diagnostics |
 | [Use Lynx from Coral](docs/CORAL.md) | SQL over your code search: `SELECT ... FROM lynx.search` joined with live GitHub/Sentry data |
 | [Use Lynx from DuckDB](docs/DUCKDB.md) | `read_ndjson_auto('…/api/v1/search?format=ndjson')` — join code search + the code graph with any local data |
+| [Outline mode (token-efficient triage)](docs/OUTLINE.md) | `view=outline` — signatures instead of bodies; ~2.4× fewer tokens, with the measured data + chart |
 | [MCP recipes](docs/MCP_RECIPES.md) | Agent patterns combining Lynx with GitHub/Sentry/Jira MCP servers (triage, PR impact, ticket→code) |
 | [PR impact analysis (GitHub Action)](integrations/github-action/) | On every PR, comment with the downstream callers + semantically related code, indexed locally on the runner |
 | [Steampipe plugin (design spec)](integrations/steampipe/DESIGN.md) | Spec for a SQL plugin exposing `lynx_source`/`lynx_search`/`lynx_graph`, joinable with Steampipe's connectors — implementation TBD |
