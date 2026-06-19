@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 — 2026-06-16
+## 1.6.0 — 2026-06-19
 
 ### Added
 - **Objective-C AST chunking and code graph.** `.m` / `.mm` files (and `.h`
