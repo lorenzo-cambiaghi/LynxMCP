@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-06-19
 
 ### Added
 - **Outline search — signatures instead of bodies, for cheap triage.** Both the
