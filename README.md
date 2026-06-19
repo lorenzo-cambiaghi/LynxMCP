@@ -221,6 +221,10 @@ Actively developed by one author; APIs may still move before 1.x stabilizes. Iss
 
 [Apache 2.0](LICENSE)
 
+---
+
+[![LynxMCP MCP server](https://glama.ai/mcp/servers/lorenzo-cambiaghi/LynxMCP/badges/card.svg)](https://glama.ai/mcp/servers/lorenzo-cambiaghi/LynxMCP)
+
 <!-- MCP Registry ownership marker — must stay in the README published on
      PyPI so registry.modelcontextprotocol.io can verify the package.
 mcp-name: io.github.lorenzo-cambiaghi/lynx

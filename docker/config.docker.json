@@ -30,7 +30,7 @@
         "enabled": false
       },
       "graph": {
-        "enabled": false
+        "enabled": true
       }
     }
   }
