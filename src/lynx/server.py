@@ -49,6 +49,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .config import load_config
+from .outline import doc_of, signature_for
 
 
 # ----------------------------------------------------------------------
@@ -145,6 +146,47 @@ def _format_one_result(i, res):
         body += f"    source: {res['source']}\n"
     body += f"{res.get('content', '')}\n\n"
     return header + body
+
+
+def _format_one_outline(i, res):
+    """Compact, body-free render of one result for cheap triage: the same
+    header/citation as the full view, but `signature` + a doc line instead of
+    the body. The agent reads the real body on demand (find_definition or the
+    cited file:line). Derivation shared with `/api/v1/search?view=outline`."""
+    score = res.get("score", 0.0)
+    fname = res.get("file", "unknown")
+    sym = res.get("symbol_name") or ""
+    start = res.get("start_line") or 0
+    end = res.get("end_line") or 0
+    loc_parts = [fname]
+    if start and end and start != end:
+        loc_parts.append(f"L{start}-{end}")
+    elif start:
+        loc_parts.append(f"L{start}")
+    loc = " ".join(loc_parts)
+    sym_suffix = f"  {sym}" if sym and not sym.startswith("<") else ""
+    out = f"--- {i}. {loc}{sym_suffix} (Score: {score:.4f}) ---\n"
+    if "source" in res:
+        out += f"    source: {res['source']}\n"
+    content = res.get("content", "")
+    out += f"    {signature_for(content, res.get('symbol_kind', ''), res.get('language', ''))}\n"
+    doc = doc_of(content, res.get("language", ""))
+    if doc:
+        out += f"    ↳ {doc}\n"
+    return out + "\n"
+
+
+def _format_outline_results(query, results, source_label, filter_suffix):
+    if not results:
+        return f"No results found for '{query}' in {source_label}{filter_suffix}."
+    out = (
+        f"Found {len(results)} results for '{query}' in {source_label}"
+        f"{filter_suffix} — OUTLINE (signatures only; read a body you need with "
+        f"find_definition, or by its file:line):\n\n"
+    )
+    for i, res in enumerate(results, 1):
+        out += _format_one_outline(i, res)
+    return out
 
 
 def _format_search_results(query, results, source_label, filter_suffix):
@@ -255,6 +297,11 @@ def _build_instructions(manager) -> str:
         "not a weak one. ",
         "Escalate to `deep_search` only when `search` returns weak or empty "
         "results. ",
+        "For broad/exploratory queries or a large top_k, prefer "
+        "`search(query, outline=true)`: it returns signatures only (cheap to "
+        "scan) — triage them, then pull just the one body you need with "
+        "`find_definition` or its file:line. Use the default full search when "
+        "you'll work with the code right away. ",
     ]
     if has_graph:
         parts.append(
@@ -335,7 +382,11 @@ def _register_search_tools(mcp, manager):
         f"Best practices: use natural-language descriptions of what the code does, not exact "
         f"identifiers (use grep for those). Good: 'method that handles player damage calculation'. "
         f"Bad: 'CalculateDamage'. Args: query (natural language); source (optional name); "
-        f"top_k (default from config); file_glob, extensions, path_contains (optional filters)."
+        f"top_k (default from config); file_glob, extensions, path_contains (optional filters). "
+        f"For broad/exploratory queries, or a large top_k, set outline=true to get "
+        f"signatures-only results (much cheaper to read): scan them, then pull just the one body "
+        f"you need with find_definition or its file:line. Use the default (full bodies) when "
+        f"you'll work with the code right away."
     )
 
     @mcp.tool(name="search", description=_desc_search, annotations=_ANN_READ)
@@ -343,6 +394,7 @@ def _register_search_tools(mcp, manager):
         query: Annotated[str, Field(description="Natural-language description of the behavior to find (e.g. 'method that handles player damage calculation'), NOT an identifier — use grep for exact names.")],
         source: _SourceArg = None,
         top_k: Annotated[int | None, Field(description="Maximum number of results to return. Defaults to the server's configured value.")] = None,
+        outline: Annotated[bool, Field(description="If true, return each hit's signature + first doc line instead of its full body — cheap triage for broad queries or a large top_k. Scan the signatures, then read the one body you need (find_definition, or its file:line). Default false = full bodies, for when you'll use the code right away.")] = False,
         file_glob: _FileGlobArg = None,
         extensions: _ExtensionsArg = None,
         path_contains: _PathContainsArg = None,
@@ -360,7 +412,8 @@ def _register_search_tools(mcp, manager):
                 results = manager.search(source, query, top_k=effective_top_k, **filters)
                 label = f"source {source!r}"
             filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
-            return _format_search_results(query, results, label, filter_suffix)
+            fmt = _format_outline_results if outline else _format_search_results
+            return fmt(query, results, label, filter_suffix)
         except Exception as e:
             return f"Error during search: {str(e)}"
 

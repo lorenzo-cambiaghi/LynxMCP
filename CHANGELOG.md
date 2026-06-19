@@ -3,15 +3,20 @@
 ## Unreleased
 
 ### Added
-- **`view=outline` on `GET /api/v1/search`.** Returns each hit's `signature` +
-  `doc` instead of its body, so an agent triages candidates by signature and
-  reads the full code of only the one it picks (via `file_path` / `start_line` /
-  `end_line`). Measured **~2.4× fewer tokens** for the search step on a public
-  repo (psf/requests: ≈59% triage; ≈53% even after reading the one chosen body)
-  — see `docs/OUTLINE.md` for the data + chart, `benchmarks/outline_tokens.py`
-  to reproduce. Query-time transform
-  (no reindex, no `CHUNKER_VERSION` bump, no LLM); composes with `format=ndjson`;
-  the default `view=full` is unchanged.
+- **Outline search — signatures instead of bodies, for cheap triage.** Both the
+  MCP `search(query, outline=true)` tool and the HTTP
+  `GET /api/v1/search?view=outline` endpoint return each hit's `signature` +
+  first `doc` line instead of its body, so an agent triages candidates and reads
+  the full code of only the one it picks (via `find_definition` or the cited
+  `file:line`). The tool/param descriptions, the MCP handshake instructions, and
+  the `lynx://guide` all tell the agent **when** to use it. Derivation is shared
+  (`lynx/outline.py`) so both surfaces produce identical signatures. Measured
+  **~2.4× fewer tokens** for the search step on a public repo (psf/requests:
+  ≈59% triage; ≈53% even after reading the one chosen body) — see
+  `docs/OUTLINE.md` for the data + chart, `benchmarks/outline_tokens.py` to
+  reproduce. Query-time transform (no reindex, no `CHUNKER_VERSION` bump, no LLM);
+  composes with `format=ndjson`; the default search is unchanged, so Coral /
+  DuckDB are unaffected.
 
 ## 1.6.0 — 2026-06-19
 

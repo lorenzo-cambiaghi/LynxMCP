@@ -53,13 +53,19 @@ class FakeManager:
             raise KeyError(f"Unknown source {source!r}")
         return self.backends[source]
 
+    _HIT = {
+        "file": "a.py", "symbol_name": "add", "symbol_kind": "function_definition",
+        "language": "python", "start_line": 1, "end_line": 3, "score": 0.9,
+        "content": 'def add(a, b):\n    """Add a and b."""\n    return a + b',
+    }
+
     def search(self, source, query, top_k=5, **kw):
         self.calls.append(("search", source, query))
-        return [{"file": "a.py", "score": 0.9, "content": "x"}]
+        return [dict(self._HIT)]
 
     def search_all(self, query, top_k=5, **kw):
         self.calls.append(("search_all", query))
-        return [{"file": "a.py", "score": 0.9, "content": "x", "source": "one"}]
+        return [dict(self._HIT, source="one")]
 
     def deep_search(self, source, queries, top_k=5, **kw):
         self.calls.append(("deep_search", source))
@@ -151,6 +157,24 @@ def test_search_routes_to_one_source_or_all():
 
     out = tools["search"].fn(query="q", source="nope")
     assert "Error" in out and "nope" in out
+
+
+def test_search_outline_mode_drops_body_keeps_signature():
+    mgr = FakeManager({"a": FakeBackend()})
+    tools = _tools(_register_everything(mgr))
+
+    full = tools["search"].fn(query="q", source="a")
+    outline = tools["search"].fn(query="q", source="a", outline=True)
+
+    # full carries the body; outline does not
+    assert "return a + b" in full
+    assert "return a + b" not in outline
+    # outline surfaces the signature + the doc line, and labels itself
+    assert "def add(a, b)" in outline
+    assert "Add a and b." in outline
+    assert "OUTLINE" in outline
+    # both still cite file + symbol so the agent can fetch the body on demand
+    assert "a.py" in outline and "add" in outline
 
 
 def test_find_definition_defaults_single_codebase_source():

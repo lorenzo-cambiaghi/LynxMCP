@@ -123,6 +123,11 @@ def render_rules_for_sources(
         lines.append(f"- `{n}` — pass it as the `source` argument of the tools below.")
     lines.append("")
     lines.append("- `search(query, source=...)` — semantic + lexical hybrid search.")
+    lines.append("- `search(query, outline=true)` — same ranked hits, signatures only "
+                 "(no bodies). Cheap triage for broad/exploratory queries or a large "
+                 "top_k: scan the signatures, then read just the one body you need with "
+                 "`find_definition` or its file:line. Use the default full search when "
+                 "you'll work with the code right away.")
     lines.append("- `deep_search(queries, source=...)` — fallback for ambiguous queries.")
     if len(source_names) > 1:
         lines.append("")

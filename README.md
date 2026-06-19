@@ -55,7 +55,7 @@ The tool set is **fixed** — it does not grow with the number of sources, so yo
 
 | Tool | What it answers |
 |------|-----------------|
-| `search(query, source?)` | Primary hybrid search. Omit `source` to search every source at once (RRF-fused). |
+| `search(query, source?, outline?)` | Primary hybrid search. Omit `source` to search every source at once (RRF-fused). `outline=true` returns signatures-only for cheap triage (see below). |
 | `deep_search(queries, source?)` | Escalation: tries multiple query phrasings until one passes a quality threshold. |
 | `graph_query(operation, symbol?)` | `callers`, `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `status`. |
 | `find_definition(symbol)` | Where is X defined? (AST-precise when the graph is on, BM25 fallback otherwise.) |
@@ -110,7 +110,7 @@ python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
 Every Lynx search ranks the same way (hybrid dense + BM25 over whole functions). What differs is **how much of each hit you pull into the model's context**:
 
 - **Full search** (default) returns the matching functions *with their bodies* — `file`, `symbol`, line range, `score`, and the real `content`. The model has the code immediately: one tool call and it can explain, review, or edit.
-- **Outline search** (`view=outline`) returns the same ranked hits but **drops the bodies** — just a one-line `signature` plus the first line of the docstring. The model scans the candidates to decide *which* one it needs, then reads that single body on demand (every row still carries `file_path` + `start_line`/`end_line`).
+- **Outline search** (`search(query, outline=true)` from an MCP agent, or `?view=outline` over HTTP) returns the same ranked hits but **drops the bodies** — just a one-line `signature` plus the first line of the docstring. The model scans the candidates to decide *which* one it needs, then reads that single body on demand (every row still carries `file_path` + `start_line`/`end_line`). The agent is told *when* to reach for it in the tool description and the MCP handshake instructions.
 
 It's **progressive disclosure**: triage cheap, fetch deep only where it pays. Most of the bodies in a result set are ones the model will never use — outline stops paying for them up front. On a public repo (`psf/requests`) it cut the search step to **~2.4× fewer tokens** — [measured, with the chart](docs/OUTLINE.md).
 

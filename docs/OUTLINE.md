@@ -14,7 +14,10 @@ bodies it will never use.
 
 ## How it works
 
-`view=outline` drops `content` and adds two small fields, keeping everything else:
+An MCP agent asks for it with **`search(query, outline=true)`**; over HTTP / SQL
+it's **`?view=outline`**. Both share one derivation (`lynx/outline.py`), so the
+signatures are identical. It drops `content` and adds two small fields, keeping
+everything else:
 
 ```jsonc
 // view=outline row — a real result from psf/requests

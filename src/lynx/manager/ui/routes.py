@@ -6,7 +6,6 @@ endpoints focused: status, doctor, search. Mutations land in Phase 5+.
 """
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 # Module-level imports so FastAPI can resolve `Request` type annotations
@@ -17,6 +16,7 @@ from fastapi import Query, Request
 from pydantic import BaseModel
 
 from .app import _get_manager
+from ...outline import doc_of, signature_for
 
 
 class BatchSearchRequest(BaseModel):
@@ -43,58 +43,16 @@ def _format_v1_hit(h: dict) -> dict:
     }
 
 
-def _signature_of(content: str, language: str = "") -> str:
-    """Best-effort one-line declaration: the chunk text up to the body opener
-    (`{` for brace languages, a line-ending `:` for Python/Ruby-style headers),
-    whitespace-collapsed. Falls back to the first non-empty line. Query-time
-    only — no reindex, no AST re-parse."""
-    if not content:
-        return ""
-    cut = len(content)
-    brace = content.find("{")
-    if brace != -1:
-        cut = min(cut, brace)
-    m = re.search(r":\s*(?:\n|$)", content)   # `def foo(...):` end, not a type hint
-    if m:
-        cut = min(cut, m.start())
-    sig = re.sub(r"\s+", " ", content[:cut]).strip()
-    if not sig:                                # opener on the very first char
-        lines = [ln for ln in content.splitlines() if ln.strip()]
-        sig = lines[0].strip() if lines else ""
-    return sig[:400]
-
-
-def _doc_of(content: str, language: str = "") -> str:
-    """First line of an in-chunk docstring / leading comment, if any. Python &
-    co. keep the docstring inside the body (so it lands in the chunk); C#-style
-    `///` doc usually precedes the node and won't appear here — that's fine, the
-    signature alone is already a big token saving."""
-    if not content:
-        return ""
-    for quote in ('"""', "'''"):
-        m = re.search(re.escape(quote) + r"(.*?)" + re.escape(quote), content, re.S)
-        if m and m.group(1).strip():
-            return m.group(1).strip().splitlines()[0][:200]
-    m = re.search(r"^\s*///\s?(.+)$", content, re.M)
-    if m:
-        return m.group(1).strip()[:200]
-    return ""
-
-
 def _to_outline(row: dict) -> dict:
     """Drop the body, add a compact `signature` + `doc` for cheap triage. The
     row keeps `file_path` / `start_line` / `end_line`, so an agent reads the
-    full body on demand instead of paying for every hit's body up front."""
-    out = {k: v for k, v in row.items() if k != "content"}
+    full body on demand instead of paying for every hit's body up front.
+    Signature/doc derivation lives in `lynx.outline` (shared with the MCP
+    `search(outline=true)` tool)."""
     content = row.get("content", "")
-    if row.get("kind") == "text_window":
-        # Non-AST chunk (plain text / unsupported file): there's no real
-        # signature — give a clean first-line preview, not a mid-text fragment.
-        line = next((ln.strip() for ln in content.splitlines() if ln.strip()), "")
-        out["signature"] = re.sub(r"\s+", " ", line)[:200]
-    else:
-        out["signature"] = _signature_of(content, row.get("language", ""))
-    out["doc"] = _doc_of(content, row.get("language", ""))
+    out = {k: v for k, v in row.items() if k != "content"}
+    out["signature"] = signature_for(content, row.get("kind", ""), row.get("language", ""))
+    out["doc"] = doc_of(content, row.get("language", ""))
     return out
 
 
