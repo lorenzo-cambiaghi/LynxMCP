@@ -12,6 +12,7 @@ Your AI assistant greps file names and guesses. Lynx gives it real retrieval ove
 - **AST-aware indexing** — tree-sitter parses 18+ languages and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
 - **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius.
+- **Joinable as SQL** — search and the graph are also served as rows over a local HTTP API, so you can correlate your code with tickets, PRs, or logs in [DuckDB](docs/DUCKDB.md) or [Coral](docs/CORAL.md) — no data leaves your machine.
 - **Multi-source** — index codebases, public docs sites (fetched once, on demand; JS-rendered SPAs supported via optional headless Chromium), and PDFs side by side.
 - **Live index** — a file watcher re-indexes saves in ~2s. No manual rebuild ritual.
 - **Web manager UI** — `lynx manager ui` gives you guided setup, a query playground, diagnostics, and client config snippets.
@@ -135,6 +136,39 @@ ORDER BY s.score DESC;
 ```
 
 *The search string is a literal you pass (Coral resolves table-function arguments at plan time) — so it's code search as a **joinable** source, not a per-row enrichment. For one search per row of another table, use the batch endpoint + the Python helper. `lynx.sources` lists your indexed sources; `lynx.search(q => '…')` is the ranked search function (`source => '…'`, `top_k => N` to narrow it). Full setup in **[docs/CORAL.md](docs/CORAL.md)**.*
+
+## Lynx + DuckDB: code search as a local SQL table
+
+Lynx serves its search **and** its code graph as NDJSON over a local HTTP API, and [DuckDB](https://duckdb.org) reads that URL straight into a table. So you can JOIN your code with **anything DuckDB reads** — Parquet, CSV, SQLite, Postgres, a git log, a JSON log — in one engine, on your machine, with no plugin and no service to run.
+
+- 🦆 **Zero setup.** `read_ndjson_auto('http://127.0.0.1:8765/api/v1/search?…')` is a table. No connector, no daemon.
+- 🔗 **Join with any local data.** Cross code relevance with git churn, error logs, ownership, ticket exports — whatever you can read.
+- 🧪 **Total flexibility.** Shape and filter in SQL, then hand a tiny, hyper-targeted context to an LLM or a notebook.
+
+```sql
+-- code search as a table
+SELECT file, symbol, score
+FROM read_ndjson_auto(
+  'http://127.0.0.1:8765/api/v1/search?q=where%20we%20validate%20session%20tokens&format=ndjson')
+ORDER BY score DESC;
+```
+```sql
+-- regression hunting: code related to login that is ALSO churning in git
+WITH churn AS (
+  SELECT path, count(*) AS commits, max(date) AS last_modified
+  FROM read_csv('churn.csv', header = false,
+                columns = {'path': 'VARCHAR', 'date': 'DATE'})   -- from a one-line git log
+  GROUP BY path
+)
+SELECT c.path, c.commits, h.symbol, h.score
+FROM read_ndjson_auto(
+       'http://127.0.0.1:8765/api/v1/search?q=user%20login%20and%20token%20validation&format=ndjson') h
+JOIN churn c ON h.file = regexp_replace(c.path, '.*/', '')
+WHERE c.commits >= 2
+ORDER BY c.last_modified DESC, h.score DESC;
+```
+
+The code graph is one URL away too (`…/api/v1/graph?operation=callers&symbol=…`), so you can pivot a hit to its blast radius and join *that* with your data. Recipes for git freshness, error-log triage, and per-row batch search in **[docs/DUCKDB.md](docs/DUCKDB.md)**.
 
 ## Documentation
 
