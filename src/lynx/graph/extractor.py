@@ -1351,7 +1351,17 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 callee_name, is_member = extracted
                 callee_key = callee_name.lower()
                 target_id = local_index.get(callee_key)
-                if target_id is not None:
+                # A member call (`obj.Foo()`) that only matches itself by name
+                # is a false self-loop: `obj` is some other receiver whose type
+                # we can't see here, but it happens to share the method name of
+                # the enclosing function. Don't emit `X calls X`; defer to the
+                # cross-file resolver, which has the global symbol index AND the
+                # member-call caution (it skips ambiguous member calls). A plain
+                # (non-member) self-call is genuine recursion and is kept.
+                false_self_loop = (
+                    target_id is not None and target_id == caller_id and is_member
+                )
+                if target_id is not None and not false_self_loop:
                     edges.append({
                         "source": caller_id,
                         "target": target_id,

@@ -20,6 +20,8 @@ Scenarios:
  13. Lua — functions + intra-file call graph
  14. Bash — functions + call graph (commands resolving to functions)
  15. Objective-C — methods, message-send calls, #import, super/protocol inherit
+ 16. Member-call name collision — `obj.Foo()` inside a method also named Foo
+     must not self-loop; genuine non-member recursion still does
 """
 from __future__ import annotations
 
@@ -590,6 +592,56 @@ class Derived extends Base implements IFoo, Runnable {}
         print(f"[test] FAIL [15/15]: ObjC protocol Pingable(implements) missing: {inh}")
         return 15
     print(f"[test] OK [15/15] Objective-C: methods + message-send call + #import + super/protocol inherit")
+
+    # ============================================================
+    # 16. Member-call name collision must NOT become a self-loop.
+    #     `obj.GetVoxel()` inside a method also named GetVoxel resolved to
+    #     itself by name → spurious `GetVoxel calls GetVoxel`. The member call
+    #     must instead be deferred to raw_calls; genuine (non-member) recursion
+    #     stays as a real self-loop edge.
+    # ============================================================
+    cs_self = """namespace Demo
+{
+    class VoxelWorld
+    {
+        public int GetVoxel(int x)
+        {
+            return chunk.GetVoxel(x);   // member call on ANOTHER receiver
+        }
+
+        public int Countdown(int n)
+        {
+            return Countdown(n - 1);    // genuine non-member recursion
+        }
+    }
+}
+"""
+    r = extract_file("VoxelWorld.cs", cs_self)
+    if r is None:
+        print("[test] FAIL [16/16]: extract_file returned None on VoxelWorld.cs")
+        return 16
+    labels = _ids_by_label(r["nodes"])
+    gv = labels.get("Demo.VoxelWorld.GetVoxel")
+    cd = labels.get("Demo.VoxelWorld.Countdown")
+    if gv is None or cd is None:
+        print(f"[test] FAIL [16/16]: methods missing from {list(labels)}")
+        return 16
+    calls = _edges(r, "calls")
+    # The member self-collision must NOT be an emitted call edge...
+    if any(e["source"] == gv and e["target"] == gv for e in calls):
+        print(f"[test] FAIL [16/16]: spurious GetVoxel->GetVoxel self-loop emitted: {calls}")
+        return 16
+    # ...it must be deferred to raw_calls as a member call instead.
+    if not any(
+        rc["callee_name"] == "GetVoxel" and rc["is_member"] for rc in r["raw_calls"]
+    ):
+        print(f"[test] FAIL [16/16]: member GetVoxel not deferred to raw_calls: {r['raw_calls']}")
+        return 16
+    # Genuine non-member recursion is still a real self-loop edge.
+    if not any(e["source"] == cd and e["target"] == cd for e in calls):
+        print(f"[test] FAIL [16/16]: genuine Countdown recursion self-loop dropped: {calls}")
+        return 16
+    print(f"[test] OK [16/16] member self-collision deferred; non-member recursion kept")
 
     print("\n[test] === SUCCESS: graph extractor works as expected ===")
     return 0
