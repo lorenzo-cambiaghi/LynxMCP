@@ -106,11 +106,18 @@ The tool set is **fixed** — it does not grow with the number of sources, so yo
 | `find_usages(symbol)` | Every use of X — calls *and* non-call references (generics, decorators, docs). |
 | `find_tests_for(symbol)` | Are there tests for X? |
 | `find_similar(snippet)` | Does code like this already exist? |
+| `describe_symbol(symbol)` | One-shot context for X: definition + who calls it + what it calls + its tests, in a single call. |
+| `impact(symbol)` | Blast radius: everything that reaches X *transitively* through the call graph (with hop distance) + the tests to re-run. |
+| `module_summary(file)` | A file as a unit: the symbols it defines, what it imports, and which files depend on it. *(graph)* |
+| `repo_overview()` | "What is this and where do I start": detected languages, frameworks, entry points, and build/test/run commands. |
+| `export_graph(target, mode?)` | Render a shareable, **offline** graph view — a symbol's blast radius or a file hub — as a single self-contained file. *(graph)* |
 | `search_diff(query, base?)` | Search only the files changed vs a base branch — built for code review. |
 | `feedback(trying_to_do, tried, stuck)` | The agent files a report when the index couldn't answer — stored 100% locally, your signal for tuning sources. |
 | `list_sources` / `get_rag_status` / `update_source_index` | Introspection and maintenance. |
 
-All retrieval tools carry MCP `readOnlyHint` annotations (clients can auto-approve them), and the server ships its usage playbook in the MCP handshake (`instructions` + a `lynx://guide` resource) — your agent knows how to query well without any rules-file setup.
+Retrieval tools carry MCP `readOnlyHint` annotations (clients can auto-approve them); the only write is `export_graph`, which saves a graph view file. The server ships its usage playbook in the MCP handshake (`instructions` + a `lynx://guide` resource) — your agent knows how to query well without any rules-file setup.
+
+*(graph)* tools need the optional code knowledge graph enabled for the source. The tool set is per-capability, never per-source.
 
 ## How it works
 
