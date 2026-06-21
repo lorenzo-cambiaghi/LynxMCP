@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.7.2 — 2026-06-22
+
+### Added
+- **Repository-comprehension tools** for AI agents working in an unfamiliar
+  codebase:
+  - **`repo_overview`** — the "what is this and where do I start" map: detected
+    languages, frameworks, manifest files, likely entry points (main/CLI/server),
+    and suggested build/test/run commands. Pure filesystem scan, no graph needed.
+  - **`describe_symbol`** — DEFINITION + CALLED BY + CALLS + TESTS for a symbol
+    in one call, instead of running find_definition + graph callers/callees +
+    find_tests_for separately.
+  - **`impact`** — the blast radius of a change: everything that reaches a symbol
+    transitively through the call graph (with hop distance) + the tests to re-run.
+  - **`module_summary`** (graph) — a file's public symbols + what it imports +
+    which files depend on it.
+- **`export_graph`** — render a slice of the code graph as a single, offline,
+  self-contained file (inline SVG, no server, no CDN): a symbol's blast radius
+  (`mode=symbol`) or a file as a hub (`mode=module`). MCP tool + CLI
+  (`lynx graph export --symbol … | --module …`). Output goes to the new optional
+  `reports_path` config key (default `<storage>/reports`).
+
+### Changed
+- **Retrieval deduplicates substantial duplicate chunks** — vendored or
+  `build/`/`dist/` copies of the same file (identical bodies ≥120 chars) are
+  collapsed to the highest-ranked hit. Short identical boilerplate is never
+  merged, so distinct symbols that share a trivial body are all kept.
+- **New codebase sources added via the UI get default ignore fragments**
+  (`.git`, `.venv`, `node_modules`, `dist`, `build`, `target`, …) so build and
+  dependency dirs don't pollute the index.
+
+### Fixed
+- **Graph: spurious self-loop call edges removed.** A member call `obj.Foo()`
+  inside a method also named `Foo`, and a call between overloads (which collapse
+  to one node id), both produced a bogus `Foo calls Foo` edge. Self-loop call
+  edges are now dropped at both the extractor and the cross-file resolver.
+- **Manager UI folder picker — Windows drive paths hardened end-to-end.** The
+  backend now re-normalizes every drive shape (`C:`, `C:Users`, `/C:`, `//C:`,
+  `\\C:`) to a real absolute path before resolving, so a corrupted breadcrumb
+  segment can no longer send a dead path.
+
 ## 1.7.1 — 2026-06-21
 
 ### Added
