@@ -933,6 +933,108 @@ def _format_describe_symbol(symbol: str, d: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_impact(symbol: str, d: dict) -> str:
+    callers = d.get("callers") or []
+    tests = d.get("tests") or []
+    if not callers and not tests:
+        if not d.get("graph_enabled"):
+            return (f"Impact of {symbol!r}: enable the graph layer for transitive "
+                    f"callers. No tests found either.")
+        return f"Impact of {symbol!r}: no callers and no tests found."
+
+    lines = [f"Impact / blast radius of {symbol!r}:", ""]
+    lines.append(
+        "REACHED BY (transitive callers, [dN] = hops away):" if d.get("graph_enabled")
+        else "REACHED BY: (enable the graph layer for call data)"
+    )
+    for c in callers:
+        node = c.get("node") or {}
+        lines.append(
+            f"  [d{c.get('depth')}] {node.get('label', '?')}  "
+            f"@ {_describe_loc(node)}  ({c.get('confidence', '?')})"
+        )
+    if d.get("graph_enabled") and not callers:
+        lines.append("  (none — nothing calls it)")
+
+    lines.append("")
+    lines.append("TESTS to re-run:")
+    if tests:
+        for r in tests:
+            lines.append(f"  • {r.get('symbol') or '?'}  @ {_describe_loc(r)}")
+    else:
+        lines.append("  (none found)")
+    return "\n".join(lines)
+
+
+def _format_module_summary(file: str, d: dict) -> str:
+    if not d.get("graph_enabled"):
+        return (f"Module summary for {file!r} needs the graph layer — enable "
+                f"`graph` for this source.")
+    symbols = d.get("symbols") or []
+    imports = d.get("imports") or []
+    deps = d.get("dependent_files") or []
+    if not (symbols or imports or deps):
+        return f"No graph data for {file!r} (no matching file or symbols)."
+
+    lines = [f"Module summary for {file!r}:", ""]
+    lines.append(f"DEFINES ({len(symbols)}):")
+    for s in symbols:
+        lines.append(f"  • {s.get('label', '?')}  [{s.get('kind', '?')}]  @ {_describe_loc(s)}")
+    if not symbols:
+        lines.append("  (none)")
+
+    lines.append("")
+    lines.append("IMPORTS:")
+    for e in imports:
+        tgt = e.get("target") or {}
+        lines.append(f"  • {e.get('module') or tgt.get('label') or '?'}")
+    if not imports:
+        lines.append("  (none)")
+
+    lines.append("")
+    lines.append(f"DEPENDED ON BY ({len(deps)} file(s), via call graph):")
+    for f in deps:
+        lines.append(f"  • {f}")
+    if not deps:
+        lines.append("  (none found)")
+    return "\n".join(lines)
+
+
+def _format_repo_overview(d: dict) -> str:
+    if d.get("error"):
+        return f"repo_overview: {d['error']}"
+    lines = [
+        f"Repository overview — {d.get('root', '?')}  ({d.get('file_count', '?')} files):",
+        "",
+    ]
+    langs = d.get("languages") or []
+    lines.append("LANGUAGES: " + (
+        ", ".join(f"{l['language']} ({l['files']})" for l in langs) or "(none detected)"
+    ))
+    lines.append("FRAMEWORKS: " + (", ".join(d.get("frameworks") or []) or "(none detected)"))
+    lines.append("MANIFESTS: " + (", ".join(d.get("manifests") or []) or "(none)"))
+
+    lines.append("")
+    lines.append("ENTRY POINTS:")
+    eps = d.get("entry_points") or []
+    for e in eps:
+        lines.append(f"  • {e['file']}  — {e['hint']}")
+    if not eps:
+        lines.append("  (none detected)")
+
+    lines.append("")
+    lines.append("COMMANDS:")
+    cmds = d.get("commands") or {}
+    any_cmd = False
+    for label in ("build", "test", "run"):
+        for c in cmds.get(label, []):
+            lines.append(f"  {label}: {c}")
+            any_cmd = True
+    if not any_cmd:
+        lines.append("  (none detected)")
+    return "\n".join(lines)
+
+
 def _format_similar_results(results: list) -> str:
     if not results:
         return "No similar code found."
@@ -1089,6 +1191,72 @@ def _register_combined_tools(mcp, manager):
                 tests_limit=tests_limit,
             )
             return _format_describe_symbol(symbol, d)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_impact = (
+        f"Blast radius of changing a symbol: every function that reaches it "
+        f"TRANSITIVELY through the call graph (with hop distance), plus the tests "
+        f"that exercise it. Answers 'if I change X, what could break and what should "
+        f"I re-run?' — broader than find_usages (direct refs only) and symbol-scoped "
+        f"unlike search_diff (branch-scoped). Transitive callers need the graph layer; "
+        f"tests resolve via search regardless. {src_hint} "
+        f"Args: symbol; source; max_depth (call-graph hops, default 3, max 6); "
+        f"tests_limit (default 10)."
+    )
+
+    @mcp.tool(name="impact", description=_desc_impact, annotations=_ANN_READ)
+    def _impact(
+        symbol: Annotated[str, Field(description="Identifier whose change-impact (transitive callers + tests) to compute.")],
+        source: _SourceArg = None,
+        max_depth: Annotated[int, Field(description="How many call-graph hops to walk outward (1-6).")] = 3,
+        tests_limit: Annotated[int, Field(description="Max test references to include.")] = 10,
+    ) -> str:
+        try:
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            d = manager.impact_of(src, symbol, max_depth=max_depth, tests_limit=tests_limit)
+            return _format_impact(symbol, d)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_module = (
+        f"High-level summary of a FILE: the public symbols it defines, what it imports, "
+        f"and which other files depend on it (via the call graph). Lets you grasp a unit "
+        f"without reading the whole thing — ideal before editing it. Graph-powered "
+        f"(enable the graph layer for the source). {src_hint} "
+        f"Args: file (path or path fragment, e.g. 'VoxelWorld.cs'); source; limit "
+        f"(max symbols, default 200)."
+    )
+
+    @mcp.tool(name="module_summary", description=_desc_module, annotations=_ANN_READ)
+    def _module_summary(
+        file: Annotated[str, Field(description="File path or path fragment to summarize, e.g. `src/foo.py` or `VoxelWorld.cs`.")],
+        source: _SourceArg = None,
+        limit: Annotated[int, Field(description="Max defined symbols to list.")] = 200,
+    ) -> str:
+        try:
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            d = manager.module_summary(src, file, limit=limit)
+            return _format_module_summary(file, d)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_overview = (
+        f"Orientation map for a codebase — the 'what is this and where do I start' answer "
+        f"when you land in an unfamiliar repo: detected languages (by file count), "
+        f"frameworks, manifest files, likely entry points (main/CLI/server), and suggested "
+        f"build/test/run commands. Pure filesystem scan; no graph or index needed. "
+        f"Call it ONCE at the start of an unfamiliar session. {src_hint} Args: source."
+    )
+
+    @mcp.tool(name="repo_overview", description=_desc_overview, annotations=_ANN_READ)
+    def _repo_overview(
+        source: _SourceArg = None,
+    ) -> str:
+        try:
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            d = manager.repo_overview(src)
+            return _format_repo_overview(d)
         except Exception as e:
             return f"Error: {e}"
 

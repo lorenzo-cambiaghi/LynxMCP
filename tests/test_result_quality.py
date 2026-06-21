@@ -147,3 +147,122 @@ def test_describe_symbol_formatter_empty():
          "definition": [], "called_by": [], "calls": [], "tests": []}
     text = _format_describe_symbol("nope", d)
     assert "No information found" in text
+
+
+# ---------------------------------------------------------------------------
+# build_overview (overview) — filesystem orientation map
+# ---------------------------------------------------------------------------
+
+
+def test_build_overview_python_django_and_node(tmp_path):
+    from lynx.overview import build_overview
+
+    (tmp_path / "manage.py").write_text("import django\n")
+    (tmp_path / "requirements.txt").write_text("Django>=5.0\nrequests\n")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "views.py").write_text("def index(request): ...\n")
+    (tmp_path / "package.json").write_text(
+        '{"dependencies": {"react": "^18.0.0"}, '
+        '"scripts": {"build": "webpack", "test": "jest", "dev": "vite"}}'
+    )
+    # A pruned dir that must NOT inflate counts or leak entry points.
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "main.py").write_text("should be ignored\n")
+
+    ov = build_overview(tmp_path)
+
+    langs = {l["language"] for l in ov["languages"]}
+    assert "Python" in langs
+    assert "Django" in ov["frameworks"]
+    assert "React" in ov["frameworks"]
+    assert "requirements.txt" in ov["manifests"]
+    assert "package.json" in ov["manifests"]
+    entry_files = {e["file"] for e in ov["entry_points"]}
+    assert "manage.py" in entry_files
+    # node_modules pruned: its main.py must not appear as an entry point.
+    assert not any("node_modules" in e["file"] for e in ov["entry_points"])
+    assert "npm run build" in ov["commands"]["build"]
+    assert "pytest" in ov["commands"]["test"]
+    assert "npm run dev" in ov["commands"]["run"]
+
+
+def test_build_overview_nonexistent_dir():
+    from lynx.overview import build_overview
+
+    ov = build_overview("/no/such/path/anywhere")
+    assert "error" in ov
+
+
+# ---------------------------------------------------------------------------
+# impact / module_summary / repo_overview formatters
+# ---------------------------------------------------------------------------
+
+
+def test_format_impact_renders_callers_by_depth_and_tests():
+    from lynx.server import _format_impact
+
+    d = {
+        "symbol": "GetVoxel", "graph_enabled": True,
+        "callers": [
+            {"node": {"label": "Renderer.Draw", "file": "Renderer.cs",
+                      "start_line": 5, "end_line": 9}, "depth": 1, "confidence": "resolved"},
+            {"node": {"label": "Game.Loop", "file": "Game.cs",
+                      "start_line": 1, "end_line": 3}, "depth": 2, "confidence": "extracted"},
+        ],
+        "tests": [{"symbol": "VoxelTests", "file": "tests/VoxelTests.cs",
+                   "start_line": 1, "end_line": 4}],
+    }
+    text = _format_impact("GetVoxel", d)
+    assert "Renderer.Draw" in text and "[d1]" in text
+    assert "Game.Loop" in text and "[d2]" in text
+    assert "TESTS to re-run" in text and "VoxelTests" in text
+
+
+def test_format_impact_graph_off_hint():
+    from lynx.server import _format_impact
+
+    d = {"symbol": "x", "graph_enabled": False, "callers": [], "tests": []}
+    assert "enable the graph layer" in _format_impact("x", d)
+
+
+def test_format_module_summary_sections():
+    from lynx.server import _format_module_summary
+
+    d = {
+        "file": "VoxelWorld.cs", "graph_enabled": True,
+        "symbols": [{"label": "VoxelWorld.GetVoxel", "kind": "method",
+                     "file": "VoxelWorld.cs", "start_line": 91, "end_line": 91}],
+        "imports": [{"module": "UnityEngine", "target": {}}],
+        "dependent_files": ["Renderer.cs", "Game.cs"],
+    }
+    text = _format_module_summary("VoxelWorld.cs", d)
+    assert "DEFINES (1)" in text and "VoxelWorld.GetVoxel" in text
+    assert "IMPORTS:" in text and "UnityEngine" in text
+    assert "DEPENDED ON BY (2 file(s)" in text and "Renderer.cs" in text
+
+
+def test_format_module_summary_graph_off():
+    from lynx.server import _format_module_summary
+
+    d = {"file": "x.py", "graph_enabled": False,
+         "symbols": [], "imports": [], "dependent_files": []}
+    assert "needs the graph layer" in _format_module_summary("x.py", d)
+
+
+def test_format_repo_overview_sections():
+    from lynx.server import _format_repo_overview
+
+    d = {
+        "root": "/proj", "file_count": 42,
+        "languages": [{"language": "C#", "files": 30}],
+        "frameworks": ["Unity"],
+        "manifests": ["proj.csproj"],
+        "entry_points": [{"file": "Program.cs", "hint": ".NET program entrypoint"}],
+        "commands": {"build": ["dotnet build"], "test": ["dotnet test"], "run": []},
+    }
+    text = _format_repo_overview(d)
+    assert "LANGUAGES: C# (30)" in text
+    assert "FRAMEWORKS: Unity" in text
+    assert "Program.cs" in text
+    assert "build: dotnet build" in text

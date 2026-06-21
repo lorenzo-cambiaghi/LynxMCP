@@ -774,3 +774,74 @@ class CodebaseBackend(SourceBackend):
             result["called_by"] = self.get_callers(symbol, limit=callers_limit)
             result["calls"] = self.get_callees(symbol, limit=callees_limit)
         return result
+
+    def impact_of(
+        self,
+        symbol: str,
+        *,
+        max_depth: int = 3,
+        limit: int = 200,
+        tests_limit: int = 10,
+    ) -> dict:
+        """Blast radius of changing `symbol`: who reaches it transitively
+        through the call graph, plus the tests that exercise it.
+
+        Needs the graph layer for the transitive callers (`graph_enabled` is
+        False otherwise, with an empty `callers`); tests still resolve via
+        search either way. Answers "if I change X, what could break and what
+        should I re-run?".
+        """
+        result = {
+            "symbol": symbol,
+            "graph_enabled": self.graph is not None,
+            "callers": [],
+            "tests": self.find_tests_for(symbol, limit=tests_limit),
+        }
+        if self.graph is not None:
+            from ..graph import transitive_callers as _q
+            result["callers"] = _q(
+                self.graph.graph, symbol, max_depth=max_depth, limit=limit,
+            )
+        return result
+
+    def module_summary(self, file_or_symbol: str, *, limit: int = 200) -> dict:
+        """High-level summary of a file: the public symbols it defines, what it
+        imports, and which other files depend on it (via reverse call edges).
+
+        Graph-powered — `graph_enabled` is False (with empty lists) when the
+        layer is off. Lets an AI grasp a unit without reading the whole file.
+        """
+        result = {
+            "file": file_or_symbol,
+            "graph_enabled": self.graph is not None,
+            "symbols": [],
+            "imports": [],
+            "dependent_files": [],
+        }
+        if self.graph is None:
+            return result
+        from ..graph import nodes_in_file, get_imports, get_callers
+        G = self.graph.graph
+        symbols = nodes_in_file(G, file_or_symbol, limit=limit)
+        result["symbols"] = symbols
+        result["imports"] = get_imports(G, file_or_symbol, limit=100)
+        # Dependent files: distinct files of everything that calls a symbol
+        # defined in this file (its own file excluded).
+        dependents: set = set()
+        for s in symbols:
+            own_file = s.get("file")
+            for e in get_callers(G, s["label"], limit=50):
+                caller_file = (e.get("source") or {}).get("file")
+                if caller_file and caller_file != own_file:
+                    dependents.add(caller_file)
+        result["dependent_files"] = sorted(dependents)
+        return result
+
+    def repo_overview(self) -> dict:
+        """Orientation map for this codebase: languages, manifests, frameworks,
+        likely entry points, and build/test/run commands. Pure filesystem scan
+        (no graph, no index needed) — the 'what is this and where do I start'
+        answer for an AI landing in an unfamiliar repository.
+        """
+        from ..overview import build_overview
+        return build_overview(self.source_config["path"])

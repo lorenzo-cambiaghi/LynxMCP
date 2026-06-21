@@ -25,6 +25,7 @@ from .analyzer import god_nodes, communities, surprising_connections
 from .query import (
     get_callers, get_callees, get_imports, get_neighbors, shortest_path,
     find_symbols, get_subclasses, get_superclasses,
+    transitive_callers, nodes_in_file,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "get_callers", "get_callees", "get_imports", "get_neighbors",
     "shortest_path", "find_symbols",
     "get_subclasses", "get_superclasses",
+    "transitive_callers", "nodes_in_file",
 ]

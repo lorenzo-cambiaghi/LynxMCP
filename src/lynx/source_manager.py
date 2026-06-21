@@ -325,6 +325,15 @@ class SourceManager:
     def describe_symbol(self, source: str, symbol: str, **kw) -> dict:
         return self._require_codebase(source).describe_symbol(symbol, **kw)
 
+    def impact_of(self, source: str, symbol: str, **kw) -> dict:
+        return self._require_codebase(source).impact_of(symbol, **kw)
+
+    def module_summary(self, source: str, file_or_symbol: str, **kw) -> dict:
+        return self._require_codebase(source).module_summary(file_or_symbol, **kw)
+
+    def repo_overview(self, source: str, **kw) -> dict:
+        return self._require_codebase(source).repo_overview(**kw)
+
     def search_diff(
         self, source: str, query: str,
         base: str | None = None, top_k: int = 8, **kw,

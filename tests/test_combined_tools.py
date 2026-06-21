@@ -19,6 +19,9 @@ Scenarios:
  10. describe_symbol graph-on: definition + callers + tests composed in one call
  11. describe_symbol formatter renders every section
  12. describe_symbol graph-off: no call data, definition + tests still work
+ 13. impact_of graph-on: transitive callers + tests (blast radius)
+ 14. module_summary graph-on: defined symbols + imports for a file
+ 15. repo_overview: language + file-count detection from a filesystem scan
 """
 from __future__ import annotations
 
@@ -392,6 +395,61 @@ def main() -> int:
             print(f"[test] FAIL [12/12]: definition should still resolve via search: {d_off}")
             return 12
         print(f"[test] OK [12/12] describe_symbol graph-off: no calls, definition still works")
+
+        # ============================================================
+        # 13. impact_of graph-on: transitive callers + tests
+        # ============================================================
+        # Service.run calls helper → it's a depth-1 caller of helper.
+        rag_state["search_returns"] = [{
+            "id": "it", "symbol_name": "test_service", "symbol_kind": "function_definition",
+            "file": "test_service.py", "file_path": "/proj/tests/test_service.py",
+            "start_line": 1, "end_line": 5, "score": 0.6,
+            "content": "def test_service(): ...",
+        }]
+        imp = b.impact_of("helper", max_depth=3)
+        if not imp.get("graph_enabled"):
+            print(f"[test] FAIL [13/15]: graph_enabled should be True: {imp}")
+            return 13
+        caller_labels = [(c.get("node") or {}).get("label", "") for c in imp["callers"]]
+        if not any(lbl.endswith("run") for lbl in caller_labels):
+            print(f"[test] FAIL [13/15]: Service.run not a transitive caller of helper: {caller_labels}")
+            return 13
+        if not all(isinstance(c.get("depth"), int) for c in imp["callers"]):
+            print(f"[test] FAIL [13/15]: callers missing depth: {imp['callers']}")
+            return 13
+        if not imp["tests"]:
+            print(f"[test] FAIL [13/15]: tests should be populated: {imp}")
+            return 13
+        print(f"[test] OK [13/15] impact_of graph-on: transitive callers + tests")
+
+        # ============================================================
+        # 14. module_summary graph-on: symbols + imports for service.py
+        # ============================================================
+        ms = b.module_summary("service.py")
+        if not ms.get("graph_enabled"):
+            print(f"[test] FAIL [14/15]: graph_enabled should be True: {ms}")
+            return 14
+        sym_labels = [s.get("label", "") for s in ms["symbols"]]
+        if not any("Service" in lbl for lbl in sym_labels):
+            print(f"[test] FAIL [14/15]: Service symbols missing from service.py summary: {sym_labels}")
+            return 14
+        if not ms["imports"]:
+            print(f"[test] FAIL [14/15]: service.py should import util/helper: {ms}")
+            return 14
+        print(f"[test] OK [14/15] module_summary graph-on: symbols + imports")
+
+        # ============================================================
+        # 15. repo_overview: filesystem scan of the synthetic codebase
+        # ============================================================
+        ov = b.repo_overview()
+        langs = {l["language"] for l in ov.get("languages", [])}
+        if "Python" not in langs:
+            print(f"[test] FAIL [15/15]: Python not detected in overview: {ov}")
+            return 15
+        if ov.get("file_count", 0) < 3:
+            print(f"[test] FAIL [15/15]: expected >=3 files scanned: {ov}")
+            return 15
+        print(f"[test] OK [15/15] repo_overview: languages + file_count from fs scan")
 
         print("\n[test] === SUCCESS: combined tools work as expected ===")
         return 0

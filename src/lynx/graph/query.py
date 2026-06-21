@@ -124,6 +124,74 @@ def get_callees(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
     return out
 
 
+def transitive_callers(
+    G: nx.DiGraph, symbol: str, max_depth: int = 3, limit: int = 100
+) -> list:
+    """Everything that reaches `symbol` through the call graph — the blast
+    radius of a change. BFS over directed `calls` in-edges up to `max_depth`
+    hops. Each result is `{node, depth, confidence}`, ordered by increasing
+    depth (direct callers first). A node is reported once, at the shallowest
+    depth it's reached; self-loops never occur (the builder drops them).
+    """
+    seeds = find_symbols(G, symbol)
+    if not seeds:
+        return []
+    max_depth = max(1, min(max_depth, 6))  # cap pathological depth
+    visited = set(seeds)
+    out = []
+    frontier = list(seeds)
+    for depth in range(1, max_depth + 1):
+        next_frontier = []
+        for nid in frontier:
+            for src, _tgt, data in G.in_edges(nid, data=True):
+                if data.get("relation") != "calls":
+                    continue
+                if src in visited:
+                    continue
+                visited.add(src)
+                out.append({
+                    "node": _node_to_dict(G, src),
+                    "depth": depth,
+                    "confidence": data.get("confidence"),
+                })
+                next_frontier.append(src)
+                if len(out) >= limit:
+                    return out
+        frontier = next_frontier
+        if not frontier:
+            break
+    return out
+
+
+# Symbol kinds that represent a defined unit (not a file/external/import node) —
+# used to list "what's in this file" for module summaries.
+_DEFN_NODE_KINDS = {
+    "function", "method", "class", "interface", "struct",
+    "enum", "trait", "module", "protocol", "constructor",
+}
+
+
+def nodes_in_file(G: nx.DiGraph, file_substring: str, limit: int = 200) -> list:
+    """Defined symbols (functions/classes/…) whose `file` matches
+    `file_substring` (case-insensitive, separator-agnostic). Skips file/
+    external/import nodes. Powers the public-API view of a module summary.
+    """
+    if not file_substring:
+        return []
+    needle = file_substring.lower().replace("\\", "/")
+    out = []
+    for nid, data in G.nodes(data=True):
+        kind = data.get("kind")
+        if kind not in _DEFN_NODE_KINDS:
+            continue
+        f = (data.get("file") or "").lower().replace("\\", "/")
+        if needle in f:
+            out.append(_node_to_dict(G, nid))
+            if len(out) >= limit:
+                break
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Inheritance (subclasses / superclasses)
 # ---------------------------------------------------------------------------
