@@ -52,14 +52,14 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 
 <p align="center">
   <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">
-    <img src="readmeData/LynxManagerV.gif" alt="LynxManager — guided setup, query playground, and diagnostics in the browser" width="820">
+    <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/readmeData/LynxManagerV.gif" alt="LynxManager — guided setup, query playground, and diagnostics in the browser" width="820">
   </a>
   <br>
   <sub><b><a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">LynxManager</a></b> — guided setup, query playground &amp; diagnostics, all in the browser. <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">Full walkthrough →</a></sub>
 </p>
 
 <p align="center">
-  <img src="docs/img/graph_view_example.svg" alt="Blast-radius graph view: callers above the symbol, callees below, exported as a single offline file" width="820">
+  <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/graph_view_example.svg" alt="Blast-radius graph view: callers above the symbol, callees below, exported as a single offline file" width="820">
   <br>
   <sub><b>Shareable graph views</b> — <code>lynx graph export --symbol GetVoxel</code> writes one self-contained, offline file (no server, no CDN): the symbol's <b>blast radius</b> — who calls it (above) and what it calls (below). Attach it to a PR or archive it for an audit.</sub>
 </p>
