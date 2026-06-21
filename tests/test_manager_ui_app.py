@@ -723,6 +723,32 @@ def main() -> int:
             return 28
         print(f"[test] OK [P10/10] /api/fs/browse empty: defaults to {data['path']}")
 
+        # ----- P10/10b: drive-path normalization (folder-picker repair) ---
+        # The breadcrumb can hand the backend a bare/slash-prefixed Windows
+        # drive ("C:", "/C:", "//C:", "\\C:\src"); each must collapse to a real
+        # absolute path before Path() corrupts it (drive-relative CWD / UNC).
+        from lynx.manager.ui.routes import _normalize_browse_path
+        norm_cases = {
+            "C:": "C:\\",
+            "C:Users": "C:\\Users",        # drive-relative segment -> absolute
+            "C:Users\\loren": "C:\\Users\\loren",
+            "/C:": "C:\\",
+            "//C:": "C:\\",
+            "\\\\C:": "C:\\",
+            "\\\\C:\\src": "C:\\src",
+            "  C:  ": "C:\\",
+            "C:\\src": "C:\\src",          # already-clean path is untouched
+            "C:/src": "C:/src",            # forward-slash absolute is untouched
+            "/usr/local": "/usr/local",    # POSIX path is untouched
+            "\\\\server\\share": "\\\\server\\share",  # genuine UNC is untouched
+        }
+        for raw, want in norm_cases.items():
+            got = _normalize_browse_path(raw)
+            if got != want:
+                print(f"[test] FAIL [P10/10b]: normalize({raw!r}) = {got!r}, want {want!r}")
+                return 28
+        print(f"[test] OK [P10/10b] drive-path normalization repairs picker forms")
+
         # ----- P10/11: DELETE /api/sources/{name} — soft delete -----
         # Remove the 'second' source we added in P10/4 (no purge)
         r = crud_client.delete("/api/sources/second")

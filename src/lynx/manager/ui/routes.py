@@ -1159,6 +1159,48 @@ _SOURCE_NAME_RE = __import__("re").compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
 # walk and have no value to anyone picking a folder to index.
 _FS_BROWSE_SKIP_DIRS = {"/proc", "/sys", "/dev"}
 
+# The folder-picker breadcrumb can hand us several mangled shapes of a Windows
+# drive reference that Path() then corrupts. Every one of them is *drive-
+# relative* or *UNC-flavoured* when the user clearly meant an absolute path:
+#   - Path("C:")      drive-relative -> resolves to the CWD on that drive, so
+#                     the picker silently jumps into the server's own folder.
+#   - Path("C:Users") drive-relative -> "<cwd>\Users", a non-existent path
+#                     (the "path does not exist: C:Users" the picker shows).
+#   - Path("//C:")    read as a UNC root -> "\\C:", a dead path from which no
+#                     further navigation recovers ("irrecuperabile").
+# A folder picker only ever points at absolute locations, so we force a root
+# separator right after the drive letter. This makes the browser self-heal no
+# matter what shape the breadcrumb sends (incl. a stale/cached frontend).
+import re  # noqa: E402 — local to the FS browser; keeps module top focused
+
+_DRIVE_WITH_SLASHES = re.compile(r"^[\\/]+([A-Za-z]:)(.*)$")
+# Drive letter followed by something that is NOT a separator (incl. nothing):
+# "C:", "C:Users", "C:foo\bar" — all drive-relative, none absolute.
+_DRIVE_RELATIVE = re.compile(r"^([A-Za-z]:)(?![\\/])(.*)$")
+
+
+def _normalize_browse_path(raw: str) -> str:
+    """Repair slash-prefixed / drive-relative Windows drive paths from the picker.
+
+    Leaves POSIX paths and ordinary absolute Windows paths untouched; only
+    rewrites the drive-reference shapes that Path() would otherwise corrupt.
+    """
+    s = raw.strip()
+    if not s:
+        return s
+    # "/C:foo", "//C:\foo", "\\C:\foo" -> "C:foo" / "C:\foo": drop the slashes
+    # that wrongly precede the drive letter. (Genuine UNC paths like
+    # "\\server\share" don't match — the char after the slashes isn't "X:".)
+    m = _DRIVE_WITH_SLASHES.match(s)
+    if m:
+        s = m.group(1) + m.group(2)
+    # "C:" -> "C:\", "C:Users" -> "C:\Users": insert the missing root separator
+    # so a drive-relative reference can't drift to the server's CWD.
+    m = _DRIVE_RELATIVE.match(s)
+    if m:
+        s = m.group(1) + "\\" + m.group(2)
+    return s
+
 
 def _toast_ok(html_body: str) -> str:
     """Wrap a success message in the green-toast div HTMX swaps in."""
@@ -1437,7 +1479,7 @@ def _register_source_crud_routes(app) -> None:
         - 404 on non-existent paths or non-directories.
         """
         from pathlib import Path
-        raw = path.strip()
+        raw = _normalize_browse_path(path)
         if not raw:
             target = Path.home()
         else:
