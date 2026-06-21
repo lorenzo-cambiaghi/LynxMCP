@@ -46,7 +46,15 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 - **Joinable as SQL** — search and the graph are also served as rows over a local HTTP API, so you can correlate your code with tickets, PRs, or logs in [DuckDB](docs/DUCKDB.md) or [Coral](docs/CORAL.md) — no data leaves your machine.
 - **Multi-source** — index codebases, public docs sites (fetched once, on demand; JS-rendered SPAs supported via optional headless Chromium), and PDFs side by side.
 - **Live index** — a file watcher re-indexes saves in ~2s. No manual rebuild ritual.
-- **Web manager UI** — `lynx manager ui` gives you guided setup, a query playground, diagnostics, and client config snippets.
+- **[Web manager UI](docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09)** — `lynx manager ui` gives you guided setup, a query playground, diagnostics, and client config snippets.
+
+<p align="center">
+  <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">
+    <img src="readmeData/LynxManagerV.gif" alt="LynxManager — guided setup, query playground, and diagnostics in the browser" width="820">
+  </a>
+  <br>
+  <sub><b><a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">LynxManager</a></b> — guided setup, query playground &amp; diagnostics, all in the browser. <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">Full walkthrough →</a></sub>
+</p>
 
 *(Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)*
 
