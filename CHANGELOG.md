@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.5 — 2026-06-21
+## 1.7.1 — 2026-06-21
 
 ### Added
 - **Token savings, in money.** `benchmarks/savings_calculator.py` translates the
