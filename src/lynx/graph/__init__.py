@@ -27,7 +27,7 @@ from .query import (
     find_symbols, get_subclasses, get_superclasses,
     transitive_callers, nodes_in_file,
 )
-from .render import build_symbol_view, build_module_view, render_html
+from .render import build_symbol_view, build_module_view, render_html, render_svg
 
 __all__ = [
     # extractor
@@ -42,5 +42,5 @@ __all__ = [
     "get_subclasses", "get_superclasses",
     "transitive_callers", "nodes_in_file",
     # render
-    "build_symbol_view", "build_module_view", "render_html",
+    "build_symbol_view", "build_module_view", "render_html", "render_svg",
 ]

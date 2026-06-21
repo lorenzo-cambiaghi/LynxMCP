@@ -322,6 +322,19 @@ def test_render_html_is_self_contained_and_escaped():
     assert "a.py" in out
 
 
+def test_render_svg_standalone_and_deterministic():
+    from lynx.graph.render import build_symbol_view, render_svg
+
+    m = build_symbol_view(_tiny_graph(), "Target", depth=2, root="/repo")
+    a = render_svg(m)
+    b = render_svg(m)
+    assert a == b                       # deterministic: no timestamps/randomness
+    assert a.startswith("<svg")
+    assert "<style>" in a               # self-styled (renders as a bare image)
+    assert "UTC" not in a               # no timestamp baked into the image
+    assert "<script" not in a and "src=" not in a
+
+
 def test_build_module_view_hub():
     import networkx as nx
     from lynx.graph.render import build_module_view

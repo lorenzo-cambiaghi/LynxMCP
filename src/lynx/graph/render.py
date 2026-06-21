@@ -219,25 +219,32 @@ def _layout(nodes):
     return pos, width, height
 
 
-def render_html(model: dict, *, source: str = "", lynx_version: str = "") -> str:
-    """Render a view model to a single self-contained HTML string."""
-    if model.get("empty"):
-        body = f"<p class='empty'>Nothing to show: {_esc(model.get('reason'))}</p>"
-        return _PAGE.format(title=_esc("Graph view"), meta="", body=body,
-                            legend="", sidebar="")
+# Visual styling lives INSIDE the <svg> so the same markup renders correctly as
+# a standalone .svg image (e.g. embedded in a README on GitHub) — not just when
+# wrapped in the HTML page's CSS.
+_SVG_STYLE = (
+    "<style>"
+    ".edge{stroke:#94a3b8;stroke-width:1.2}"
+    ".nlabel{fill:#fff;font:12px monospace}"
+    ".node:hover rect{stroke:#0f172a;stroke-width:2}"
+    "</style>"
+)
 
+
+def _build_svg(model: dict):
+    """Build a standalone, self-styled <svg> for the view. Deterministic — no
+    timestamps — so a committed image only changes when the graph does.
+    Returns (svg_string, roles_seen)."""
     nodes = model["nodes"]
     pos, width, height = _layout(nodes)
     root = model.get("root")
 
-    # Edges first (under nodes). Straight lines, centre-to-centre, arrowhead.
     seg = []
-    pset = pos
     for e in model["edges"]:
-        if e["src"] not in pset or e["tgt"] not in pset:
+        if e["src"] not in pos or e["tgt"] not in pos:
             continue
-        x1, y1 = pset[e["src"]]
-        x2, y2 = pset[e["tgt"]]
+        x1, y1 = pos[e["src"]]
+        x2, y2 = pos[e["tgt"]]
         seg.append(
             f'<line x1="{x1 + _NODE_W/2:.0f}" y1="{y1 + _NODE_H:.0f}" '
             f'x2="{x2 + _NODE_W/2:.0f}" y2="{y2:.0f}" '
@@ -247,7 +254,7 @@ def render_html(model: dict, *, source: str = "", lynx_version: str = "") -> str
     boxes = []
     roles_seen = set()
     for n in nodes:
-        x, y = pset[n["id"]]
+        x, y = pos[n["id"]]
         color = _ROLE_COLOR.get(n["role"], "#334155")
         roles_seen.add(n["role"])
         loc = _rel(n.get("file"), root)
@@ -265,11 +272,36 @@ def render_html(model: dict, *, source: str = "", lynx_version: str = "") -> str
     svg = (
         f'<svg viewBox="0 0 {width:.0f} {height:.0f}" width="{width:.0f}" '
         f'height="{height:.0f}" xmlns="http://www.w3.org/2000/svg">'
+        + _SVG_STYLE +
         '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" '
         'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
         '<path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker></defs>'
         + "".join(seg) + "".join(boxes) + "</svg>"
     )
+    return svg, roles_seen
+
+
+def render_svg(model: dict) -> str:
+    """Standalone SVG document for the view — embeddable as an image anywhere
+    (README, docs) without the HTML chrome. Deterministic."""
+    if model.get("empty"):
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="80">'
+            f'<text x="20" y="44" font-family="monospace">Nothing to show: '
+            f'{_esc(model.get("reason"))}</text></svg>'
+        )
+    return _build_svg(model)[0]
+
+
+def render_html(model: dict, *, source: str = "", lynx_version: str = "") -> str:
+    """Render a view model to a single self-contained HTML string."""
+    if model.get("empty"):
+        body = f"<p class='empty'>Nothing to show: {_esc(model.get('reason'))}</p>"
+        return _PAGE.format(title=_esc("Graph view"), meta="", body=body,
+                            legend="", sidebar="")
+
+    svg, roles_seen = _build_svg(model)
+    root = model.get("root")
 
     legend = "".join(
         f'<span class="lg"><i style="background:{_ROLE_COLOR[r]}"></i>{_esc(r)}</span>'
@@ -284,7 +316,7 @@ def render_html(model: dict, *, source: str = "", lynx_version: str = "") -> str
     trunc_note = " · <b>truncated</b>" if model.get("truncated") else ""
     meta = (
         f"source: {_esc(source) or '—'} · root: {_esc(root) or '—'} · "
-        f"{len(nodes)} nodes / {len(model['edges'])} edges{trunc_note} · "
+        f"{len(model['nodes'])} nodes / {len(model['edges'])} edges{trunc_note} · "
         f"lynx {_esc(lynx_version) or '?'} · "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     )
@@ -308,9 +340,6 @@ _PAGE = """<!doctype html>
   .wrap {{ display: flex; align-items: flex-start; gap: 16px; padding: 16px 24px; }}
   .canvas {{ flex: 1; overflow: auto; background: #fff; border: 1px solid #e2e8f0;
             border-radius: 8px; }}
-  .edge {{ stroke: #94a3b8; stroke-width: 1.2; }}
-  .nlabel {{ fill: #fff; font: 12px monospace; }}
-  .node:hover rect {{ stroke: #0f172a; stroke-width: 2; }}
   .legend {{ margin-top: 8px; }}
   .lg {{ margin-right: 14px; font-size: 12px; color: #475569; }}
   .lg i {{ display: inline-block; width: 11px; height: 11px; border-radius: 3px;

@@ -44,7 +44,7 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 - **AST-aware indexing** — tree-sitter parses 18+ languages and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
 - **Token-efficient triage** — `view=outline` returns signatures instead of bodies, so an agent scans the candidates for **~2.4× fewer tokens** and reads only the code it picks ([measured](docs/OUTLINE.md)).
-- **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius.
+- **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius — or **export it as a single, shareable, offline graph view** (`lynx graph export`).
 - **Joinable as SQL** — search and the graph are also served as rows over a local HTTP API, so you can correlate your code with tickets, PRs, or logs in [DuckDB](docs/DUCKDB.md) or [Coral](docs/CORAL.md) — no data leaves your machine.
 - **Multi-source** — index codebases, public docs sites (fetched once, on demand; JS-rendered SPAs supported via optional headless Chromium), and PDFs side by side.
 - **Live index** — a file watcher re-indexes saves in ~2s. No manual rebuild ritual.
@@ -56,6 +56,12 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
   </a>
   <br>
   <sub><b><a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">LynxManager</a></b> — guided setup, query playground &amp; diagnostics, all in the browser. <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">Full walkthrough →</a></sub>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/graph_view_example.svg" alt="Blast-radius graph view: callers above the symbol, callees below, exported as a single offline file" width="820">
+  <br>
+  <sub><b>Shareable graph views</b> — <code>lynx graph export --symbol GetVoxel</code> writes one self-contained, offline file (no server, no CDN): the symbol's <b>blast radius</b> — who calls it (above) and what it calls (below). Attach it to a PR or archive it for an audit.</sub>
 </p>
 
 ## Quickstart
