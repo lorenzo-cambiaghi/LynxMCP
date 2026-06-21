@@ -16,6 +16,9 @@ Scenarios:
   7. find_tests_for: custom test_path_pattern overrides default
   8. find_similar: dense mode forced; identical chunk filtered out
   9. find_similar: empty / whitespace snippet returns []
+ 10. describe_symbol graph-on: definition + callers + tests composed in one call
+ 11. describe_symbol formatter renders every section
+ 12. describe_symbol graph-off: no call data, definition + tests still work
 """
 from __future__ import annotations
 
@@ -330,6 +333,65 @@ def main() -> int:
             print(f"[test] FAIL [9/9]: whitespace snippet should return []")
             return 9
         print(f"[test] OK [9/9] find_similar: empty/whitespace returns [] without crashing")
+
+        # ============================================================
+        # 10. describe_symbol graph-on: definition + callers + tests in one
+        # ============================================================
+        # `helper` is defined in util.py and called by Service.run (graph).
+        # find_tests_for pulls from the search stub — point it at a /tests/ file.
+        rag_state["search_returns"] = [{
+            "id": "td", "symbol_name": "test_service", "symbol_kind": "function_definition",
+            "file": "test_service.py", "file_path": "/proj/tests/test_service.py",
+            "start_line": 1, "end_line": 5, "score": 0.6,
+            "content": "def test_service(): ...",
+        }]
+        d = b.describe_symbol("helper")
+        if not d.get("graph_enabled"):
+            print(f"[test] FAIL [10/12]: graph_enabled should be True: {d}")
+            return 10
+        if not any((r.get("file") or "").endswith("util.py") for r in d["definition"]):
+            print(f"[test] FAIL [10/12]: definition missing util.py: {d['definition']}")
+            return 10
+        caller_labels = [(e.get("source") or {}).get("label", "") for e in d["called_by"]]
+        if not any(lbl.endswith("run") for lbl in caller_labels):
+            print(f"[test] FAIL [10/12]: Service.run not among callers: {caller_labels}")
+            return 10
+        if not d["tests"]:
+            print(f"[test] FAIL [10/12]: tests section empty: {d}")
+            return 10
+        print(f"[test] OK [10/12] describe_symbol graph-on: definition + callers + tests")
+
+        # ============================================================
+        # 11. describe_symbol formatter renders all sections
+        # ============================================================
+        from lynx.server import _format_describe_symbol
+        text = _format_describe_symbol("helper", d)
+        for section in ("DEFINITION:", "CALLED BY:", "CALLS:", "TESTS:"):
+            if section not in text:
+                print(f"[test] FAIL [11/12]: formatter missing {section!r}:\n{text}")
+                return 11
+        print(f"[test] OK [11/12] describe_symbol formatter renders every section")
+
+        # ============================================================
+        # 12. describe_symbol graph-off: no call data, definition+tests still work
+        # ============================================================
+        rag_state["search_returns"] = [{
+            "id": "dd", "symbol_name": "helper", "symbol_kind": "function",
+            "file": "util.py", "file_path": str((tmp / "t2" / "code" / "util.py")),
+            "start_line": 1, "end_line": 2, "score": 0.5,
+            "language": "python", "content": "def helper(x): return x+1",
+        }]
+        d_off = b2.describe_symbol("helper")
+        if d_off.get("graph_enabled"):
+            print(f"[test] FAIL [12/12]: graph_enabled should be False on graph-off backend")
+            return 12
+        if d_off["called_by"] or d_off["calls"]:
+            print(f"[test] FAIL [12/12]: call data should be empty without graph: {d_off}")
+            return 12
+        if not d_off["definition"]:
+            print(f"[test] FAIL [12/12]: definition should still resolve via search: {d_off}")
+            return 12
+        print(f"[test] OK [12/12] describe_symbol graph-off: no calls, definition still works")
 
         print("\n[test] === SUCCESS: combined tools work as expected ===")
         return 0

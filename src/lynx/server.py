@@ -876,6 +876,63 @@ def _format_test_results(symbol: str, results: list) -> str:
     return "\n".join(lines)
 
 
+def _describe_loc(node: dict) -> str:
+    """`file:Lstart-end` for a node/result dict, tolerating missing lines."""
+    loc = f"{node.get('file', '?')}:L{node.get('start_line') or '?'}"
+    if node.get("end_line") and node["end_line"] != node.get("start_line"):
+        loc += f"-{node['end_line']}"
+    return loc
+
+
+def _format_describe_symbol(symbol: str, d: dict) -> str:
+    definition = d.get("definition") or []
+    called_by = d.get("called_by") or []
+    calls = d.get("calls") or []
+    tests = d.get("tests") or []
+
+    if not (definition or called_by or calls or tests):
+        return f"No information found for {symbol!r} in this codebase."
+
+    lines = [f"Symbol context for {symbol!r}:", ""]
+
+    lines.append("DEFINITION:")
+    if definition:
+        for r in definition:
+            lines.append(
+                f"  • {r.get('symbol', symbol)}  [{r.get('kind', '?')}]  "
+                f"@ {_describe_loc(r)}  ({r.get('source')})"
+            )
+    else:
+        lines.append("  (not found)")
+
+    # called_by / calls are graph edge dicts (source/target node dicts).
+    lines.append("")
+    lines.append("CALLED BY:" if d.get("graph_enabled") else "CALLED BY: (enable the graph layer for call data)")
+    for e in called_by:
+        caller = e.get("source") or {}
+        lines.append(f"  • {caller.get('label', '?')}  @ {_describe_loc(caller)}  ({e.get('confidence', '?')})")
+    if d.get("graph_enabled") and not called_by:
+        lines.append("  (none)")
+
+    lines.append("")
+    lines.append("CALLS:" if d.get("graph_enabled") else "CALLS: (enable the graph layer for call data)")
+    for e in calls:
+        callee = e.get("target") or {}
+        lines.append(f"  • {callee.get('label', '?')}  @ {_describe_loc(callee)}  ({e.get('confidence', '?')})")
+    if d.get("graph_enabled") and not calls:
+        lines.append("  (none)")
+
+    lines.append("")
+    lines.append("TESTS:")
+    if tests:
+        for r in tests:
+            lines.append(f"  • {r.get('symbol') or '?'}  @ {_describe_loc(r)}")
+    else:
+        lines.append("  (none found)")
+
+    return "\n".join(lines)
+
+
 def _format_similar_results(results: list) -> str:
     if not results:
         return "No similar code found."
@@ -1000,6 +1057,38 @@ def _register_combined_tools(mcp, manager):
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             results = manager.find_similar(src, snippet, top_k=top_k)
             return _format_similar_results(results)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_describe = (
+        f"One-shot context for a symbol — DEFINITION + CALLED BY + CALLS + TESTS "
+        f"in a single call, instead of running find_definition, graph callers/callees, "
+        f"and find_tests_for separately. The fastest way to understand an unfamiliar "
+        f"function/class before changing it: where it lives, who depends on it (blast "
+        f"radius), what it depends on, and how it's tested. Call data (CALLED BY / CALLS) "
+        f"comes from the graph layer and is present only when it's enabled for the source; "
+        f"definition + tests always work. {src_hint} "
+        f"Args: symbol (identifier name); source; callers_limit (default 10); "
+        f"callees_limit (default 10); tests_limit (default 5)."
+    )
+
+    @mcp.tool(name="describe_symbol", description=_desc_describe, annotations=_ANN_READ)
+    def _describe_symbol(
+        symbol: Annotated[str, Field(description="Identifier to describe, e.g. `MyClass` or `MyClass.handleClick`.")],
+        source: _SourceArg = None,
+        callers_limit: Annotated[int, Field(description="Max 'called by' (caller) edges to include.")] = 10,
+        callees_limit: Annotated[int, Field(description="Max 'calls' (callee) edges to include.")] = 10,
+        tests_limit: Annotated[int, Field(description="Max test references to include.")] = 5,
+    ) -> str:
+        try:
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            d = manager.describe_symbol(
+                src, symbol,
+                callers_limit=callers_limit,
+                callees_limit=callees_limit,
+                tests_limit=tests_limit,
+            )
+            return _format_describe_symbol(symbol, d)
         except Exception as e:
             return f"Error: {e}"
 

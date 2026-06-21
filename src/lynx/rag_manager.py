@@ -99,6 +99,28 @@ def _normalize_extension(ext: str) -> str:
     return ext if ext.startswith(".") else f".{ext}"
 
 
+def _dedup_by_content(results: list) -> list:
+    """Drop later results whose body is byte-identical to an earlier one.
+
+    Order-preserving, so the highest-ranked occurrence of each distinct body
+    survives. A result with no `content` is keyed by its id (or kept as-is when
+    neither is present) so empty bodies never collapse together by accident.
+    """
+    seen: set = set()
+    out: list = []
+    for r in results:
+        body = (r.get("content") or "").strip()
+        key = body or r.get("id")
+        if key is None:
+            out.append(r)  # nothing to dedup on — keep it
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def _matches_filters(item: dict, file_glob, extensions, path_contains, paths=None) -> bool:
     """Apply optional post-retrieval filters to a single result dict.
 
@@ -828,6 +850,13 @@ class CodebaseRAG:
                 r for r in results
                 if _matches_filters(r, file_glob, extensions, path_contains, paths=paths)
             ]
+
+        # Collapse chunks with byte-identical bodies: vendored copies, `build/`
+        # / `dist/` mirrors of source, or a file checked in twice produce
+        # different ids (so RRF keeps them all) but read as duplicates. Keep the
+        # highest-ranked occurrence. Done before rerank + truncation so a dup
+        # can't crowd a distinct result out of top_k.
+        results = _dedup_by_content(results)
 
         # Cross-encoder rerank (opt-in, after filters so we don't waste
         # cycles on chunks the user filtered out anyway). Lazy-construct

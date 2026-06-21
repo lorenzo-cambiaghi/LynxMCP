@@ -1154,6 +1154,24 @@ def _register_build_routes(app) -> None:
 # Letter followed by letters / digits / underscore, max 40 chars.
 _SOURCE_NAME_RE = __import__("re").compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
 
+# Path fragments a new codebase source ignores by default: VCS, virtualenvs,
+# dependency dirs, and build outputs. Build/dist/vendored dirs in particular
+# mirror source files, so indexing them produces duplicate-content hits. Stored
+# in forward-slash form; config load normalizes "/" to the OS separator.
+_DEFAULT_CODEBASE_IGNORES = [
+    "/.git/", "/.venv/", "/venv/", "/node_modules/", "/__pycache__/",
+    "/.idea/", "/.vscode/", "/dist/", "/build/", "/target/", "/.next/",
+]
+
+
+def _apply_codebase_defaults(block: dict) -> dict:
+    """Fill in sane defaults a new codebase source should have but the client
+    may omit. Currently: ignore VCS/deps/build dirs unless the caller set its
+    own list. Non-codebase blocks and explicit lists are left untouched."""
+    if block.get("type") == "codebase" and not block.get("ignored_path_fragments"):
+        block["ignored_path_fragments"] = list(_DEFAULT_CODEBASE_IGNORES)
+    return block
+
 # Roots we never list on the filesystem browser — these are kernel
 # virtual filesystems on Linux that are either huge, slow, or weird to
 # walk and have no value to anyone picking a folder to index.
@@ -1348,7 +1366,7 @@ def _register_source_crud_routes(app) -> None:
                 status_code=409,
             )
 
-        cfg.setdefault("sources", {})[name] = block
+        cfg.setdefault("sources", {})[name] = _apply_codebase_defaults(block)
 
         err_msg = _validate_and_write_config(cfg, config_path)
         if err_msg is not None:

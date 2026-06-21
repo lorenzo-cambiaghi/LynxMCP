@@ -741,3 +741,36 @@ class CodebaseBackend(SourceBackend):
             if len(out) >= top_k:
                 break
         return out
+
+    def describe_symbol(
+        self,
+        symbol: str,
+        *,
+        callers_limit: int = 10,
+        callees_limit: int = 10,
+        tests_limit: int = 5,
+    ) -> dict:
+        """One-shot context for a symbol — for an AI orienting around it.
+
+        Composes the cheap primitives into a single round-trip instead of
+        the agent issuing find_definition + graph callers + graph callees +
+        find_tests_for separately:
+          - definition  (precise file+line, graph or BM25 fallback)
+          - called_by   (graph callers — empty when the graph layer is off)
+          - calls       (graph callees — empty when the graph layer is off)
+          - tests       (tests that mention the symbol)
+
+        Definition + tests work without the graph; callers/callees need it.
+        """
+        result = {
+            "symbol": symbol,
+            "graph_enabled": self.graph is not None,
+            "definition": self.find_definition(symbol, limit=3),
+            "called_by": [],
+            "calls": [],
+            "tests": self.find_tests_for(symbol, limit=tests_limit),
+        }
+        if self.graph is not None:
+            result["called_by"] = self.get_callers(symbol, limit=callers_limit)
+            result["calls"] = self.get_callees(symbol, limit=callees_limit)
+        return result

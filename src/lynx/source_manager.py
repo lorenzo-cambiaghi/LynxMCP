@@ -322,6 +322,9 @@ class SourceManager:
     def find_similar(self, source: str, snippet: str, top_k: int = 10) -> list:
         return self._require_codebase(source).find_similar(snippet, top_k=top_k)
 
+    def describe_symbol(self, source: str, symbol: str, **kw) -> dict:
+        return self._require_codebase(source).describe_symbol(symbol, **kw)
+
     def search_diff(
         self, source: str, query: str,
         base: str | None = None, top_k: int = 8, **kw,
