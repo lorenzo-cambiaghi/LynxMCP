@@ -1351,24 +1351,17 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 callee_name, is_member = extracted
                 callee_key = callee_name.lower()
                 target_id = local_index.get(callee_key)
-                # A member call (`obj.Foo()`) that only matches itself by name
-                # is a false self-loop: `obj` is some other receiver whose type
-                # we can't see here, but it happens to share the method name of
-                # the enclosing function. Don't emit `X calls X`; defer to the
-                # cross-file resolver, which has the global symbol index AND the
-                # member-call caution (it skips ambiguous member calls). A plain
-                # (non-member) self-call is genuine recursion and is kept.
-                false_self_loop = (
-                    target_id is not None and target_id == caller_id and is_member
-                )
-                if target_id is not None and not false_self_loop:
+                if target_id is not None and target_id != caller_id:
+                    # Resolved within this file, and not a self-reference.
                     edges.append({
                         "source": caller_id,
                         "target": target_id,
                         "relation": "calls",
                         "confidence": "extracted",
                     })
-                else:
+                elif target_id is None:
+                    # Callee not defined in this file — defer to the cross-file
+                    # resolver (it has the global symbol index + member caution).
                     raw_calls.append({
                         "caller": caller_id,
                         "callee_name": callee_name,
@@ -1376,6 +1369,13 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                         "file": file_path,
                         "line": child.start_point[0] + 1,
                     })
+                # else: target_id == caller_id — a name-only self match. Drop it.
+                #   Node ids are NOT signature-aware, so overloaded methods
+                #   (Foo(a) and Foo(a, b)) collapse to a single id; a call from
+                #   one overload to another then looks identical to recursion.
+                #   A member self-match (obj.Foo() inside Foo) is also an outright
+                #   wrong receiver. A self-loop `calls` edge is noise in every
+                #   navigation view, so emit nothing rather than guess.
         # Recurse into the children — body / block / expression-statement etc.
         _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path)
 

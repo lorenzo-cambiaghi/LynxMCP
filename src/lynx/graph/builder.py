@@ -383,6 +383,10 @@ class GraphLayer:
                     continue
                 if len(candidates) == 1:
                     target = candidates[0]
+                    # A self-match (overload collapse / recursion via name) is
+                    # noise as a self-loop edge — skip it. See _walk_calls.
+                    if target == rc["caller"]:
+                        continue
                     if self._graph.has_edge(rc["caller"], target):
                         # Already have this edge from a different path; keep best confidence.
                         continue
@@ -397,6 +401,8 @@ class GraphLayer:
                     added += 1
                 elif not rc.get("is_member"):
                     for target in candidates:
+                        if target == rc["caller"]:
+                            continue  # don't fuse a self-loop into the graph
                         if self._graph.has_edge(rc["caller"], target):
                             continue
                         self._add_edge_inplace({

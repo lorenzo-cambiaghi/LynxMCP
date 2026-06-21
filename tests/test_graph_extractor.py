@@ -20,8 +20,8 @@ Scenarios:
  13. Lua — functions + intra-file call graph
  14. Bash — functions + call graph (commands resolving to functions)
  15. Objective-C — methods, message-send calls, #import, super/protocol inherit
- 16. Member-call name collision — `obj.Foo()` inside a method also named Foo
-     must not self-loop; genuine non-member recursion still does
+ 16. No self-loop call edges — member-name collision, overload-to-overload
+     call, and recursion all collapse to `X calls X` and must be dropped
 """
 from __future__ import annotations
 
@@ -594,11 +594,13 @@ class Derived extends Base implements IFoo, Runnable {}
     print(f"[test] OK [15/15] Objective-C: methods + message-send call + #import + super/protocol inherit")
 
     # ============================================================
-    # 16. Member-call name collision must NOT become a self-loop.
-    #     `obj.GetVoxel()` inside a method also named GetVoxel resolved to
-    #     itself by name → spurious `GetVoxel calls GetVoxel`. The member call
-    #     must instead be deferred to raw_calls; genuine (non-member) recursion
-    #     stays as a real self-loop edge.
+    # 16. No `calls` edge may be a self-loop. Three ways a name-only match
+    #     resolves to the enclosing function and would self-loop:
+    #       - member call on another receiver: obj.GetVoxel() inside GetVoxel
+    #       - overload call: GetVoxel(x) from GetVoxel(x, y) (overloads share
+    #         one node id since ids are not signature-aware)
+    #       - genuine recursion: Countdown(n - 1) inside Countdown
+    #     All three are noise as self-loops and must be dropped.
     # ============================================================
     cs_self = """namespace Demo
 {
@@ -606,12 +608,17 @@ class Derived extends Base implements IFoo, Runnable {}
     {
         public int GetVoxel(int x)
         {
-            return chunk.GetVoxel(x);   // member call on ANOTHER receiver
+            return chunk.GetVoxel(x);       // member call on ANOTHER receiver
+        }
+
+        public int GetVoxel(int x, int y)   // overload -> same node id
+        {
+            return GetVoxel(x);             // overload call looks like recursion
         }
 
         public int Countdown(int n)
         {
-            return Countdown(n - 1);    // genuine non-member recursion
+            return Countdown(n - 1);        // genuine recursion
         }
     }
 }
@@ -620,28 +627,12 @@ class Derived extends Base implements IFoo, Runnable {}
     if r is None:
         print("[test] FAIL [16/16]: extract_file returned None on VoxelWorld.cs")
         return 16
-    labels = _ids_by_label(r["nodes"])
-    gv = labels.get("Demo.VoxelWorld.GetVoxel")
-    cd = labels.get("Demo.VoxelWorld.Countdown")
-    if gv is None or cd is None:
-        print(f"[test] FAIL [16/16]: methods missing from {list(labels)}")
-        return 16
     calls = _edges(r, "calls")
-    # The member self-collision must NOT be an emitted call edge...
-    if any(e["source"] == gv and e["target"] == gv for e in calls):
-        print(f"[test] FAIL [16/16]: spurious GetVoxel->GetVoxel self-loop emitted: {calls}")
+    self_loops = [e for e in calls if e["source"] == e["target"]]
+    if self_loops:
+        print(f"[test] FAIL [16/16]: self-loop call edge(s) emitted: {self_loops}")
         return 16
-    # ...it must be deferred to raw_calls as a member call instead.
-    if not any(
-        rc["callee_name"] == "GetVoxel" and rc["is_member"] for rc in r["raw_calls"]
-    ):
-        print(f"[test] FAIL [16/16]: member GetVoxel not deferred to raw_calls: {r['raw_calls']}")
-        return 16
-    # Genuine non-member recursion is still a real self-loop edge.
-    if not any(e["source"] == cd and e["target"] == cd for e in calls):
-        print(f"[test] FAIL [16/16]: genuine Countdown recursion self-loop dropped: {calls}")
-        return 16
-    print(f"[test] OK [16/16] member self-collision deferred; non-member recursion kept")
+    print(f"[test] OK [16/16] no self-loop call edges (member/overload/recursion all dropped)")
 
     print("\n[test] === SUCCESS: graph extractor works as expected ===")
     return 0
