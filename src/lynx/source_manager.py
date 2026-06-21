@@ -334,6 +334,9 @@ class SourceManager:
     def repo_overview(self, source: str, **kw) -> dict:
         return self._require_codebase(source).repo_overview(**kw)
 
+    def export_graph(self, source: str, mode: str, target: str, **kw) -> dict:
+        return self._require_codebase(source).export_graph(mode, target, **kw)
+
     def search_diff(
         self, source: str, query: str,
         base: str | None = None, top_k: int = 8, **kw,

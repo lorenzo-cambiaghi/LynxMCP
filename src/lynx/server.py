@@ -1035,6 +1035,15 @@ def _format_repo_overview(d: dict) -> str:
     return "\n".join(lines)
 
 
+def _report_dir(manager):
+    """Directory where graph view files are written: config `reports_path` if
+    set, else `<storage_path>/reports`."""
+    from pathlib import Path
+    cfg = manager.config
+    rp = getattr(cfg, "reports_path", None)
+    return Path(rp) if rp else Path(cfg.storage_path) / "reports"
+
+
 def _format_similar_results(results: list) -> str:
     if not results:
         return "No similar code found."
@@ -1257,6 +1266,39 @@ def _register_combined_tools(mcp, manager):
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             d = manager.repo_overview(src)
             return _format_repo_overview(d)
+        except Exception as e:
+            return f"Error: {e}"
+
+    _desc_export_graph = (
+        f"Render a SHAREABLE, self-contained graph view as a single offline file "
+        f"(no server, no internet) — for a human to look at, attach to a PR, or archive. "
+        f"mode='symbol' draws a symbol's blast radius (callers above, callees below); "
+        f"mode='module' draws a file as a hub (imports + dependents). Needs the graph "
+        f"layer. Writes to the configured reports dir unless `out` is given, and returns "
+        f"the path. {src_hint} "
+        f"Args: target (symbol name for mode=symbol, file path/fragment for mode=module); "
+        f"mode ('symbol'|'module', default symbol); source; depth (hops, symbol mode, "
+        f"default 2); out (output file path, optional)."
+    )
+
+    @mcp.tool(name="export_graph", description=_desc_export_graph, annotations=_ANN_READ)
+    def _export_graph(
+        target: Annotated[str, Field(description="Symbol name (mode=symbol) or file path/fragment (mode=module) to render.")],
+        mode: Annotated[str, Field(description="'symbol' (blast radius) or 'module' (file hub).")] = "symbol",
+        source: _SourceArg = None,
+        depth: Annotated[int, Field(description="Call-graph hops for symbol mode (1-6).")] = 2,
+        out: Annotated[str | None, Field(description="Output file path; defaults to the configured reports dir.")] = None,
+    ) -> str:
+        try:
+            from pathlib import Path
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            res = manager.export_graph(src, mode, target, depth=depth)
+            if res.get("empty"):
+                return f"Nothing to export: {res.get('reason')}"
+            out_path = Path(out) if out else _report_dir(manager) / res["suggested_name"]
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(res["content"], encoding="utf-8")
+            return f"Wrote self-contained graph view to {out_path} — open it in a browser."
         except Exception as e:
             return f"Error: {e}"
 

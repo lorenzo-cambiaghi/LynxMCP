@@ -111,7 +111,7 @@ def test_tool_count_constant_in_number_of_sources():
     n_one = len(_tools(_register_everything(one)))
     n_three = len(_tools(_register_everything(three)))
     assert n_one == n_three, "tool count must not grow with sources"
-    assert n_three <= 16, f"tool surface too large: {n_three}"
+    assert n_three <= 17, f"tool surface too large: {n_three}"
 
 
 def test_expected_fixed_tool_names():
@@ -121,7 +121,8 @@ def test_expected_fixed_tool_names():
         "search", "deep_search", "list_sources", "update_source_index",
         "get_rag_status", "feedback", "graph_query", "find_definition",
         "find_usages", "find_tests_for", "find_similar", "describe_symbol",
-        "impact", "module_summary", "repo_overview", "search_diff",
+        "impact", "module_summary", "repo_overview", "export_graph",
+        "search_diff",
     }
 
 

@@ -266,3 +266,76 @@ def test_format_repo_overview_sections():
     assert "FRAMEWORKS: Unity" in text
     assert "Program.cs" in text
     assert "build: dotnet build" in text
+
+
+# ---------------------------------------------------------------------------
+# graph/render — self-contained graph views
+# ---------------------------------------------------------------------------
+
+
+def _tiny_graph():
+    import networkx as nx
+    G = nx.DiGraph()
+    G.add_node("s", label="Target", kind="function", file="/repo/a.py", start_line=1)
+    G.add_node("c", label="Caller", kind="function", file="/repo/a.py", start_line=5)
+    G.add_node("e", label="Callee<T>", kind="function", file="/repo/b.py", start_line=9)
+    G.add_edge("c", "s", relation="calls", confidence="resolved")
+    G.add_edge("s", "e", relation="calls", confidence="resolved")
+    return G
+
+
+def test_build_symbol_view_roles_and_layers():
+    from lynx.graph.render import build_symbol_view
+
+    m = build_symbol_view(_tiny_graph(), "Target", depth=2, root="/repo")
+    roles = {n["label"]: n["role"] for n in m["nodes"]}
+    layers = {n["label"]: n["layer"] for n in m["nodes"]}
+    assert roles["Target"] == "seed" and layers["Target"] == 0
+    assert roles["Caller"] == "caller" and layers["Caller"] < 0   # above
+    assert roles["Callee<T>"] == "callee" and layers["Callee<T>"] > 0  # below
+    assert len(m["edges"]) == 2
+
+
+def test_build_symbol_view_missing_symbol():
+    from lynx.graph.render import build_symbol_view
+
+    m = build_symbol_view(_tiny_graph(), "Nope", depth=2)
+    assert m.get("empty") and "not found" in m["reason"]
+
+
+def test_render_html_is_self_contained_and_escaped():
+    from lynx.graph.render import build_symbol_view, render_html
+
+    m = build_symbol_view(_tiny_graph(), "Target", depth=2, root="/repo")
+    out = render_html(m, source="proj", lynx_version="9.9.9")
+
+    assert out.lower().startswith("<!doctype html>")
+    # Air-gap invariant: no external resource fetches at view time.
+    assert "src=" not in out
+    assert "<link" not in out
+    assert "<script" not in out      # v1 is pure SVG, no JS
+    # Labels are HTML-escaped (Callee<T> must not appear raw).
+    assert "Callee&lt;T&gt;" in out
+    assert "Callee<T>" not in out
+    # Paths rendered repo-relative (root stripped).
+    assert "/repo/a.py" not in out
+    assert "a.py" in out
+
+
+def test_build_module_view_hub():
+    import networkx as nx
+    from lynx.graph.render import build_module_view
+
+    G = nx.DiGraph()
+    # service.py defines Service.run; main.py calls it (a dependent).
+    G.add_node("svc", label="Service.run", kind="method",
+               file="/repo/service.py", start_line=2)
+    G.add_node("main", label="main", kind="function",
+               file="/repo/main.py", start_line=1)
+    G.add_edge("main", "svc", relation="calls", confidence="resolved")
+
+    m = build_module_view(G, "service.py", root="/repo")
+    assert not m.get("empty")
+    roles = {n["role"] for n in m["nodes"]}
+    assert "seed" in roles and "dependent" in roles
+    assert any("Service.run" in s for s in m["sidebar"])

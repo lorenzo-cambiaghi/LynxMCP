@@ -132,6 +132,27 @@ def _build_parser() -> argparse.ArgumentParser:
              "the graph layer enabled.",
     )
 
+    sp_graph_export = graph_sub.add_parser(
+        "export",
+        help="Write a self-contained graph view (single offline .html) for a "
+             "symbol's blast radius or a file's dependencies.",
+    )
+    sp_graph_export.add_argument("--config", "-c", metavar="PATH")
+    sp_graph_export.add_argument(
+        "--source", "-s", metavar="NAME",
+        help="Source to read. Optional when only one has the graph layer.",
+    )
+    grp = sp_graph_export.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--symbol", metavar="NAME", help="Render a symbol's blast radius.")
+    grp.add_argument("--module", metavar="FILE", help="Render a file's import/dependent hub.")
+    sp_graph_export.add_argument(
+        "--depth", type=int, default=2, help="Call-graph hops for --symbol (1-6, default 2).",
+    )
+    sp_graph_export.add_argument(
+        "--out", "-o", metavar="PATH",
+        help="Output file. Default: <reports_path or storage/reports>/<name>.html",
+    )
+
     # --------------------------------------------------------------
     # `lynx manager <cmd>` — LynxManager (setup wizard, doctor, install,
     # web UI). All four sub-commands lazy-import the manager package so
@@ -612,11 +633,32 @@ def _resolve_graph_source(manager, args) -> str:
 
 def _cmd_graph(args) -> int:
     sub = getattr(args, "graph_command", None)
-    if sub not in ("build", "status"):
-        print("error: `lynx graph` requires a sub-command (build|status). "
+    if sub not in ("build", "status", "export"):
+        print("error: `lynx graph` requires a sub-command (build|status|export). "
               "Run `lynx graph --help` for details.", file=sys.stderr)
         return 2
-    _config, manager = _build_manager(getattr(args, "config", None))
+    config, manager = _build_manager(getattr(args, "config", None))
+
+    if sub == "export":
+        from pathlib import Path
+        source = _resolve_graph_source(manager, args)
+        if getattr(args, "symbol", None):
+            mode, target = "symbol", args.symbol
+        else:
+            mode, target = "module", args.module
+        res = manager.export_graph(source, mode, target, depth=getattr(args, "depth", 2))
+        if res.get("empty"):
+            print(f"Nothing to export: {res.get('reason')}", file=sys.stderr)
+            return 1
+        if getattr(args, "out", None):
+            out_path = Path(args.out)
+        else:
+            rp = getattr(config, "reports_path", None)
+            out_path = (Path(rp) if rp else Path(config.storage_path) / "reports") / res["suggested_name"]
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(res["content"], encoding="utf-8")
+        print(f"Wrote self-contained graph view to {out_path}")
+        return 0
 
     if sub == "build":
         source = _resolve_graph_source(manager, args)

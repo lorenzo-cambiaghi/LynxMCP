@@ -42,7 +42,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
@@ -126,6 +126,10 @@ class Config:
     # here because each source type has its own shape; the SourceManager and
     # backends know how to read their own fields.
     sources: Dict[str, dict] = field(default_factory=dict)
+    # Where `lynx graph export` writes graph view files. None => the consumer
+    # defaults to `<storage_path>/reports`. Settable in config.json
+    # ("reports_path") and, later, from the LynxManager UI.
+    reports_path: Optional[Path] = None
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +560,9 @@ def load_config(config_path: Path | None = None) -> Config:
         validator = _TYPE_VALIDATORS[type_name]
         sources[name] = validator(name, entry, base_dir)
 
+    raw_reports = raw.get("reports_path")
+    reports_path = _resolve_path(raw_reports, base_dir) if raw_reports else None
+
     return Config(
         config_version=version,
         storage_path=storage_path,
@@ -563,6 +570,7 @@ def load_config(config_path: Path | None = None) -> Config:
         embedding=embedding,
         search=search,
         sources=sources,
+        reports_path=reports_path,
     )
 
 

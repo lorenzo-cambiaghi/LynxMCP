@@ -27,6 +27,7 @@ from .query import (
     find_symbols, get_subclasses, get_superclasses,
     transitive_callers, nodes_in_file,
 )
+from .render import build_symbol_view, build_module_view, render_html
 
 __all__ = [
     # extractor
@@ -40,4 +41,6 @@ __all__ = [
     "shortest_path", "find_symbols",
     "get_subclasses", "get_superclasses",
     "transitive_callers", "nodes_in_file",
+    # render
+    "build_symbol_view", "build_module_view", "render_html",
 ]

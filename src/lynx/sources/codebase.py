@@ -845,3 +845,37 @@ class CodebaseBackend(SourceBackend):
         """
         from ..overview import build_overview
         return build_overview(self.source_config["path"])
+
+    def export_graph(self, mode: str, target: str, *, depth: int = 2) -> dict:
+        """Render a self-contained graph view (see graph/render.py).
+
+        mode='symbol' → blast radius of `target` (a symbol name);
+        mode='module' → hub view of `target` (a file path / fragment).
+        Returns {content, suggested_name} on success, or {empty, reason} when
+        the graph is off or the target isn't found.
+        """
+        if self.graph is None:
+            return {"empty": True, "reason": "graph layer not enabled for this source"}
+        import re as _re
+        from .. import __version__
+        from ..graph import build_symbol_view, build_module_view, render_html
+
+        G = self.graph.graph
+        root = self.source_config.get("path")
+        if mode == "symbol":
+            model = build_symbol_view(G, target, depth=depth, root=root)
+            stem = target
+        elif mode == "module":
+            model = build_module_view(G, target, root=root)
+            stem = os.path.basename(target)
+        else:
+            raise ValueError(f"mode must be 'symbol' or 'module', got {mode!r}")
+
+        content = render_html(model, source=self.name, lynx_version=__version__)
+        safe = _re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_") or "graph"
+        return {
+            "empty": bool(model.get("empty")),
+            "reason": model.get("reason"),
+            "content": content,
+            "suggested_name": f"{mode}_{safe}.html",
+        }

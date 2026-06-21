@@ -22,6 +22,7 @@ Scenarios:
  13. impact_of graph-on: transitive callers + tests (blast radius)
  14. module_summary graph-on: defined symbols + imports for a file
  15. repo_overview: language + file-count detection from a filesystem scan
+ 16. export_graph: self-contained symbol view rendered from the real graph
 """
 from __future__ import annotations
 
@@ -450,6 +451,28 @@ def main() -> int:
             print(f"[test] FAIL [15/15]: expected >=3 files scanned: {ov}")
             return 15
         print(f"[test] OK [15/15] repo_overview: languages + file_count from fs scan")
+
+        # ============================================================
+        # 16. export_graph: self-contained symbol view from the real graph
+        # ============================================================
+        res = b.export_graph("symbol", "helper", depth=2)
+        if res.get("empty"):
+            print(f"[test] FAIL [16/16]: export_graph reported empty: {res}")
+            return 16
+        content = res.get("content") or ""
+        if not content.lower().startswith("<!doctype html>"):
+            print(f"[test] FAIL [16/16]: output is not a standalone HTML doc")
+            return 16
+        if "helper" not in content:
+            print(f"[test] FAIL [16/16]: seed symbol not present in the view")
+            return 16
+        if "src=" in content or "<script" in content:
+            print(f"[test] FAIL [16/16]: output is not self-contained (external/script refs)")
+            return 16
+        if not res.get("suggested_name", "").endswith(".html"):
+            print(f"[test] FAIL [16/16]: suggested_name missing/!.html: {res.get('suggested_name')}")
+            return 16
+        print(f"[test] OK [16/16] export_graph: self-contained symbol view rendered")
 
         print("\n[test] === SUCCESS: combined tools work as expected ===")
         return 0
