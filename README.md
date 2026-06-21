@@ -58,8 +58,6 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
   <sub><b><a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">LynxManager</a></b> — guided setup, query playground &amp; diagnostics, all in the browser. <a href="docs/GUIDE.md#lynxmanager--guided-setup-web-ui-diagnostics-new-in-v09">Full walkthrough →</a></sub>
 </p>
 
-*(Named after Lynceus, the Argonaut whose sharp eyes could find anything hidden.)*
-
 ## Quickstart
 
 ```bash
