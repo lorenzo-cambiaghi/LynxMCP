@@ -405,13 +405,39 @@
       });
   }
   function renderBreadcrumb(path) {
-    // The breadcrumb is a read-only label of where you are. It used to make
-    // each segment clickable to jump up the tree, but reconstructing a valid
-    // absolute path from a clicked Windows drive segment proved fragile
-    // (C:\Users -> "C:Users" drive-relative, "/C:" / "//C:" UNC garbage), so
-    // segments are now plain text. Navigate UP with the ".." entry in the list
-    // below — that path comes straight from the backend and can't be corrupted.
-    $("#fp-breadcrumb").textContent = path;
+    // Build navigable breadcrumb segments. Handles Windows drive paths
+    // (C:\a\b — segment 0 is the drive ROOT "C:\", not "\C:") and POSIX
+    // paths (/a/b), accepting either separator in the input. Each link's
+    // data-path is a real absolute path the backend can resolve — joining the
+    // bare drive letter "C:" with a child must yield "C:\child", never "C:child"
+    // (drive-relative) or "\C:" / "/C:". The backend also re-normalizes every
+    // shape defensively (see _normalize_browse_path), so a clicked segment
+    // can't corrupt the path even if this reconstruction ever regresses.
+    var win = /^[A-Za-z]:/.test(path);          // leading drive letter => Windows
+    var sep = win ? "\\" : "/";
+    var parts = path.split(/[\\/]+/).filter(function (s) { return s.length > 0; });
+    var html = '';
+    if (!win) {
+      html += '<a href="#" data-path="/" class="text-indigo-600 hover:underline">/</a>';
+    }
+    var acc = '';
+    for (var i = 0; i < parts.length; i++) {
+      acc = (i === 0)
+        ? (win ? parts[0] + sep : '/' + parts[0])           // "C:\"  or  "/usr"
+        : acc.replace(/[\\/]+$/, '') + sep + parts[i];        // append next segment
+      if (i > 0) {
+        html += '<span class="text-slate-400">' + sep + '</span>';
+      }
+      html += '<a href="#" data-path="' + esc(acc) + '" class="text-indigo-600 hover:underline">' + esc(parts[i]) + '</a>';
+    }
+    $("#fp-breadcrumb").innerHTML = html;
+    var links = $("#fp-breadcrumb").querySelectorAll("a");
+    links.forEach(function (a) {
+      a.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        loadDir(a.getAttribute("data-path"));
+      });
+    });
   }
   function renderList(entries, parent) {
     var html = '<ul class="divide-y divide-slate-100">';
