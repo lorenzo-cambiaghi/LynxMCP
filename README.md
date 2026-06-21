@@ -59,7 +59,7 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/graph_view_example.svg" alt="Blast-radius graph view: callers above the symbol, callees below, exported as a single offline file" width="820">
+  <img src="docs/img/graph_view_example.svg" alt="Blast-radius graph view: callers above the symbol, callees below, exported as a single offline file" width="820">
   <br>
   <sub><b>Shareable graph views</b> — <code>lynx graph export --symbol GetVoxel</code> writes one self-contained, offline file (no server, no CDN): the symbol's <b>blast radius</b> — who calls it (above) and what it calls (below). Attach it to a PR or archive it for an audit.</sub>
 </p>
