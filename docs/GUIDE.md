@@ -114,6 +114,31 @@ when the flag is off — backward-compatible by default. See the [Graph
 layer](#graph-layer-opt-in) section for how cross-file resolution,
 inheritance edges, and persistence work.
 
+### Codebase tools: navigate, understand, visualize
+
+When a **codebase** source is present, these fixed-name tools come online (each
+takes an optional `source`). Some compose the primitives above into one call so
+the AI doesn't have to orchestrate several; the *(graph)* ones need the graph
+layer enabled for the source.
+
+| Tool | What it answers |
+|---|---|
+| `find_definition(symbol)` | Where is X defined? (AST-precise with the graph, BM25 fallback otherwise.) |
+| `find_usages(symbol)` | Every use of X — calls *and* non-call references (generics, decorators, docs). |
+| `find_tests_for(symbol)` | Which tests exercise X? |
+| `find_similar(snippet)` | Does code like this already exist? (pure semantic) |
+| `describe_symbol(symbol)` | **One-shot context** for X: definition + callers + callees + tests, in a single call. |
+| `impact(symbol)` *(graph)* | **Blast radius**: everything that reaches X transitively through the call graph (with hop distance) + the tests to re-run. |
+| `module_summary(file)` *(graph)* | A file as a unit: the symbols it defines, what it imports, and which files depend on it. |
+| `repo_overview()` | **Orientation map**: detected languages, frameworks, manifests, likely entry points, and build/test/run commands. Pure filesystem scan — no graph needed. Call it once when you land in an unfamiliar repo. |
+| `export_graph(target, mode?)` *(graph)* | Render a **shareable, offline** graph view as a single self-contained file — a symbol's blast radius (`mode=symbol`) or a file hub (`mode=module`). Writes to `reports_path` (default `<storage>/reports`). Also available as a CLI: `lynx graph export --symbol … \| --module …`. |
+| `search_diff(query, base?)` | Search only files changed vs a base branch — built for code review. (needs `git_integration`) |
+
+`module_summary` and `export_graph` produce nothing useful without the call
+graph, so — like `graph_query` — they are registered only when the graph layer
+is on. `export_graph` is the one tool here that *writes* (a report file); the
+rest are read-only.
+
 ## Why it exists
 
 Modern AI IDEs (Cursor, Copilot, etc.) ship their own indexing, but with
@@ -799,8 +824,10 @@ update_source_index    feedback
 ```
 
 Plus, when a **codebase** source is present: `find_definition`,
-`find_usages`, `find_tests_for`, `find_similar`, `search_diff` — and
-`graph_query` when that source has `graph.enabled=true`. Each tool takes a
+`find_usages`, `find_tests_for`, `find_similar`, `describe_symbol`,
+`impact`, `repo_overview`, `search_diff` — and the graph-only
+`graph_query`, `module_summary`, `export_graph` when that source has
+`graph.enabled=true`. Each tool takes a
 `source` argument (omit it to fan out across all sources); the handshake
 `instructions` describe every configured source so the AI client picks the
 right `source`. Pair this with an AI integration rules file (see the
@@ -1538,7 +1565,7 @@ cross-file resolution policy, inheritance edges, and costs.
 
 ### Combined tools (always-on for codebase sources, new in v0.8)
 
-Every `codebase` source automatically gets **4 combined tools** that
+Every `codebase` source automatically gets a set of **combined tools** that
 mix graph + search to answer questions a single tool can't:
 
 | Tool | Answers | Uses graph? |
@@ -1547,12 +1574,23 @@ mix graph + search to answer questions a single tool can't:
 | `find_usages(symbol)` | "Who uses X?" — calls AND non-call refs (typeof, generics, decorators, doc mentions). | Yes when enabled (`get_callers` for structural callers); always also runs textual search to catch the rest. Deduped. |
 | `find_tests_for(symbol, test_path_pattern?)` | "Are there tests for X?" | No graph; search + regex filter on standard test paths (`/tests/`, `_test.py`, `.spec.js`, `*Test.cs`, ...). |
 | `find_similar(snippet, top_k?)` | "Is there code similar to this?" — semantic match on the snippet's embedding. | No graph; pure dense (BM25 ignored). Filters out byte-identical chunks. |
+| `describe_symbol(symbol)` | "Give me the full picture of X" — definition + callers + callees + tests, in a single call. | Callers/callees use the graph when enabled; definition + tests always work. |
+| `impact(symbol, max_depth?)` | "If I change X, what could break and what do I re-run?" — transitive callers + the tests that cover X. | Transitive callers need the graph; tests resolve via search regardless. |
+| `repo_overview()` | "What is this repo and where do I start?" — languages, frameworks, manifests, entry points, build/test/run commands. | No graph; pure filesystem scan. Call once when landing in an unfamiliar repo. |
 
 And one MORE tool, conditional on `git_integration.enabled=true`:
 
 | Tool | Answers |
 |---|---|
 | `search_diff(query, base?, top_k?)` | "Search only in files I changed vs `main` (or whatever `base`)." Auto-detects `main` / `master` / `develop`; pass `base=` to override. Returns `{base, modified_files, hits}`. Killer for code review. |
+
+Two more are registered **only when the graph layer is enabled** for the
+source (they produce nothing useful without the call graph):
+
+| Tool | Answers |
+|---|---|
+| `module_summary(file, limit?)` | "Summarize this file" — the public symbols it defines, what it imports, and which files depend on it. |
+| `export_graph(target, mode?, depth?, out?)` | Render a **shareable, offline** graph view to a single self-contained file — a symbol's blast radius (`mode="symbol"`) or a file hub (`mode="module"`). Writes the file to `reports_path` (default `<storage>/reports`). Also a CLI: `lynx graph export --symbol … \| --module …`. *This tool writes a file* (not read-only). |
 
 Sample call inside the AI client:
 
