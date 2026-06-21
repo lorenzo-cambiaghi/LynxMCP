@@ -14,9 +14,12 @@ from collections import Counter
 from pathlib import Path
 
 
-# Directories we never recurse into when scanning for extensions. Mirrors
-# the defaults baked into the codebase source config so what the user
-# sees in the form matches what `lynx build` will actually index.
+# Directories we never recurse into when scanning for extensions. Mirrors the
+# default ignores a NEW codebase source gets at creation time (see
+# `routes._DEFAULT_CODEBASE_IGNORES`), so the extensions the form shows match
+# what `lynx build` will actually index. NB: these defaults apply to sources
+# created via the UI; sources written by hand in config.json keep whatever
+# `ignored_path_fragments` they declare (possibly none).
 _IGNORED_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__",
     ".idea", ".vscode", "dist", "build", "target", ".next",

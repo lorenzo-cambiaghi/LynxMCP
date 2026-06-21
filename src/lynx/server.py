@@ -73,6 +73,12 @@ _ANN_FEEDBACK = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False,
     idempotentHint=False, openWorldHint=False,
 )
+# export_graph WRITES a file to disk (not read-only), but deterministically and
+# non-destructively (it only creates/overwrites its own report file).
+_ANN_WRITE_FILE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False,
+    idempotentHint=True, openWorldHint=False,
+)
 
 
 # ----------------------------------------------------------------------
@@ -1066,11 +1072,12 @@ def _is_codebase(backend) -> bool:
     return backend.type_name == "codebase"
 
 
-def _register_combined_tools(mcp, manager):
-    """Register find_definition / find_usages / find_tests_for /
-    find_similar (+ search_diff when applicable) — fixed names, `source`
-    param. They apply to codebase sources only; `source` may be omitted
-    when there is exactly one.
+def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
+    """Register find_definition / find_usages / find_tests_for / find_similar /
+    describe_symbol / impact / repo_overview (+ search_diff when git is on) for
+    codebase sources. `module_summary` and `export_graph` are graph-only — they
+    return nothing useful without the call graph — so they're registered solely
+    when `has_graph` (consistent with how graph_query is gated).
     """
     codebase_sources = [
         name for name, b in manager.backends.items() if _is_codebase(b)
@@ -1228,28 +1235,6 @@ def _register_combined_tools(mcp, manager):
         except Exception as e:
             return f"Error: {e}"
 
-    _desc_module = (
-        f"High-level summary of a FILE: the public symbols it defines, what it imports, "
-        f"and which other files depend on it (via the call graph). Lets you grasp a unit "
-        f"without reading the whole thing — ideal before editing it. Graph-powered "
-        f"(enable the graph layer for the source). {src_hint} "
-        f"Args: file (path or path fragment, e.g. 'VoxelWorld.cs'); source; limit "
-        f"(max symbols, default 200)."
-    )
-
-    @mcp.tool(name="module_summary", description=_desc_module, annotations=_ANN_READ)
-    def _module_summary(
-        file: Annotated[str, Field(description="File path or path fragment to summarize, e.g. `src/foo.py` or `VoxelWorld.cs`.")],
-        source: _SourceArg = None,
-        limit: Annotated[int, Field(description="Max defined symbols to list.")] = 200,
-    ) -> str:
-        try:
-            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
-            d = manager.module_summary(src, file, limit=limit)
-            return _format_module_summary(file, d)
-        except Exception as e:
-            return f"Error: {e}"
-
     _desc_overview = (
         f"Orientation map for a codebase — the 'what is this and where do I start' answer "
         f"when you land in an unfamiliar repo: detected languages (by file count), "
@@ -1269,38 +1254,62 @@ def _register_combined_tools(mcp, manager):
         except Exception as e:
             return f"Error: {e}"
 
-    _desc_export_graph = (
-        f"Render a SHAREABLE, self-contained graph view as a single offline file "
-        f"(no server, no internet) — for a human to look at, attach to a PR, or archive. "
-        f"mode='symbol' draws a symbol's blast radius (callers above, callees below); "
-        f"mode='module' draws a file as a hub (imports + dependents). Needs the graph "
-        f"layer. Writes to the configured reports dir unless `out` is given, and returns "
-        f"the path. {src_hint} "
-        f"Args: target (symbol name for mode=symbol, file path/fragment for mode=module); "
-        f"mode ('symbol'|'module', default symbol); source; depth (hops, symbol mode, "
-        f"default 2); out (output file path, optional)."
-    )
+    # module_summary and export_graph produce nothing useful without the call
+    # graph, so register them only when it's available — consistent with how
+    # graph_query is gated, and keeps a non-graph codebase source uncluttered.
+    if has_graph:
+        _desc_module = (
+            f"High-level summary of a FILE: the public symbols it defines, what it imports, "
+            f"and which other files depend on it (via the call graph). Lets you grasp a unit "
+            f"without reading the whole thing — ideal before editing it. {src_hint} "
+            f"Args: file (path or path fragment, e.g. 'VoxelWorld.cs'); source; limit "
+            f"(max symbols, default 200)."
+        )
 
-    @mcp.tool(name="export_graph", description=_desc_export_graph, annotations=_ANN_READ)
-    def _export_graph(
-        target: Annotated[str, Field(description="Symbol name (mode=symbol) or file path/fragment (mode=module) to render.")],
-        mode: Annotated[str, Field(description="'symbol' (blast radius) or 'module' (file hub).")] = "symbol",
-        source: _SourceArg = None,
-        depth: Annotated[int, Field(description="Call-graph hops for symbol mode (1-6).")] = 2,
-        out: Annotated[str | None, Field(description="Output file path; defaults to the configured reports dir.")] = None,
-    ) -> str:
-        try:
-            from pathlib import Path
-            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
-            res = manager.export_graph(src, mode, target, depth=depth)
-            if res.get("empty"):
-                return f"Nothing to export: {res.get('reason')}"
-            out_path = Path(out) if out else _report_dir(manager) / res["suggested_name"]
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(res["content"], encoding="utf-8")
-            return f"Wrote self-contained graph view to {out_path} — open it in a browser."
-        except Exception as e:
-            return f"Error: {e}"
+        @mcp.tool(name="module_summary", description=_desc_module, annotations=_ANN_READ)
+        def _module_summary(
+            file: Annotated[str, Field(description="File path or path fragment to summarize, e.g. `src/foo.py` or `VoxelWorld.cs`.")],
+            source: _SourceArg = None,
+            limit: Annotated[int, Field(description="Max defined symbols to list.")] = 200,
+        ) -> str:
+            try:
+                src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+                d = manager.module_summary(src, file, limit=limit)
+                return _format_module_summary(file, d)
+            except Exception as e:
+                return f"Error: {e}"
+
+        _desc_export_graph = (
+            f"Render a SHAREABLE, self-contained graph view as a single offline file "
+            f"(no server, no internet) — for a human to look at, attach to a PR, or archive. "
+            f"mode='symbol' draws a symbol's blast radius (callers above, callees below); "
+            f"mode='module' draws a file as a hub (imports + dependents). WRITES the file to "
+            f"the configured reports dir unless `out` is given, and returns the path. {src_hint} "
+            f"Args: target (symbol name for mode=symbol, file path/fragment for mode=module); "
+            f"mode ('symbol'|'module', default symbol); source; depth (hops, symbol mode, "
+            f"default 2); out (output file path, optional)."
+        )
+
+        @mcp.tool(name="export_graph", description=_desc_export_graph, annotations=_ANN_WRITE_FILE)
+        def _export_graph(
+            target: Annotated[str, Field(description="Symbol name (mode=symbol) or file path/fragment (mode=module) to render.")],
+            mode: Annotated[str, Field(description="'symbol' (blast radius) or 'module' (file hub).")] = "symbol",
+            source: _SourceArg = None,
+            depth: Annotated[int, Field(description="Call-graph hops for symbol mode (1-6).")] = 2,
+            out: Annotated[str | None, Field(description="Output file path; defaults to the configured reports dir.")] = None,
+        ) -> str:
+            try:
+                from pathlib import Path
+                src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+                res = manager.export_graph(src, mode, target, depth=depth)
+                if res.get("empty"):
+                    return f"Nothing to export: {res.get('reason')}"
+                out_path = Path(out) if out else _report_dir(manager) / res["suggested_name"]
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(res["content"], encoding="utf-8")
+                return f"Wrote self-contained graph view to {out_path} — open it in a browser."
+            except Exception as e:
+                return f"Error: {e}"
 
     # search_diff only when at least one codebase source has git_integration
     # enabled — without it the diff command can't run.
@@ -1446,7 +1455,10 @@ def run_server(config_path=None):
     # Combined tools (find_definition / find_usages / find_tests_for /
     # find_similar / search_diff) — only when there is a codebase source.
     if any(b.type_name == "codebase" for b in manager.backends.values()):
-        _register_combined_tools(mcp, manager)
+        has_graph = any(
+            getattr(b, "graph", None) is not None for b in manager.backends.values()
+        )
+        _register_combined_tools(mcp, manager, has_graph=has_graph)
 
     # Loading phase done: restore fd 1 and start the transport.
     _restore_real_stdout()

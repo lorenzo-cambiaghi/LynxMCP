@@ -18,38 +18,50 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 
-def test_dedup_collapses_identical_bodies_keeping_first():
+# A body long enough (>= _DEDUP_MIN_CHARS) to be treated as a confident
+# duplicate when it appears twice — i.e. a real (vendored/build) file copy.
+_LONG_BODY = (
+    "def transform(records):\n"
+    "    out = []\n"
+    "    for r in records:\n"
+    "        if r.valid:\n"
+    "            out.append(normalize(r))\n"
+    "    return out\n"
+)
+
+
+def test_dedup_collapses_substantial_duplicate_keeping_first():
     from lynx.rag_manager import _dedup_by_content
 
     results = [
-        {"id": "a", "file": "src/foo.py", "content": "def f():\n    return 1", "score": 0.9},
-        {"id": "b", "file": "build/foo.py", "content": "def f():\n    return 1", "score": 0.8},
-        {"id": "c", "file": "src/bar.py", "content": "def g():\n    return 2", "score": 0.7},
+        {"id": "a", "file": "src/foo.py", "content": _LONG_BODY, "score": 0.9},
+        {"id": "b", "file": "build/foo.py", "content": _LONG_BODY, "score": 0.8},
+        {"id": "c", "file": "src/bar.py", "content": _LONG_BODY + "# variant\n", "score": 0.7},
     ]
     out = _dedup_by_content(results)
     assert [r["id"] for r in out] == ["a", "c"]  # 'b' (build copy) dropped
     assert out[0]["file"] == "src/foo.py"        # highest-ranked survivor kept
 
 
-def test_dedup_ignores_surrounding_whitespace():
+def test_dedup_keeps_short_identical_boilerplate():
+    from lynx.rag_manager import _dedup_by_content
+
+    # Distinct symbols that happen to share a trivial body must NOT collapse.
+    out = _dedup_by_content([
+        {"id": "a", "content": "=> base.GetHashCode();"},
+        {"id": "b", "content": "=> base.GetHashCode();"},
+    ])
+    assert [r["id"] for r in out] == ["a", "b"]
+
+
+def test_dedup_ignores_surrounding_whitespace_on_long_bodies():
     from lynx.rag_manager import _dedup_by_content
 
     out = _dedup_by_content([
-        {"id": "a", "content": "x = 1\n"},
-        {"id": "b", "content": "  x = 1  "},
+        {"id": "a", "content": _LONG_BODY},
+        {"id": "b", "content": "  " + _LONG_BODY + "  "},
     ])
     assert len(out) == 1
-
-
-def test_dedup_keeps_distinct_bodies_and_empty_by_id():
-    from lynx.rag_manager import _dedup_by_content
-
-    out = _dedup_by_content([
-        {"id": "a", "content": ""},
-        {"id": "b", "content": ""},   # empty bodies must NOT collapse together
-        {"id": "c", "content": "real"},
-    ])
-    assert [r["id"] for r in out] == ["a", "b", "c"]
 
 
 def test_dedup_empty_input():
@@ -333,6 +345,47 @@ def test_render_svg_standalone_and_deterministic():
     assert "<style>" in a               # self-styled (renders as a bare image)
     assert "UTC" not in a               # no timestamp baked into the image
     assert "<script" not in a and "src=" not in a
+
+
+# ---------------------------------------------------------------------------
+# graph/query — new traversal primitives (transitive_callers, nodes_in_file)
+# ---------------------------------------------------------------------------
+
+
+def test_transitive_callers_depth_and_ordering():
+    import networkx as nx
+    from lynx.graph.query import transitive_callers
+
+    G = nx.DiGraph()
+    for nid in ("t", "c", "b", "a"):
+        G.add_node(nid, label=nid.upper(), kind="function", file="x.py", start_line=1)
+    # a -> b -> c -> t  (so t's transitive callers are c@1, b@2, a@3)
+    G.add_edge("c", "t", relation="calls")
+    G.add_edge("b", "c", relation="calls")
+    G.add_edge("a", "b", relation="calls")
+    G.add_edge("t", "t", relation="calls")  # self-loop must be ignored
+
+    res = transitive_callers(G, "T", max_depth=3)
+    by_label = {r["node"]["label"]: r["depth"] for r in res}
+    assert by_label == {"C": 1, "B": 2, "A": 3}
+    # Depth cap respected.
+    shallow = transitive_callers(G, "T", max_depth=1)
+    assert {r["node"]["label"] for r in shallow} == {"C"}
+
+
+def test_nodes_in_file_filters_kind_and_path():
+    import networkx as nx
+    from lynx.graph.query import nodes_in_file
+
+    G = nx.DiGraph()
+    G.add_node("f1", label="Foo", kind="class", file="/repo/foo.py", start_line=1)
+    G.add_node("f2", label="Foo.bar", kind="method", file="/repo/foo.py", start_line=3)
+    G.add_node("file", label="foo.py", kind="file", file="/repo/foo.py")
+    G.add_node("ext", label="os", kind="external", file=None)
+    G.add_node("other", label="Baz", kind="class", file="/repo/baz.py", start_line=1)
+
+    labels = {n["label"] for n in nodes_in_file(G, "foo.py")}
+    assert labels == {"Foo", "Foo.bar"}     # file/external excluded; baz.py excluded
 
 
 def test_build_module_view_hub():

@@ -99,24 +99,36 @@ def _normalize_extension(ext: str) -> str:
     return ext if ext.startswith(".") else f".{ext}"
 
 
-def _dedup_by_content(results: list) -> list:
-    """Drop later results whose body is byte-identical to an earlier one.
+# Below this body length we never dedup: short identical bodies (a one-line
+# getter, `pass`, `return None`, `=> base.GetHashCode();`) are common across
+# genuinely DISTINCT symbols, so collapsing them would hide real results. Long
+# identical bodies, on the other hand, are real duplicates — a vendored or
+# `build/`/`dist/` copy of the same file.
+_DEDUP_MIN_CHARS = 120
 
-    Order-preserving, so the highest-ranked occurrence of each distinct body
-    survives. A result with no `content` is keyed by its id (or kept as-is when
-    neither is present) so empty bodies never collapse together by accident.
+# Extra candidates fetched beyond top_k so content-dedup can drop duplicates
+# without leaving the final list short of top_k.
+_DEDUP_HEADROOM = 5
+
+
+def _dedup_by_content(results: list) -> list:
+    """Drop later results whose (substantial) body is byte-identical to an
+    earlier one — vendored/build copies of the same code.
+
+    Order-preserving, so the highest-ranked occurrence survives. Bodies shorter
+    than `_DEDUP_MIN_CHARS` are never collapsed (see the note above), so common
+    boilerplate shared by distinct symbols is always kept.
     """
     seen: set = set()
     out: list = []
     for r in results:
         body = (r.get("content") or "").strip()
-        key = body or r.get("id")
-        if key is None:
-            out.append(r)  # nothing to dedup on — keep it
+        if len(body) < _DEDUP_MIN_CHARS:
+            out.append(r)  # too short to be a confident duplicate — keep it
             continue
-        if key in seen:
+        if body in seen:
             continue
-        seen.add(key)
+        seen.add(body)
         out.append(r)
     return out
 
@@ -824,8 +836,10 @@ class CodebaseRAG:
         )
         # Over-fetch when filtering OR reranking: filtered-out candidates leave
         # a smaller pool, and the reranker needs a bigger pool to actually
-        # reorder things (no point reranking exactly top_k results).
-        fetch_n = top_k
+        # reorder things (no point reranking exactly top_k results). A small
+        # constant headroom is always added so content-dedup (which can drop
+        # duplicate chunks) doesn't leave the dense/sparse path short of top_k.
+        fetch_n = top_k + _DEDUP_HEADROOM
         if has_filters:
             fetch_n = top_k * 5
         if rerank_enabled:

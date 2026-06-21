@@ -93,7 +93,8 @@ def _register_everything(manager):
     if any(b.graph is not None for b in manager.backends.values()):
         _register_graph_tools(mcp, manager)
     if any(b.type_name == "codebase" for b in manager.backends.values()):
-        _register_combined_tools(mcp, manager)
+        has_graph = any(b.graph is not None for b in manager.backends.values())
+        _register_combined_tools(mcp, manager, has_graph=has_graph)
     return mcp
 
 
@@ -134,6 +135,20 @@ def test_conditional_tools_skipped_without_capability():
         "search", "deep_search", "list_sources", "update_source_index",
         "get_rag_status", "feedback",
     }
+
+
+def test_codebase_without_graph_omits_graph_only_tools():
+    # A codebase source WITHOUT the graph layer: the graph-only tools
+    # (graph_query, module_summary, export_graph) must NOT register; the
+    # search-backed comprehension tools still do.
+    mgr = FakeManager({"code": FakeBackend(graph=None, git=False)})
+    names = set(_tools(_register_everything(mgr)))
+    assert "module_summary" not in names
+    assert "export_graph" not in names
+    assert "graph_query" not in names
+    assert "search_diff" not in names          # git off
+    # ...but these degrade gracefully without the graph and stay available:
+    assert {"find_definition", "describe_symbol", "impact", "repo_overview"} <= names
 
 
 def test_descriptions_carry_source_catalog():
@@ -199,7 +214,9 @@ def test_find_definition_ambiguous_source_lists_candidates():
 def test_tool_annotations():
     mgr = FakeManager({"a": FakeBackend(graph=object(), git=True)})
     tools = _tools(_register_everything(mgr))
-    rebuild_or_write = {"update_source_index", "feedback"}
+    # Tools that are not pure reads: index rebuild, feedback log append, and
+    # export_graph (writes a graph view file to disk).
+    rebuild_or_write = {"update_source_index", "feedback", "export_graph"}
     for name, tool in tools.items():
         ann = tool.annotations
         assert ann is not None, f"{name} has no annotations"
