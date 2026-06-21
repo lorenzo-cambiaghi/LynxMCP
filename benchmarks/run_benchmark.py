@@ -73,10 +73,10 @@ def _keywords(query: str) -> list[str]:
 class GrepIndex:
     """All .py files read once; per-keyword counts computed on demand."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, ext: str = ".py"):
         self.root = root
         self.files: dict[str, str] = {}
-        for p in sorted(root.rglob("*.py")):
+        for p in sorted(root.rglob(f"*{ext}")):
             rel = p.relative_to(root).as_posix()
             try:
                 self.files[rel] = p.read_text(encoding="utf-8", errors="ignore").lower()
@@ -146,7 +146,7 @@ class GrepIndex:
 # ---------------------------------------------------------------------------
 
 
-def build_lynx_backend(index_dir: Path, storage_dir: Path):
+def build_lynx_backend(index_dir: Path, storage_dir: Path, ext: str = ".py"):
     """Stand up a CodebaseRAG over the target tree (builds the index if the
     storage dir is empty; reuses it otherwise thanks to the SHA cache)."""
     import os
@@ -166,7 +166,7 @@ def build_lynx_backend(index_dir: Path, storage_dir: Path):
     rag = CodebaseRAG(
         codebase_path=str(index_dir),
         rag_storage_path=str(storage_dir),
-        supported_extensions=[".py"],
+        supported_extensions=[ext],
         embedding_model_name="BAAI/bge-small-en-v1.5",
         collection_name="bench",
         search_mode="hybrid",
@@ -256,10 +256,13 @@ def main():
     ap.add_argument("--target-dir", default=str(BENCH_DIR / "_target" / "django"))
     ap.add_argument("--storage-dir", default=str(BENCH_DIR / "_storage"))
     ap.add_argument("--top-k", type=int, default=5)
+    ap.add_argument("--results-json", default=str(BENCH_DIR / "results.json"))
+    ap.add_argument("--results-md", default=str(BENCH_DIR / "RESULTS.md"))
     args = ap.parse_args()
 
     spec = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
     tasks = spec["tasks"]
+    ext = spec["target"].get("ext", ".py")
     index_dir = Path(args.target_dir) / spec["target"]["index_subdir"]
     if not index_dir.is_dir():
         sys.exit(f"target not found: {index_dir}\nClone it first (see module docstring).")
@@ -272,18 +275,18 @@ def main():
     if missing:
         sys.exit(f"ground-truth files missing from checkout: {missing}")
 
-    n_files = sum(1 for _ in index_dir.rglob("*.py"))
+    n_files = sum(1 for _ in index_dir.rglob(f"*{ext}"))
     n_lines = sum(
         len(p.read_text(encoding="utf-8", errors="ignore").splitlines())
-        for p in index_dir.rglob("*.py")
+        for p in index_dir.rglob(f"*{ext}")
     )
     print(f"target: {index_dir} ({n_files} files, {n_lines} lines)", file=sys.stderr)
 
     print("building grep corpus...", file=sys.stderr)
-    grep = GrepIndex(index_dir)
+    grep = GrepIndex(index_dir, ext)
 
     print("building / loading Lynx index (first run embeds the corpus)...", file=sys.stderr)
-    rag, build_seconds = build_lynx_backend(index_dir, Path(args.storage_dir))
+    rag, build_seconds = build_lynx_backend(index_dir, Path(args.storage_dir), ext)
     print(f"index ready in {build_seconds:.0f}s "
           f"({rag.vector_store._collection.count()} chunks)", file=sys.stderr)
     rag.search("warmup query", top_k=1)  # exclude model warm-up from timings
@@ -299,15 +302,18 @@ def main():
         "chunks": rag.vector_store._collection.count(),
         "grep": grep_summary, "lynx": lynx_summary,
     }
-    (BENCH_DIR / "results.json").write_text(
+    Path(args.results_json).write_text(
         json.dumps(results, indent=2), encoding="utf-8"
     )
 
+    tname = spec["target"].get("name", spec["target"]["index_subdir"])
+    tref = spec["target"].get("ref", "")
     k = args.top_k
     md = [
-        "# Lynx retrieval benchmark — Django 5.2",
+        f"# Lynx retrieval benchmark — {tname}",
         "",
-        f"Target: `django/` package of [django 5.2]({spec['target']['repo']}) — "
+        f"Target: `{spec['target']['index_subdir']}` of "
+        f"[{tname} {tref}]({spec['target']['repo']}) — "
         f"{n_files} files, {n_lines:,} lines, {results['chunks']:,} indexed chunks "
         f"(one-time index build: {build_seconds:.0f}s on CPU).",
         "",
@@ -333,9 +339,9 @@ def main():
         "- The grep baseline is intentionally strong (IDF-weighted multi-keyword",
         "  ranking with ideal stopword removal — closer to BM25 than to what an",
         "  agent's first `rg` attempt looks like).",
-        "- Django is a favorable corpus for lexical search: extensively docstring-ed,",
-        "  English identifiers everywhere. Codebases with sparser comments or",
-        "  non-obvious naming shift results further toward semantic retrieval.",
+        "- A well-documented, English-identifier corpus is a favorable case for",
+        "  lexical search. Codebases with sparser comments or non-obvious naming",
+        "  shift results further toward semantic retrieval.",
         "- Tokens approximated as chars/4.",
         "",
         "## Beyond ranking: what one tool call hands the model",
@@ -382,8 +388,8 @@ def main():
             f"| {g_row['id']} | {g_row['query'][:70]} "
             f"| {g_row['rank'] or '—'} | {l_row['rank'] or '—'} |"
         )
-    (BENCH_DIR / "RESULTS.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print("\nwrote benchmarks/RESULTS.md and benchmarks/results.json", file=sys.stderr)
+    Path(args.results_md).write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(f"\nwrote {args.results_md} and {args.results_json}", file=sys.stderr)
 
 
 if __name__ == "__main__":

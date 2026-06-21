@@ -57,5 +57,6 @@ _test_watch_stderr.log
 .DS_Store
 Thumbs.db
 benchmarks/_target/
-benchmarks/_storage/
-benchmarks/results.json
+benchmarks/_storage*/
+benchmarks/results*.json
+benchmarks/_*.log

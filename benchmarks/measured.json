@@ -1,0 +1,9 @@
+{
+  "as_of": "2026-06",
+  "note": "Published per-query token deltas from run_benchmark.py (grep_tokens / lynx_tokens = 'median tokens to answer'). Both the CLI (savings_calculator.py) and the interactive page (savings_calculator.html) read this. Edit only to record a fresh benchmark run.",
+  "codebases": [
+    { "label": "Django 5.2", "language": "Python", "files": 883, "lines": 157865, "grep_tokens": 4150, "lynx_tokens": 1725 },
+    { "label": "Json.NET",   "language": "C#",     "files": 240, "lines": 69132,  "grep_tokens": 6590, "lynx_tokens": 1540 },
+    { "label": "Guava",      "language": "Java",   "files": 606, "lines": 180517, "grep_tokens": 5892, "lynx_tokens": 807 }
+  ]
+}

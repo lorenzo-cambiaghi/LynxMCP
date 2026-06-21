@@ -1,0 +1,88 @@
+{
+  "target": {
+    "repo": "https://github.com/google/guava.git",
+    "ref": "master",
+    "name": "Guava",
+    "index_subdir": "guava/src/com/google/common",
+    "ext": ".java",
+    "language": "java",
+    "note": "Only the library source (guava/src/com/google/common/) is indexed — the code an agent would search — not the test modules."
+  },
+  "tasks": [
+    {
+      "id": 1,
+      "query": "limiting the rate of operations by handing out permits smoothed over time",
+      "ground_truth": ["util/concurrent/SmoothRateLimiter.java", "util/concurrent/RateLimiter.java"]
+    },
+    {
+      "id": 2,
+      "query": "an in-memory cache that loads missing values and evicts entries by size or age",
+      "ground_truth": ["cache/LocalCache.java"]
+    },
+    {
+      "id": 3,
+      "query": "splitting a string on a separator, optionally trimming and dropping empty pieces",
+      "ground_truth": ["base/Splitter.java"]
+    },
+    {
+      "id": 4,
+      "query": "joining a sequence of values into one string with a separator",
+      "ground_truth": ["base/Joiner.java"]
+    },
+    {
+      "id": 5,
+      "query": "a probabilistic set membership test that can have false positives but no false negatives",
+      "ground_truth": ["hash/BloomFilter.java"]
+    },
+    {
+      "id": 6,
+      "query": "mapping a hash value to one of n buckets so that adding a bucket moves few keys",
+      "ground_truth": ["hash/Hashing.java"]
+    },
+    {
+      "id": 7,
+      "query": "argument checks that throw an exception when a precondition is not met",
+      "ground_truth": ["base/Preconditions.java"]
+    },
+    {
+      "id": 8,
+      "query": "measuring elapsed time with start, stop and read of the duration",
+      "ground_truth": ["base/Stopwatch.java"]
+    },
+    {
+      "id": 9,
+      "query": "a map that also lets you look up keys by their value",
+      "ground_truth": ["collect/HashBiMap.java"]
+    },
+    {
+      "id": 10,
+      "query": "walking the nodes of a graph in breadth first or depth first order",
+      "ground_truth": ["graph/Traverser.java"]
+    },
+    {
+      "id": 11,
+      "query": "computing percentiles or quantiles of a collection of numbers",
+      "ground_truth": ["math/Quantiles.java"]
+    },
+    {
+      "id": 12,
+      "query": "percent encoding a string so it is safe inside a url",
+      "ground_truth": ["net/PercentEscaper.java"]
+    },
+    {
+      "id": 13,
+      "query": "dispatching posted events to all registered subscriber methods",
+      "ground_truth": ["eventbus/EventBus.java"]
+    },
+    {
+      "id": 14,
+      "query": "configuring a cache's maximum size and expiration before building it",
+      "ground_truth": ["cache/CacheBuilder.java"]
+    },
+    {
+      "id": 15,
+      "query": "building an immutable list and copying elements into it",
+      "ground_truth": ["collect/ImmutableList.java"]
+    }
+  ]
+}

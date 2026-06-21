@@ -1,0 +1,88 @@
+{
+  "target": {
+    "repo": "https://github.com/JamesNK/Newtonsoft.Json.git",
+    "ref": "master",
+    "name": "Json.NET (Newtonsoft.Json)",
+    "index_subdir": "Src/Newtonsoft.Json",
+    "ext": ".cs",
+    "language": "c_sharp",
+    "note": "Only the library source (Src/Newtonsoft.Json/) is indexed — the code an agent would search — not the test project."
+  },
+  "tasks": [
+    {
+      "id": 1,
+      "query": "where circular references between objects are detected so serialization does not loop forever",
+      "ground_truth": ["Serialization/JsonSerializerInternalWriter.cs"]
+    },
+    {
+      "id": 2,
+      "query": "how a type's members are inspected to build the contract metadata used when serializing it",
+      "ground_truth": ["Serialization/DefaultContractResolver.cs"]
+    },
+    {
+      "id": 3,
+      "query": "reading json one token at a time from a text stream, handling string escapes and numbers",
+      "ground_truth": ["JsonTextReader.cs"]
+    },
+    {
+      "id": 4,
+      "query": "writing json to a text output with proper escaping of quotes and control characters",
+      "ground_truth": ["JsonTextWriter.cs", "Utilities/JavaScriptUtils.cs"]
+    },
+    {
+      "id": 5,
+      "query": "turning incoming json back into objects, choosing a constructor and populating members",
+      "ground_truth": ["Serialization/JsonSerializerInternalReader.cs"]
+    },
+    {
+      "id": 6,
+      "query": "selecting tokens from a document with a path expression like store book first title",
+      "ground_truth": ["Linq/JsonPath/JPath.cs"]
+    },
+    {
+      "id": 7,
+      "query": "converting an enumeration value to and from its text name during conversion",
+      "ground_truth": ["Converters/StringEnumConverter.cs", "Utilities/EnumUtils.cs"]
+    },
+    {
+      "id": 8,
+      "query": "deep merging the contents of one json object into another",
+      "ground_truth": ["Linq/JContainer.cs", "Linq/JObject.cs"]
+    },
+    {
+      "id": 9,
+      "query": "validating a json document against a schema while it is being read",
+      "ground_truth": ["JsonValidatingReader.cs"]
+    },
+    {
+      "id": 10,
+      "query": "parsing and formatting date and time values in iso 8601 format",
+      "ground_truth": ["Utilities/DateTimeUtils.cs", "Converters/IsoDateTimeConverter.cs"]
+    },
+    {
+      "id": 11,
+      "query": "resolving a type name string back to the concrete type for polymorphic deserialization",
+      "ground_truth": ["Serialization/DefaultSerializationBinder.cs"]
+    },
+    {
+      "id": 12,
+      "query": "reading the binary bson wire format into json tokens",
+      "ground_truth": ["Bson/BsonReader.cs"]
+    },
+    {
+      "id": 13,
+      "query": "the naming strategy that lowercases the first character of property names for camel case",
+      "ground_truth": ["Serialization/CamelCaseNamingStrategy.cs"]
+    },
+    {
+      "id": 14,
+      "query": "converting primitive values between types such as string to number with culture handling",
+      "ground_truth": ["Utilities/ConvertUtils.cs"]
+    },
+    {
+      "id": 15,
+      "query": "generating a json schema document from a type's structure",
+      "ground_truth": ["Schema/JsonSchemaGenerator.cs"]
+    }
+  ]
+}

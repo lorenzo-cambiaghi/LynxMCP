@@ -1,39 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="330" viewBox="0 0 980 330" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
-  <rect x="0" y="0" width="980" height="330" rx="12" fill="#ffffff" stroke="#d0d7de"/>
-  <g transform="translate(36,28)">
-    <text x="0" y="0" font-size="20" font-weight="800" fill="#24292f">Lynx vs agentic grep — Django 5.2 (883 files, 158k lines)</text>
-    <text x="0" y="22" font-size="13" fill="#57606a">Reproducible: benchmarks/run_benchmark.py · grep baseline deliberately strong · full methodology in RESULTS.md</text>
-  </g>
-  <g transform="translate(36,80)">
-
-  <g transform="translate(0,0)">
-    <text x="0" y="24" font-size="17" font-weight="700" fill="#24292f">Tokens to get the code into context</text>
-    <text x="0" y="44" font-size="12.5" fill="#57606a">median per question, incl. the file read grep still needs</text>
-
-    <text x="0" y="84" font-size="13" fill="#57606a">agentic grep</text>
-    <rect x="0" y="92" width="320" height="30" rx="5" fill="#8b949e"/>
-    <text x="330" y="113" font-size="16" font-weight="700" fill="#24292f">4,150 tok</text>
-
-    <text x="0" y="152" font-size="13" fill="#57606a">Lynx</text>
-    <rect x="0" y="160" width="133" height="30" rx="5" fill="#e8742c"/>
-    <text x="143" y="181" font-size="16" font-weight="800" fill="#e8742c">1,725 tok</text>
-
-    <text x="0" y="218" font-size="14" font-weight="700" fill="#e8742c">−58% tokens, code chunks included</text>
-  </g>
-
-  <g transform="translate(490,0)">
-    <text x="0" y="24" font-size="17" font-weight="700" fill="#24292f">Tool calls to map a class hierarchy</text>
-    <text x="0" y="44" font-size="12.5" fill="#57606a">all 100 descendants of django Field, with file:line</text>
-
-    <text x="0" y="84" font-size="13" fill="#57606a">agentic grep</text>
-    <rect x="0" y="92" width="320" height="30" rx="5" fill="#8b949e"/>
-    <text x="330" y="113" font-size="16" font-weight="700" fill="#24292f">101 calls</text>
-
-    <text x="0" y="152" font-size="13" fill="#57606a">Lynx</text>
-    <rect x="0" y="160" width="13" height="30" rx="5" fill="#e8742c"/>
-    <text x="23" y="181" font-size="16" font-weight="800" fill="#e8742c">4 calls</text>
-
-    <text x="0" y="218" font-size="14" font-weight="700" fill="#e8742c">25× fewer calls, same 100/100 recall</text>
-  </g>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="422" viewBox="0 0 1000 422" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect x="0" y="0" width="1000" height="422" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+  <text x="36" y="38" font-size="20" font-weight="800" fill="#24292f">Lynx vs agentic grep — measured across Python, C# and Java</text>
+  <text x="36" y="60" font-size="13" fill="#57606a">Reproducible: benchmarks/run_benchmark.py · grep baseline deliberately strong · RESULTS.md / RESULTS_csharp.md / RESULTS_java.md</text>
+  <text x="36" y="92" font-size="14" font-weight="800" fill="#24292f">Tokens to get the code into context <tspan fill="#57606a" font-weight="400">— median per question, incl. the file read grep still needs</tspan></text>
+    <text x="36" y="131" font-size="14.5" font-weight="700" fill="#24292f">Django 5.2  (Python)</text>
+    <text x="36" y="149" font-size="11.5" fill="#57606a">tokens to answer</text>
+    <text x="222" y="127" font-size="10.5" fill="#57606a" text-anchor="end">grep</text>
+    <rect x="232" y="116" width="327" height="17" rx="3" fill="#8b949e"/>
+    <text x="567" y="129" font-size="12.5" font-weight="700" fill="#24292f">4,150</text>
+    <text x="222" y="151" font-size="10.5" fill="#57606a" text-anchor="end">Lynx</text>
+    <rect x="232" y="140" width="136" height="17" rx="3" fill="#e8742c"/>
+    <text x="376" y="153" font-size="12.5" font-weight="800" fill="#e8742c">1,725</text>
+    <text x="970" y="143" font-size="17" font-weight="800" fill="#e8742c" text-anchor="end">−58%</text>
+    <text x="36" y="189" font-size="14.5" font-weight="700" fill="#24292f">Json.NET  (C#)</text>
+    <text x="36" y="207" font-size="11.5" fill="#57606a">tokens to answer</text>
+    <text x="222" y="185" font-size="10.5" fill="#57606a" text-anchor="end">grep</text>
+    <rect x="232" y="174" width="520" height="17" rx="3" fill="#8b949e"/>
+    <text x="760" y="187" font-size="12.5" font-weight="700" fill="#24292f">6,590</text>
+    <text x="222" y="209" font-size="10.5" fill="#57606a" text-anchor="end">Lynx</text>
+    <rect x="232" y="198" width="122" height="17" rx="3" fill="#e8742c"/>
+    <text x="362" y="211" font-size="12.5" font-weight="800" fill="#e8742c">1,540</text>
+    <text x="970" y="201" font-size="17" font-weight="800" fill="#e8742c" text-anchor="end">−77%</text>
+    <text x="36" y="247" font-size="14.5" font-weight="700" fill="#24292f">Guava  (Java)</text>
+    <text x="36" y="265" font-size="11.5" fill="#57606a">tokens to answer</text>
+    <text x="222" y="243" font-size="10.5" fill="#57606a" text-anchor="end">grep</text>
+    <rect x="232" y="232" width="465" height="17" rx="3" fill="#8b949e"/>
+    <text x="705" y="245" font-size="12.5" font-weight="700" fill="#24292f">5,892</text>
+    <text x="222" y="267" font-size="10.5" fill="#57606a" text-anchor="end">Lynx</text>
+    <rect x="232" y="256" width="64" height="17" rx="3" fill="#e8742c"/>
+    <text x="304" y="269" font-size="12.5" font-weight="800" fill="#e8742c">807</text>
+    <text x="970" y="259" font-size="17" font-weight="800" fill="#e8742c" text-anchor="end">−86%</text><line x1="36" y1="298" x2="970" y2="298" stroke="#e1e4e8"/><text x="36" y="324" font-size="14" font-weight="800" fill="#24292f">Map a 100-class hierarchy <tspan fill="#57606a" font-weight="400">— Django: every descendant of Field with file:line; grep cannot do this in one shot</tspan></text>
+    <text x="36" y="363" font-size="14.5" font-weight="700" fill="#24292f">Tool calls</text>
+    <text x="36" y="381" font-size="11.5" fill="#57606a">one grep round per class vs resolved graph edges</text>
+    <text x="222" y="359" font-size="10.5" fill="#57606a" text-anchor="end">grep</text>
+    <rect x="232" y="348" width="520" height="17" rx="3" fill="#8b949e"/>
+    <text x="760" y="361" font-size="12.5" font-weight="700" fill="#24292f">101</text>
+    <text x="222" y="383" font-size="10.5" fill="#57606a" text-anchor="end">Lynx</text>
+    <rect x="232" y="372" width="21" height="17" rx="3" fill="#e8742c"/>
+    <text x="261" y="385" font-size="12.5" font-weight="800" fill="#e8742c">4</text>
+    <text x="970" y="375" font-size="17" font-weight="800" fill="#e8742c" text-anchor="end">25× fewer</text>
 </svg>

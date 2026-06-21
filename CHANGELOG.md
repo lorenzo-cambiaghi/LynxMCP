@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.7.5 — 2026-06-21
+
+### Added
+- **Token savings, in money.** `benchmarks/savings_calculator.py` translates the
+  measured per-query token saving into the monthly/yearly API bill it removes,
+  for **all three** benchmarked codebases (Django/Python −58%, Json.NET/C# −77%,
+  Guava/Java −86%) × every flagship model, at 2026-06 input prices —
+  **Claude Fable 5** ($10/1M),
+  **Claude Opus 4.8** ($5/1M), **GPT-5.5** ($5/1M), and more. Reports two figures
+  per codebase: a fully-measured *floor* (tool-output delta only, zero
+  assumptions) and a *realistic* figure that adds one eliminated grep round-trip
+  re-billing a configurable context window. Measured deltas live in
+  `benchmarks/measured.json`. Parametric by team size and usage (`--devs`,
+  `--queries-per-dev-day`, `--avg-context-tokens`); emits a deterministic SVG
+  chart (`docs/img/cost_savings.svg`, grouped by model and codebase, no matplotlib).
+- **Editable price config + interactive calculator.** Model prices now live in
+  `benchmarks/pricing.json` (Claude Fable 5 / Opus 4.8 / Sonnet 4.6 / Haiku 4.5,
+  GPT-5.5 / GPT-5.4) — edit a price or add a model and both the CLI and the new
+  `benchmarks/savings_calculator.html` pick it up. The HTML page lets a user
+  choose the **codebase and model** from drop-downs, **override the $/1M price
+  live**, and set their own team size/usage with no file edits; it works offline
+  (embedded fallback) and reads `pricing.json` + `measured.json` live when served.
+  CLI gains `--model` and `--input-price` to mirror the same per-model override.
+
+- **Multi-language benchmarks — C# and Java.** `run_benchmark.py` is now
+  language-parametric (target `ext` / `name` / `ref` in the tasks file; separate
+  `--results-json` / `--results-md` so each language writes its own artifacts).
+  Added `benchmarks/tasks_jsonnet.json` (15 questions over `JamesNK/Newtonsoft.Json`)
+  and `benchmarks/tasks_guava.json` (15 questions over `google/guava`), both with
+  ground-truth verified against the source. Results:
+  - **C# / Json.NET** (`RESULTS_csharp.md`): sparser-comment code — Lynx wins
+    **every** metric (hit@1 47% vs 33%, MRR 0.58 vs 0.47, **−77%** tokens to answer).
+  - **Java / Guava** (`RESULTS_java.md`): Guava's self-documenting class names are
+    grep's *best* case, so grep out-ranks (hit@1 73% vs 60%) — yet tokens to answer
+    still collapse **−86%** (5,892 → 807). The honest cross-language takeaway:
+    ranking parity swings with how self-documenting the code is, but the **token
+    cost drops 58–86% every time** (1 call vs match-lines + a follow-up read).
+
+### Changed
+- **README is now outcome-first.** New commercial hero leads with what Lynx
+  *saves* — the −58% / 2.4× token deltas and the dollar figures they translate to
+  at frontier API prices — before the feature list. The "How it works" ASCII
+  pipeline is now a rendered **Mermaid** architecture diagram, and the benchmark
+  section now carries the C# (Json.NET) result next to Django.
+
 ## 1.7.0 — 2026-06-19
 
 ### Added

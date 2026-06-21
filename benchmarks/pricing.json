@@ -1,0 +1,13 @@
+{
+  "as_of": "2026-06",
+  "currency": "USD",
+  "note": "Price per 1M tokens. The Lynx saving is INPUT tokens (the tool output becomes the next inference's context), so the 'input' field drives the savings math. Edit these freely, or add your own model — both the CLI (savings_calculator.py) and the interactive page (savings_calculator.html) read this file. Nothing else needs to change.",
+  "models": [
+    { "label": "Claude Fable 5",  "provider": "Anthropic", "input": 10.0, "output": 50.0, "note": "Anthropic flagship",  "flagship": true,  "chart": true },
+    { "label": "Claude Opus 4.8", "provider": "Anthropic", "input": 5.0,  "output": 25.0, "note": "top coding model",   "flagship": false, "chart": true },
+    { "label": "Claude Sonnet 4.6","provider": "Anthropic", "input": 3.0,  "output": 15.0, "note": "balanced",           "flagship": false, "chart": false },
+    { "label": "Claude Haiku 4.5","provider": "Anthropic", "input": 1.0,  "output": 5.0,  "note": "fast / cheap",       "flagship": false, "chart": false },
+    { "label": "GPT-5.5",         "provider": "OpenAI",    "input": 5.0,  "output": 30.0, "note": "OpenAI flagship",    "flagship": true,  "chart": true },
+    { "label": "GPT-5.4",         "provider": "OpenAI",    "input": 2.5,  "output": 15.0, "note": "OpenAI mid-tier",    "flagship": false, "chart": false }
+  ]
+}

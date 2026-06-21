@@ -9,6 +9,36 @@
 
 Your AI assistant greps file names and guesses. Lynx gives it real retrieval over **your code, your library docs, and your PDFs** — without a single byte leaving your machine.
 
+## 💸 What it saves you — every wrong file your AI opens is billed tokens
+
+Agentic coding burns tokens re-reading files the assistant grepped into the wrong place. Lynx hands it the **right code in one tool call**, with `file:line` and symbol — measured on real codebases:
+
+<div align="center">
+
+| Tokens to get the answer into context | Agentic grep | **Lynx** | |
+|---|---:|---:|:--|
+| **Django 5.2** — Python, 158k lines | 4,150 | **1,725** | **−58%** |
+| **Json.NET** — C#, 69k lines | 6,590 | **1,540** | **−77%** |
+| **Guava** — Java, 181k lines | 5,892 | **807** | **−86%** |
+
+</div>
+
+Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** tool call instead of 2+ (chunks included, with symbol + `file:line` + score). The token cut holds across languages — **even where grep ranks results just as well**, because Lynx returns the whole function in one call instead of match-lines plus a follow-up read.
+
+**That's real money at today's frontier API prices.** For **25 engineers** (≈31,500 retrievals/month), the yearly API bill Lynx removes:
+
+<img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/cost_savings.svg" alt="Yearly API bill Lynx removes, by flagship model, for Python and C# codebases" width="880">
+
+| Flagship model (input $/1M) | Django (Python) | Json.NET (C#) | Guava (Java) |
+|---|---:|---:|---:|
+| **Claude Fable 5** — Anthropic flagship ($10) | ≈ $85,000 | ≈ $95,000 | ≈ **$95,000** |
+| **GPT‑5.5** — OpenAI flagship ($5) | ≈ $42,000 | ≈ $47,000 | ≈ **$47,000** |
+| **Claude Opus 4.8** — top coding model ($5) | ≈ $42,000 | ≈ $47,000 | ≈ **$47,000** |
+
+<sub>Token deltas are **measured** ([Django](benchmarks/RESULTS.md) · [Json.NET](benchmarks/RESULTS_csharp.md) · [Guava](benchmarks/RESULTS_java.md)). The yearly figures add **one** eliminated grep round‑trip re‑billing a 20k‑token context; the conservative floor (tool output only, zero assumptions) is **$0.4k–1.9k/mo** depending on model and codebase. **Run it for your own team, prices and codebase:** CLI `python benchmarks/savings_calculator.py --devs N`, or the interactive **[savings calculator](benchmarks/savings_calculator.html)** — pick the codebase and model from drop‑downs and edit the $/1M price live (presets in [`benchmarks/pricing.json`](benchmarks/pricing.json) + [`measured.json`](benchmarks/measured.json), yours to change).</sub>
+
+---
+
 - **AST-aware indexing** — tree-sitter parses 18+ languages and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
 - **Token-efficient triage** — `view=outline` returns signatures instead of bodies, so an agent scans the candidates for **~2.4× fewer tokens** and reads only the code it picks ([measured](docs/OUTLINE.md)).
@@ -70,10 +100,23 @@ All retrieval tools carry MCP `readOnlyHint` annotations (clients can auto-appro
 
 ## How it works
 
-```
-your code ──► tree-sitter AST chunker ──► bge-small embeddings ──► ChromaDB
-                                     └──► code-tokenized BM25 ─┐
-query ───────────────────────────────────► RRF fusion ◄────────┘ ──► (optional reranker) ──► results
+```mermaid
+flowchart LR
+    A["Your code + docs + PDFs"] --> B["Tree-sitter<br/>AST chunker"]
+    B --> C["bge-small<br/>dense embeddings"]
+    B --> D["code-tokenized<br/>BM25"]
+    B --> G["Code knowledge graph<br/>(opt-in)"]
+    C --> R{{"RRF fusion"}}
+    D --> R
+    Q(["Your query"]) --> R
+    R --> RR["Optional<br/>reranker"]
+    RR --> RES["Ranked code<br/>file : line : symbol"]
+    G --> GT["Graph tools<br/>callers · subclasses · usages"]
+
+    classDef store fill:#fff3e6,stroke:#e8742c,color:#24292f;
+    classDef out fill:#e8742c,stroke:#e8742c,color:#fff;
+    class C,D,G store;
+    class RES,GT out;
 ```
 
 Everything runs locally: HuggingFace models are downloaded once, then Lynx switches to offline mode. No telemetry, no cloud index, no code upload. The only network access is the model download and the *explicit* `webdoc` fetch step you trigger yourself.
@@ -86,7 +129,7 @@ Honest counterpoint: on a small repo that fits in the agent's context, built-in 
 
 ## Benchmarks (reproducible)
 
-<img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/benchmarks/chart.svg" alt="Lynx vs agentic grep: -58% tokens to answer; 4 vs 101 tool calls to map a class hierarchy" width="980">
+<img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/benchmarks/chart.svg" alt="Lynx vs agentic grep: -58% tokens (Python), -77% (C#), -86% (Java) to answer; 4 vs 101 tool calls to map a class hierarchy" width="1000">
 
 On the `django/` package of Django 5.2 (883 files, ~158k lines), 20 behavioral questions with known ground-truth files — full methodology, per-task results, and an intentionally *strong* grep baseline in [benchmarks/RESULTS.md](https://github.com/lorenzo-cambiaghi/LynxMCP/blob/main/benchmarks/RESULTS.md):
 
@@ -99,10 +142,40 @@ On the `django/` package of Django 5.2 (883 files, ~158k lines), 20 behavioral q
 
 The ranking quality is comparable (Django's docstring-rich code is grep's best case — we say so in the report). The structural difference is not: every tool round-trip is a full model inference over the growing context, and class-relation questions force grep into one round per discovered class while `graph_query` reads resolved inheritance edges.
 
+**Second language, sparser docs — the gap widens.** The same test on **Json.NET (C#)** — `Src/Newtonsoft.Json/`, 240 files, 69k lines, 15 behavioral questions ([RESULTS_csharp.md](https://github.com/lorenzo-cambiaghi/LynxMCP/blob/main/benchmarks/RESULTS_csharp.md)). With C#'s PascalCase identifiers and fewer narrative comments, Lynx wins **every** metric, ranking included:
+
+| | Agentic grep | Lynx |
+|---|---|---|
+| median tokens **to answer** | 6,590 | **1,540** (−77%) |
+| hit@1 / MRR | 33% / 0.47 | **47% / 0.58** |
+
+This is the counter-example the Django report predicts: move off grep's best case and the lexical baseline drops, while semantic retrieval holds.
+
+**Third language, grep's *best* case — the token gap holds anyway.** **Guava (Java)** — `com/google/common/`, 606 files, 181k lines, 15 questions ([RESULTS_java.md](https://github.com/lorenzo-cambiaghi/LynxMCP/blob/main/benchmarks/RESULTS_java.md)). Guava's self-documenting class names (`BloomFilter`, `RateLimiter`, `Splitter`) are *ideal* for lexical search — so here grep actually **out-ranks** Lynx. The metric you pay for still collapses:
+
+| | Agentic grep | Lynx |
+|---|---|---|
+| median tokens **to answer** | 5,892 | **807** (−86%) |
+| hit@1 / MRR | **73% / 0.81** | 60% / 0.70 |
+
+**The honest takeaway across all three.** Ranking parity swings with how self-documenting the code is — Lynx ahead on C#, level on Python, behind on Guava. But the **token cost — the line on your invoice — drops 58–86% every time**, because Lynx hands back the whole function in one call instead of match-lines plus a follow-up read. That's the number that scales to a team's monthly bill.
+
 ```bash
-# reproduce
+# reproduce — Python (Django)
 git clone --depth 1 --branch 5.2 https://github.com/django/django.git benchmarks/_target/django
 python benchmarks/run_benchmark.py && python benchmarks/structural_demo.py
+
+# reproduce — C# (Json.NET)
+git clone --depth 1 https://github.com/JamesNK/Newtonsoft.Json.git benchmarks/_target/jsonnet
+python benchmarks/run_benchmark.py --tasks benchmarks/tasks_jsonnet.json \
+  --target-dir benchmarks/_target/jsonnet --storage-dir benchmarks/_storage_csharp \
+  --results-json benchmarks/results_csharp.json --results-md benchmarks/RESULTS_csharp.md
+
+# reproduce — Java (Guava)
+git clone --depth 1 https://github.com/google/guava.git benchmarks/_target/guava
+python benchmarks/run_benchmark.py --tasks benchmarks/tasks_guava.json \
+  --target-dir benchmarks/_target/guava --storage-dir benchmarks/_storage_java \
+  --results-json benchmarks/results_java.json --results-md benchmarks/RESULTS_java.md
 ```
 
 ## Two ways to read a result: full vs outline

@@ -6,12 +6,12 @@
     "url": "https://github.com/lorenzo-cambiaghi/LynxMCP",
     "source": "github"
   },
-  "version": "1.7.0",
+  "version": "1.7.5",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "lynx-mcp",
-      "version": "1.7.0",
+      "version": "1.7.5",
       "transport": {
         "type": "stdio"
       }

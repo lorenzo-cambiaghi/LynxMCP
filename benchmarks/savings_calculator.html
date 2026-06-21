@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lynx — token savings calculator</title>
+<style>
+  :root { --amber:#e8742c; --amber-hi:#f0ad4e; --ink:#24292f; --sub:#57606a; --line:#e1e4e8; --bg:#fafbfc; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 28px 20px 56px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .lead { color: var(--sub); font-size: 15px; margin: 0 0 24px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px){ .grid { grid-template-columns: 1fr; } }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--sub); margin:0 0 14px; }
+  label { display:block; font-size:13px; color:var(--sub); margin:12px 0 4px; }
+  label:first-of-type { margin-top:0; }
+  select, input[type=number] { width:100%; padding:9px 11px; font-size:15px; border:1px solid var(--line);
+    border-radius:8px; background:#fff; color:var(--ink); }
+  select:focus, input:focus { outline:2px solid var(--amber-hi); border-color:var(--amber); }
+  .price-row { display:flex; gap:10px; align-items:flex-end; }
+  .price-row > div { flex:1; }
+  .hint { font-size:12px; color:var(--sub); margin-top:6px; }
+  .nums { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:4px; }
+  .num { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .num .k { font-size:12px; color:var(--sub); }
+  .num .v { font-size:26px; font-weight:800; color:var(--amber); margin-top:2px; }
+  .num.big .v { font-size:34px; }
+  .num .sub { font-size:12px; color:var(--sub); margin-top:2px; }
+  .chart { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-top:16px; }
+  .foot { color:var(--sub); font-size:12.5px; line-height:1.5; margin-top:18px; }
+  .foot code { background:#f3f4f6; padding:1px 5px; border-radius:4px; }
+  .pill { display:inline-block; background:#fff3e6; color:#a8521a; border:1px solid #f3d3b3;
+    border-radius:999px; padding:2px 10px; font-size:12px; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>💸 Lynx — what it saves you, in money</h1>
+  <p class="lead">Lynx hands your AI assistant the right code in one tool call, in
+    <strong id="pct">58%</strong> fewer tokens (measured on Django 5.2). Pick a model, adjust the price and your team — the
+    yearly API bill it removes updates live. <span class="pill">prices are yours to edit</span></p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Codebase &amp; model</h2>
+      <label for="codebase">Codebase (measured benchmark)</label>
+      <select id="codebase"></select>
+      <label for="model" style="margin-top:12px">Model (preset price per 1M input tokens)</label>
+      <select id="model"></select>
+      <div class="price-row" style="margin-top:12px">
+        <div>
+          <label for="price">Your price — $ / 1M input tokens</label>
+          <input id="price" type="number" min="0" step="0.5" value="10">
+        </div>
+      </div>
+      <div class="hint" id="priceHint">Edit this freely — it overrides the preset.</div>
+    </div>
+
+    <div class="card">
+      <h2>Your team</h2>
+      <label for="devs">Engineers using AI coding assistants</label>
+      <input id="devs" type="number" min="1" step="1" value="25">
+      <label for="qpd">Retrieval calls / engineer / working day</label>
+      <input id="qpd" type="number" min="1" step="5" value="60">
+      <label for="days">Working days / month</label>
+      <input id="days" type="number" min="1" step="1" value="21">
+      <label for="ctx">Avg conversation size re-billed per saved round-trip (tokens)</label>
+      <input id="ctx" type="number" min="0" step="1000" value="20000">
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Bill Lynx removes — <span id="modelName">Claude Fable 5</span></h2>
+    <div class="nums">
+      <div class="num"><div class="k">Tokens saved / month</div><div class="v" id="tok">—</div>
+        <div class="sub" id="retr">—</div></div>
+      <div class="num"><div class="k">Measured floor / month <span title="tool-output delta only, zero assumptions">ⓘ</span></div>
+        <div class="v" id="floorMo">—</div><div class="sub">no assumptions</div></div>
+      <div class="num"><div class="k">Realistic / month <span title="+ one eliminated grep round-trip re-billing the context">ⓘ</span></div>
+        <div class="v" id="realMo">—</div><div class="sub" id="ctxNote">—</div></div>
+      <div class="num big"><div class="k">Realistic / year</div><div class="v" id="realYr">—</div>
+        <div class="sub">at the price above</div></div>
+    </div>
+  </div>
+
+  <div class="chart">
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin:0 0 6px">
+      Yearly bill removed, across models — at your current team &amp; per-model preset price</h2>
+    <div id="bars"></div>
+  </div>
+
+  <p class="foot" id="foot"></p>
+</div>
+
+<script>
+// ---- Fallbacks (used when opened as a file:// page; served pages fetch live) ----
+const FALLBACK_PRICING = {
+  as_of: "2026-06",
+  models: [
+    { label:"Claude Fable 5",  provider:"Anthropic", input:10.0, output:50.0, note:"Anthropic flagship",  chart:true },
+    { label:"Claude Opus 4.8", provider:"Anthropic", input:5.0,  output:25.0, note:"top coding model",    chart:true },
+    { label:"Claude Sonnet 4.6",provider:"Anthropic",input:3.0,  output:15.0, note:"balanced",            chart:false },
+    { label:"Claude Haiku 4.5",provider:"Anthropic", input:1.0,  output:5.0,  note:"fast / cheap",        chart:false },
+    { label:"GPT-5.5",         provider:"OpenAI",    input:5.0,  output:30.0, note:"OpenAI flagship",     chart:true },
+    { label:"GPT-5.4",         provider:"OpenAI",    input:2.5,  output:15.0, note:"OpenAI mid-tier",     chart:false }
+  ]
+};
+const FALLBACK_CODEBASES = [
+  { label:"Django 5.2", language:"Python", grep_tokens:4150, lynx_tokens:1725 },
+  { label:"Json.NET",   language:"C#",     grep_tokens:6590, lynx_tokens:1540 },
+  { label:"Guava",      language:"Java",   grep_tokens:5892, lynx_tokens:807 }
+];
+
+async function loadJSON(path, fallback) {
+  try { const r = await fetch(path, {cache:"no-store"}); if (r.ok) return await r.json(); } catch(e){}
+  return fallback;
+}
+
+let PRICING, CODEBASES, MODELS;
+const $ = id => document.getElementById(id);
+const fmt = n => "$" + Math.round(n).toLocaleString("en-US");
+const fmtTok = n => (n/1e6).toLocaleString("en-US",{maximumFractionDigits:1}) + "M";
+
+function selectedModel() { return MODELS.find(m => m.label === $("model").value) || MODELS[0]; }
+function selectedCodebase() { return CODEBASES.find(c => c.label === $("codebase").value) || CODEBASES[0]; }
+
+function scenario() {
+  const devs = +$("devs").value || 0, qpd = +$("qpd").value || 0,
+        days = +$("days").value || 0, ctx = +$("ctx").value || 0;
+  const cb = selectedCodebase();
+  const queriesMonth = devs * qpd * days;
+  const floorPerQ = cb.grep_tokens - cb.lynx_tokens;
+  const realPerQ  = floorPerQ + ctx;
+  return { devs, queriesMonth, ctx, tokFloor: queriesMonth*floorPerQ, tokReal: queriesMonth*realPerQ };
+}
+
+function render() {
+  const m = selectedModel();
+  const price = +$("price").value || 0;
+  const s = scenario();
+  const floorMo = s.tokFloor/1e6 * price, realMo = s.tokReal/1e6 * price;
+
+  $("modelName").textContent = m.label + " · " + selectedCodebase().label;
+  $("tok").textContent = fmtTok(s.tokReal);
+  $("retr").textContent = s.queriesMonth.toLocaleString("en-US") + " retrievals/month";
+  $("floorMo").textContent = fmt(floorMo);
+  $("realMo").textContent = fmt(realMo);
+  $("realYr").textContent = fmt(realMo*12);
+  $("ctxNote").textContent = "+ " + (s.ctx/1000) + "k ctx / saved round-trip";
+
+  drawBars(price, s);
+
+  const cb = selectedCodebase();
+  const pct = 1 - cb.lynx_tokens/cb.grep_tokens;
+  $("pct").textContent = Math.round(pct*100) + "%";
+  $("foot").innerHTML =
+    "Token deltas are <strong>measured</strong> (grep " + cb.grep_tokens.toLocaleString() +
+    " → Lynx " + cb.lynx_tokens.toLocaleString() + " tokens to answer, " + Math.round(pct*100) +
+    "% fewer; " + cb.label + " / " + cb.language + " — see <code>benchmarks/RESULTS*.md</code>). The <em>floor</em> counts only the smaller " +
+    "tool output (zero assumptions). The <em>realistic</em> figure adds one eliminated grep round-trip re-billing a " +
+    (s.ctx/1000) + "k-token context — the only modelled assumption. Prices per 1M input tokens, editable above; " +
+    "presets in <code>benchmarks/pricing.json</code>, measured deltas in <code>benchmarks/measured.json</code> (as of " + (PRICING.as_of||"") + "). Same math as the CLI: " +
+    "<code>python benchmarks/savings_calculator.py</code>.";
+}
+
+function drawBars(currentPrice, s) {
+  const m = selectedModel();
+  const data = MODELS.map(x => {
+    const price = x.label === m.label ? currentPrice : x.input;
+    return { label:x.label, note:x.note, yr: s.tokReal/1e6 * price * 12, sel: x.label === m.label };
+  });
+  const maxv = Math.max(...data.map(d => d.yr), 1) * 1.12;
+  const W = 880, rowH = 34, top = 6, H = top + data.length*rowH + 8, labelW = 150, valW = 96;
+  const barMax = W - labelW - valW;
+  const rows = data.map((d,i) => {
+    const y = top + i*rowH, w = Math.max(2, barMax * d.yr / maxv);
+    const fill = d.sel ? "#e8742c" : "#f0ad4e";
+    const fw = d.sel ? 800 : 600;
+    return `<text x="${labelW-10}" y="${y+15}" font-size="13" font-weight="${fw}" fill="#24292f" text-anchor="end">${d.label}</text>
+      <text x="${labelW-10}" y="${y+28}" font-size="10.5" fill="#57606a" text-anchor="end">${d.note}</text>
+      <rect x="${labelW}" y="${y+5}" width="${w.toFixed(0)}" height="20" rx="4" fill="${fill}"/>
+      <text x="${labelW+w+8}" y="${y+20}" font-size="13" font-weight="${fw}" fill="${d.sel?'#e8742c':'#24292f'}">${fmt(d.yr)}</text>`;
+  }).join("");
+  $("bars").innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" width="100%" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">${rows}</svg>`;
+}
+
+function onModelChange() {
+  const m = selectedModel();
+  $("price").value = m.input;
+  $("priceHint").textContent = "Preset for " + m.label + " is $" + m.input +
+    "/1M (" + m.provider + ", " + (m.note||"") + "). Edit to override.";
+  render();
+}
+
+async function init() {
+  PRICING = await loadJSON("pricing.json", FALLBACK_PRICING);
+  const ms = await loadJSON("measured.json", { codebases: FALLBACK_CODEBASES });
+  CODEBASES = ms.codebases || FALLBACK_CODEBASES;
+  MODELS = PRICING.models;
+  $("model").innerHTML = MODELS.map(m =>
+    `<option value="${m.label}">${m.label} — $${m.input}/1M (${m.provider})</option>`).join("");
+  $("codebase").innerHTML = CODEBASES.map(c =>
+    `<option value="${c.label}">${c.label} (${c.language}) — ${Math.round((1-c.lynx_tokens/c.grep_tokens)*100)}% fewer tokens</option>`).join("");
+  $("model").addEventListener("change", onModelChange);
+  $("codebase").addEventListener("change", render);
+  ["price","devs","qpd","days","ctx"].forEach(id => {
+    $(id).addEventListener("input", render);
+    $(id).addEventListener("change", render);
+  });
+  onModelChange();
+}
+init();
+</script>
+</body>
+</html>
