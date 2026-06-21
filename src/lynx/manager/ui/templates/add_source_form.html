@@ -405,18 +405,27 @@
       });
   }
   function renderBreadcrumb(path) {
-    // Split absolute path into navigable segments. Works for both
-    // Unix-style (/a/b/c) and Windows-style (C:\a\b\c) paths.
-    var sep = path.indexOf("\\") >= 0 ? "\\" : "/";
-    var parts = path.split(sep).filter(function (s) { return s.length > 0; });
+    // Build navigable breadcrumb segments. Handles Windows drive paths
+    // (C:\a\b — segment 0 is the drive ROOT "C:\", not "\C:") and POSIX
+    // paths (/a/b), accepting either separator in the input. Each link's
+    // data-path is a real absolute path the backend can resolve — joining the
+    // bare drive letter "C:" with a child must yield "C:\child", never "C:child"
+    // (drive-relative) or "\C:" / "/C:".
+    var win = /^[A-Za-z]:/.test(path);          // leading drive letter => Windows
+    var sep = win ? "\\" : "/";
+    var parts = path.split(/[\\/]+/).filter(function (s) { return s.length > 0; });
     var html = '';
-    var acc = (sep === "/") ? "/" : "";
-    if (sep === "/") {
+    if (!win) {
       html += '<a href="#" data-path="/" class="text-indigo-600 hover:underline">/</a>';
     }
+    var acc = '';
     for (var i = 0; i < parts.length; i++) {
-      acc = (acc.endsWith(sep) ? acc : acc + sep) + parts[i];
-      html += (i > 0 || sep === "/") ? '<span class="text-slate-400">' + sep + '</span>' : '';
+      acc = (i === 0)
+        ? (win ? parts[0] + sep : '/' + parts[0])           // "C:\"  or  "/usr"
+        : acc.replace(/[\\/]+$/, '') + sep + parts[i];        // append next segment
+      if (i > 0) {
+        html += '<span class="text-slate-400">' + sep + '</span>';
+      }
       html += '<a href="#" data-path="' + esc(acc) + '" class="text-indigo-600 hover:underline">' + esc(parts[i]) + '</a>';
     }
     $("#fp-breadcrumb").innerHTML = html;

@@ -45,6 +45,14 @@
   pipeline is now a rendered **Mermaid** architecture diagram, and the benchmark
   section now carries the C# (Json.NET) result next to Django.
 
+### Fixed
+- **Manager UI folder picker corrupted Windows paths.** The breadcrumb rebuilt a
+  Windows drive segment as `\C:` / `/C:` (and rendered the root as `//C:`), so
+  clicking the drive — or a child under it — sent a non-existent path to the
+  backend (e.g. `path does not exist: C:\build`). The breadcrumb now treats a
+  leading drive letter as the drive root (`C:\`), accepts either separator, and
+  emits real resolvable absolute paths. POSIX paths are unaffected.
+
 ## 1.7.0 — 2026-06-19
 
 ### Added
