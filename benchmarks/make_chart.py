@@ -78,7 +78,7 @@ parts.append(
     f'Map a 100-class hierarchy '
     f'<tspan fill="{SUB}" font-weight="400">— Django: every descendant of Field with file:line; grep cannot do this in one shot</tspan></text>')
 y += 24
-parts.append(hrow(y, "Tool calls", "one grep round per class vs resolved graph edges",
+parts.append(hrow(y, "Tool calls", "grep: one round per class",
                   CALLS["grep"], CALLS["lynx"], CALLS["grep"], "{}",
                   f"{CALLS['grep'] // CALLS['lynx']}× fewer"))
 y += 58

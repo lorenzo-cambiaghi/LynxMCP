@@ -31,7 +31,7 @@
     <text x="304" y="269" font-size="12.5" font-weight="800" fill="#e8742c">807</text>
     <text x="970" y="259" font-size="17" font-weight="800" fill="#e8742c" text-anchor="end">−86%</text><line x1="36" y1="298" x2="970" y2="298" stroke="#e1e4e8"/><text x="36" y="324" font-size="14" font-weight="800" fill="#24292f">Map a 100-class hierarchy <tspan fill="#57606a" font-weight="400">— Django: every descendant of Field with file:line; grep cannot do this in one shot</tspan></text>
     <text x="36" y="363" font-size="14.5" font-weight="700" fill="#24292f">Tool calls</text>
-    <text x="36" y="381" font-size="11.5" fill="#57606a">one grep round per class vs resolved graph edges</text>
+    <text x="36" y="381" font-size="11.5" fill="#57606a">grep: one round per class</text>
     <text x="222" y="359" font-size="10.5" fill="#57606a" text-anchor="end">grep</text>
     <rect x="232" y="348" width="520" height="17" rx="3" fill="#8b949e"/>
     <text x="760" y="361" font-size="12.5" font-weight="700" fill="#24292f">101</text>

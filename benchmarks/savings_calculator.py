@@ -181,7 +181,7 @@ def write_chart(out: Path, codebases, prices, chart_labels, queries_month, args)
         return queries_month * (cb["grep"] - cb["lynx"] + ctx) / 1e6 * price * 12
 
     W, H = 900, 470
-    pad_l, pad_r, pad_t, pad_b = 76, 30, 116, 78
+    pad_l, pad_r, pad_t, pad_b = 76, 30, 132, 78
     plot_w, plot_h = W - pad_l - pad_r, H - pad_t - pad_b
     maxv = max(yr(cb, prices[m]["in"]) for m in models for cb in codebases) * 1.16
     group_w = plot_w / len(models)
@@ -218,26 +218,28 @@ def write_chart(out: Path, codebases, prices, chart_labels, queries_month, args)
             f'<text x="{pad_l-8}" y="{gy+4:.0f}" font-size="11" fill="{SUB}" '
             f'text-anchor="end">${gv/1000:,.0f}k</text>')
 
+    # Horizontal legend on its own row (colour → codebase + measured delta),
+    # below the subtitle so nothing overlaps and nothing runs off the edge.
     legend = []
-    lx = W - pad_r - 320
+    lx = 36.0
     for j, cb in enumerate(codebases):
         col = _CB_COLORS[j % len(_CB_COLORS)]
         pct = 1 - cb["lynx"] / cb["grep"]
+        txt = f'{cb["label"]} ({cb["language"]}) −{pct:.0%}'
         legend.append(
-            f'<rect x="{lx:.0f}" y="{pad_t-92+j*20:.0f}" width="14" height="14" rx="2" fill="{col}"/>'
-            f'<text x="{lx+20:.0f}" y="{pad_t-80+j*20:.0f}" font-size="12" fill="{SUB}">'
-            f'{cb["label"]} ({cb["language"]}) — {pct:.0%} fewer tokens</text>')
+            f'<rect x="{lx:.0f}" y="78" width="13" height="13" rx="2" fill="{col}"/>'
+            f'<text x="{lx+19:.0f}" y="89" font-size="12.5" fill="{INK}">{txt}</text>')
+        lx += 19 + len(txt) * 7.0 + 26
 
-    spans = " · ".join(f'{cb["label"]} {1-cb["lynx"]/cb["grep"]:.0%}' for cb in codebases)
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
   <rect x="0" y="0" width="{W}" height="{H}" rx="12" fill="#ffffff" stroke="#d0d7de"/>
   <text x="36" y="38" font-size="21" font-weight="800" fill="{INK}">Yearly API bill Lynx removes — {args.devs} engineers</text>
-  <text x="36" y="62" font-size="13.5" fill="{SUB}">Measured fewer tokens to answer ({spans}), at 2026-06 flagship input prices · {queries_month:,} retrievals/month</text>
+  <text x="36" y="60" font-size="13" fill="{SUB}">Realistic estimate · 2026-06 flagship input prices · {queries_month:,} retrievals/month</text>
   {''.join(legend)}
   {''.join(gridlines)}
   {''.join(bars)}
   {''.join(labels)}
-  <text x="36" y="{H-18}" font-size="11.5" fill="{SUB}">Realistic figure: measured token delta + one eliminated grep round-trip re-billing a {ctx//1000}k context. Conservative floor (tool output only) is in benchmarks/RESULTS*.md. Reproduce: benchmarks/savings_calculator.py</text>
+  <text x="36" y="{H-18}" font-size="10.5" fill="{SUB}">Realistic = measured token delta + one saved grep round-trip ({ctx//1000}k context). Floor (tool output only) in benchmarks/RESULTS*.md.</text>
 </svg>
 '''
     out.parent.mkdir(parents=True, exist_ok=True)
