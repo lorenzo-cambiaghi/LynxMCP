@@ -35,7 +35,7 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 | **GPT‑5.5** — OpenAI flagship ($5) | ≈ $42,000 | ≈ $47,000 | ≈ **$47,000** |
 | **Claude Opus 4.8** — top coding model ($5) | ≈ $42,000 | ≈ $47,000 | ≈ **$47,000** |
 
-<sub>Token deltas are **measured** ([Django](benchmarks/RESULTS.md) · [Json.NET](benchmarks/RESULTS_csharp.md) · [Guava](benchmarks/RESULTS_java.md)). The yearly figures add **one** eliminated grep round‑trip re‑billing a 20k‑token context; the conservative floor (tool output only, zero assumptions) is **$0.4k–1.9k/mo** depending on model and codebase. **Run it for your own team, prices and codebase:** CLI `python benchmarks/savings_calculator.py --devs N`, or the interactive **[savings calculator](benchmarks/savings_calculator.html)** — pick the codebase and model from drop‑downs and edit the $/1M price live (presets in [`benchmarks/pricing.json`](benchmarks/pricing.json) + [`measured.json`](benchmarks/measured.json), yours to change).</sub>
+<sub>Token deltas are **measured** ([Django](benchmarks/RESULTS.md) · [Json.NET](benchmarks/RESULTS_csharp.md) · [Guava](benchmarks/RESULTS_java.md)). The yearly figures add **one** eliminated grep round‑trip re‑billing a 20k‑token context; the conservative floor (tool output only, zero assumptions) is **$0.4k–1.6k/mo** depending on model and codebase. **Run it for your own team, prices and codebase:** CLI `python benchmarks/savings_calculator.py --devs N`, or the interactive **[savings calculator](benchmarks/savings_calculator.html)** — pick the codebase and model from drop‑downs and edit the $/1M price live (presets in [`benchmarks/pricing.json`](benchmarks/pricing.json) + [`measured.json`](benchmarks/measured.json), yours to change).</sub>
 
 ---
 
