@@ -20,6 +20,15 @@ Stabilization & bug-fixing release.
   like `src/generated` is excluded regardless of OS path separators.
 
 ### Changed
+- **BM25: incremental cache on watcher edits.** Editing one file used to
+  invalidate the entire BM25 index, so the next search re-read the whole
+  collection from ChromaDB and re-ran the (regex-heavy) code tokenizer over
+  every chunk. The cache is now refreshed per file — only the edited file's
+  chunks are dropped and re-tokenized, and the BM25Okapi is rebuilt from the
+  in-memory corpus without touching the store. Bulk (re)builds and resets still
+  do a full cold reload. Pinned by `tests/test_bm25_incremental.py`, which
+  asserts the incremental cache equals a cold rebuild of the equivalent corpus
+  (and that resets clear a warm cache).
 - **Graph: incremental cross-file resolution on every save.** A watcher edit
   used to clear *all* resolved/ambiguous call & inheritance edges and re-resolve
   the entire raw-call set (O(total calls) per file change). `update_file` /
