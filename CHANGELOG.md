@@ -20,6 +20,15 @@ Stabilization & bug-fixing release.
   like `src/generated` is excluded regardless of OS path separators.
 
 ### Changed
+- **Graph: incremental cross-file resolution on every save.** A watcher edit
+  used to clear *all* resolved/ambiguous call & inheritance edges and re-resolve
+  the entire raw-call set (O(total calls) per file change). `update_file` /
+  `remove_file` now re-resolve only the symbol names actually touched by the
+  edit (the symbols the file defines/removes plus the names it references). The
+  result is byte-for-byte identical to a full rebuild — pinned by
+  `tests/test_graph_incremental.py`, which asserts the incremental graph equals
+  a from-scratch rebuild after add / edit / remove / ambiguous↔resolved
+  transitions.
 - **Single source of truth for the codebase file walk** (`lynx.fs_scan`). The
   vector index (`rag_manager`) and the graph layer (`graph.builder`) shared two
   near-identical copies of the directory walk + extension/ignore filtering; they
