@@ -78,29 +78,42 @@ jobs:
             integrations/steampipe/steampipe-plugin-lynx/dist/*.tar.gz
             integrations/steampipe/steampipe-plugin-lynx/dist/SHA256SUMS
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          # Keep ONLY the curated body below. With generate_release_notes=true,
+          # action-gh-release appends GitHub's auto changelog — which, since the
+          # `steampipe-v*` tag namespace is separate, dumps the whole LynxMCP
+          # app's commit history onto a plugin release page (confusing noise).
+          generate_release_notes: false
           body: |
             ## steampipe-plugin-lynx ${{ github.ref_name }}
 
-            A local Steampipe plugin that exposes Lynx (semantic code search +
-            code knowledge graph) as SQL tables. **No Go toolchain needed** —
-            download the build for your platform below.
+            The **Steampipe plugin for Lynx** — query your code (semantic +
+            lexical search) and the code knowledge graph as SQL tables, and join
+            them with Steampipe's 140+ connectors (GitHub, Jira, AWS, …).
+            **No Go toolchain needed** — grab the build for your platform below.
 
-            ### Install
+            Part of the [LynxMCP](https://github.com/lorenzo-cambiaghi/LynxMCP) repo,
+            under [`integrations/steampipe/steampipe-plugin-lynx`](https://github.com/lorenzo-cambiaghi/LynxMCP/tree/main/integrations/steampipe/steampipe-plugin-lynx).
+
+            **Tables:** `lynx_source` · `lynx_search` (qual: `query`) ·
+            `lynx_graph` (quals: `operation`, `symbol`).
+
+            ### Install (no Go toolchain)
             1. Download `steampipe-plugin-lynx_..._<os>_<arch>.tar.gz` for your
                platform from **Assets** (verify against `SHA256SUMS` if you like).
-            2. Extract and place the plugin binary:
+            2. Install the plugin + config:
                ```bash
-               mkdir -p ~/.steampipe/plugins/local/lynx
-               tar xzf steampipe-plugin-lynx_*.tar.gz
+               mkdir -p ~/.steampipe/plugins/local/lynx ~/.steampipe/config
+               tar xzf steampipe-plugin-lynx_*_<os>_<arch>.tar.gz
                mv lynx.plugin ~/.steampipe/plugins/local/lynx/lynx.plugin
-               mkdir -p ~/.steampipe/config && cp lynx.spc ~/.steampipe/config/lynx.spc
+               cp lynx.spc   ~/.steampipe/config/lynx.spc
                ```
-            3. Start the Lynx backend (`lynx manager ui --port 8765 --no-browser`)
-               and query, e.g.:
+            3. Start the Lynx backend (serves the local `/api/v1`) and query:
                ```bash
+               lynx manager ui --port 8765 --no-browser
                steampipe query "select name, type, chunk_count from lynx_source;"
                ```
+
+            Full docs: the [plugin README](https://github.com/lorenzo-cambiaghi/LynxMCP/blob/main/integrations/steampipe/steampipe-plugin-lynx/README.md).
 
             > The Steampipe engine runs on **macOS/Linux** (or **WSL2** on
             > Windows) — there is no native Windows build.
