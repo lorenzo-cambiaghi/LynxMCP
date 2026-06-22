@@ -23,6 +23,9 @@ def dispatch(sub_command: str, args) -> int:
     if sub_command == "install":
         from . import install
         return install.run_install(args)
+    if sub_command == "feedback":
+        from . import feedback
+        return feedback.run_feedback(args)
     if sub_command == "ui":
         from .ui import app as ui_app
         return ui_app.run_ui(args)

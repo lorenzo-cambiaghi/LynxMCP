@@ -26,6 +26,11 @@ class SourceManager:
 
     def __init__(self, config: Any, *, probe_integrity: bool = True):
         self.config = config
+        # Lazy shared cross-encoder for cross-source reranking (search_all).
+        # Per-source search already reranks within a source; this reorders the
+        # MERGED candidate pool so the final cross-source order is content-aware
+        # too. Built on first use, only when search.reranker.enabled.
+        self._reranker = None
         self.backends: dict[str, SourceBackend] = {}
         # Sources we could NOT bring up (corrupt index, construction failure).
         # Kept separate from `backends` so one bad source never takes down the
@@ -382,6 +387,12 @@ class SourceManager:
                 h["_fusion_id"] = f"{name}::{h.get('id') or h.get('file_path', '')}"
             per_source_results.append(hits)
 
+        # When the cross-encoder reranker is enabled, reorder the MERGED pool by
+        # content relevance so cross-source ranking isn't just RRF-by-position.
+        # Disabled by default → existing behavior (pure RRF) is unchanged.
+        reranker = self._get_reranker()
+        if reranker is not None:
+            return self._rerank_union(reranker, query, per_source_results, top_k)
         return self._rrf_fuse(per_source_results, self.config.search.rrf_k, top_k)
 
     def deep_search_all(
@@ -405,10 +416,17 @@ class SourceManager:
             raise ValueError("queries must be a non-empty list of strings")
 
         thresholds = self.config.search.deep.score_thresholds
-        # Cross-source fusion uses RRF, so use the hybrid threshold (RRF scale)
-        # for weakness detection unless the caller overrode it explicitly.
+        # Pick the weakness threshold on the scale `search_all` actually returns:
+        #  - reranker ON  → cross-encoder scores (relevant > 0), so use 0.0;
+        #  - reranker OFF → RRF-fused scores, so use the hybrid (RRF) threshold.
+        # An explicit `min_score` always wins.
+        rerank_on = getattr(
+            getattr(self.config.search, "reranker", None), "enabled", False
+        )
         if min_score is not None:
             threshold = float(min_score)
+        elif rerank_on:
+            threshold = 0.0
         else:
             threshold = float(thresholds.get("hybrid", 0.012))
         eff_min_results = int(min_results) if min_results is not None else 2
@@ -443,6 +461,57 @@ class SourceManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_reranker(self):
+        """Lazy shared cross-encoder for cross-source reranking.
+
+        Reuses the server-wide `search.reranker` config (same model all
+        codebase sources use). Returns None when reranking is disabled or the
+        model can't be constructed — callers then fall back to RRF.
+        """
+        rcfg = getattr(self.config.search, "reranker", None)
+        if rcfg is None or not getattr(rcfg, "enabled", False):
+            return None
+        if self._reranker is None:
+            try:
+                from .reranker import Reranker
+                self._reranker = Reranker(model_name=rcfg.model_name)
+            except Exception as e:
+                print(f"[manager] cross-source reranker init failed: {e}",
+                      file=sys.stderr)
+                return None
+        return self._reranker
+
+    def _rerank_union(self, reranker, query: str,
+                      rankings: list[list[dict]], top_k: int) -> list[dict]:
+        """Content-aware cross-source ranking: dedup the union of the per-source
+        candidate pools (by `_fusion_id`) and rerank the whole set with the
+        shared cross-encoder, so the final order reflects relevance across
+        sources, not just per-source rank position. Falls back to RRF if the
+        rerank fails for any reason."""
+        union: list[dict] = []
+        seen: set = set()
+        for ranking in rankings:
+            for item in ranking:
+                fid = item.get("_fusion_id")
+                if not fid or fid in seen:
+                    continue
+                seen.add(fid)
+                union.append(item)
+        if not union:
+            return []
+        try:
+            reranked = reranker.rerank(query, union, top_k=top_k)
+        except Exception as e:
+            print(f"[manager] cross-source rerank failed ({e}); falling back to RRF",
+                  file=sys.stderr)
+            return self._rrf_fuse(rankings, self.config.search.rrf_k, top_k)
+        out = []
+        for item in reranked:
+            item = dict(item)
+            item.pop("_fusion_id", None)
+            out.append(item)
+        return out
 
     def _rrf_fuse(
         self, rankings: list[list[dict]], k: int, top_k: int

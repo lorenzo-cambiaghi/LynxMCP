@@ -58,6 +58,7 @@ import json
 from datetime import datetime
 
 from .chunking import chunk_file, CHUNKER_VERSION
+from . import fs_scan
 
 
 # ----------------------------------------------------------------------------
@@ -251,6 +252,7 @@ class CodebaseRAG:
         rrf_k: int = 60,
         candidate_pool_size: int = 30,
         reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
+        ignored_path_fragments=(),
     ):
         self.codebase_path = Path(codebase_path)
         self.storage_path = Path(rag_storage_path)
@@ -260,6 +262,12 @@ class CodebaseRAG:
         self.supported_extensions = frozenset(
             ext.lower() for ext in supported_extensions
         )
+
+        # Path fragments to exclude from indexing (e.g. node_modules, dist).
+        # Tracked as instance state because it now affects the indexed file set
+        # (so it's part of the drift config snapshot) and because the shared
+        # fs_scan walk needs it on every (re)build.
+        self.ignored_path_fragments = tuple(ignored_path_fragments or ())
 
         # Stored as instance state because they are part of the config snapshot
         # used for drift detection.
@@ -513,29 +521,23 @@ class CodebaseRAG:
             self._reset_collection()
             self._file_hashes = {}
             self._save_file_hashes()
+            # The collection is now empty; drop the BM25 cache so a stale warm
+            # corpus can't serve results until the next build repopulates it.
+            self._invalidate_bm25()
 
     def _list_candidate_files(self) -> list:
-        """Return abs paths of files we would index, mirroring SimpleDirectoryReader.
+        """Return abs paths of files we would index — the canonical "what should
+        be in the index" set used by the SHA partitioner.
 
-        Walks self.codebase_path recursively, skipping dot-prefixed dirs/files
-        (matching `exclude_hidden=True`) and keeping only files whose extension
-        is in supported_extensions. The result is the canonical "what should
-        be in the index" set, used by the SHA partitioner.
+        Delegates to the shared `fs_scan.list_candidate_files` so the vector
+        index and the graph layer walk the codebase identically (same dot-dir
+        exclusion, same extension filter, same `ignored_path_fragments`).
         """
-        out = []
-        exts = self.supported_extensions
-        root_path = str(self.codebase_path)
-        for dirpath, dirs, files in os.walk(root_path):
-            # Match SimpleDirectoryReader(exclude_hidden=True): prune dot-dirs.
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for f in files:
-                if f.startswith("."):
-                    continue
-                if Path(f).suffix.lower() not in exts:
-                    continue
-                out.append(_norm(os.path.join(dirpath, f)))
-        out.sort()
-        return out
+        return fs_scan.list_candidate_files(
+            self.codebase_path,
+            self.supported_extensions,
+            self.ignored_path_fragments,
+        )
 
     def _partition_files(self, candidate_files: list) -> tuple:
         """Diff disk-state against the SHA cache.
@@ -1157,16 +1159,35 @@ class CodebaseRAG:
         ]
 
     def _ensure_bm25(self):
-        """Build (or rebuild) the BM25 index from the current ChromaDB content."""
+        """Ensure the BM25Okapi index is current.
+
+        Two regimes, both lazy (only runs when a sparse/hybrid search needs it):
+          - **warm cache**: `_bm25_docs` is already populated (kept in sync by
+            the per-file watcher path). Just rebuild the BM25Okapi from the
+            cached, already-tokenized corpus — NO ChromaDB read, NO re-tokenize.
+          - **cold cache**: `_bm25_docs` is empty (first search, or after a bulk
+            (re)build / reset cleared it). Pull every chunk from ChromaDB once,
+            tokenize, and populate the cache.
+
+        The cost this avoids: previously every single watcher save invalidated
+        the whole BM25 index, so the next search re-read the entire collection
+        from ChromaDB and re-ran the (regex-heavy) code tokenizer over every
+        chunk. Now an edit only re-tokenizes the chunks of the edited file.
+        """
         if self._bm25_okapi is not None:
             return
-        # Pull every chunk currently in ChromaDB. Cheap for typical codebases
-        # (a few thousand chunks); rare operation thanks to the lazy cache.
+        if not self._bm25_docs:
+            self._bm25_load_from_store()
+        self._bm25_build_okapi()
+
+    def _bm25_load_from_store(self):
+        """Cold-load the tokenized corpus from ChromaDB into the cache."""
         try:
             data = self.vector_store._collection.get(include=["documents", "metadatas"])
         except Exception as e:
             log(f"[bm25] could not read ChromaDB collection: {e}")
-            self._bm25_okapi = None
+            self._bm25_docs = {}
+            self._bm25_meta = {}
             return
         ids = data.get("ids") or []
         docs = data.get("documents") or []
@@ -1175,8 +1196,7 @@ class CodebaseRAG:
         self._bm25_docs = {}
         self._bm25_meta = {}
         for cid, content, meta in zip(ids, docs, metas):
-            tokens = _tokenize_code(content or "")
-            self._bm25_docs[cid] = tokens
+            self._bm25_docs[cid] = _tokenize_code(content or "")
             self._bm25_meta[cid] = {
                 "file": (meta or {}).get("file_name", "unknown"),
                 "file_path": (meta or {}).get("file_path", ""),
@@ -1187,6 +1207,9 @@ class CodebaseRAG:
                 "end_line": (meta or {}).get("end_line", 0),
                 "content": content or "",
             }
+
+    def _bm25_build_okapi(self):
+        """(Re)build the BM25Okapi object from the current cached corpus."""
         self._bm25_doc_ids = list(self._bm25_docs.keys())
         if self._bm25_doc_ids:
             corpus = [self._bm25_docs[cid] for cid in self._bm25_doc_ids]
@@ -1195,7 +1218,60 @@ class CodebaseRAG:
             self._bm25_okapi = None
 
     def _invalidate_bm25(self):
-        """Mark the BM25 cache stale so the next search rebuilds it."""
+        """Drop the BM25 cache entirely so the next search cold-loads from
+        ChromaDB. Used after bulk (re)builds and resets, where so much changed
+        that a full reload is the honest, simplest choice."""
+        self._bm25_okapi = None
+        self._bm25_docs = {}
+        self._bm25_meta = {}
+        self._bm25_doc_ids = []
+
+    def _bm25_drop_file_entries(self, abs_path: str):
+        """Remove every cached BM25 entry whose chunk belongs to `abs_path`."""
+        drop = [
+            cid for cid, m in self._bm25_meta.items()
+            if m.get("file_path") == abs_path
+        ]
+        for cid in drop:
+            self._bm25_docs.pop(cid, None)
+            self._bm25_meta.pop(cid, None)
+
+    def _bm25_apply_file_update(self, abs_path: str, nodes: list):
+        """Incrementally refresh the BM25 cache for one re-indexed file.
+
+        Only maintains the cache when it is already WARM (`_bm25_docs`
+        populated). A cold cache is left cold: the next search cold-loads from
+        ChromaDB, which already reflects the just-inserted nodes — so doing
+        nothing here is both correct and cheaper than a redundant load.
+        """
+        if not self._bm25_docs:
+            return
+        self._bm25_drop_file_entries(abs_path)
+        for n in nodes:
+            cid = getattr(n, "id_", None)
+            if not cid:
+                continue
+            meta = getattr(n, "metadata", None) or {}
+            content = getattr(n, "text", "") or ""
+            self._bm25_docs[cid] = _tokenize_code(content)
+            self._bm25_meta[cid] = {
+                "file": meta.get("file_name", "unknown"),
+                "file_path": meta.get("file_path", ""),
+                "symbol_name": meta.get("symbol_name", ""),
+                "symbol_kind": meta.get("symbol_kind", ""),
+                "language": meta.get("language", ""),
+                "start_line": meta.get("start_line", 0),
+                "end_line": meta.get("end_line", 0),
+                "content": content,
+            }
+        # Rebuild the Okapi from the cache on the next search (no store read).
+        self._bm25_okapi = None
+
+    def _bm25_apply_file_removal(self, abs_path: str):
+        """Incrementally drop a removed file's chunks from a warm BM25 cache."""
+        if not self._bm25_docs:
+            return
+        self._bm25_drop_file_entries(abs_path)
         self._bm25_okapi = None
 
     def _bm25_lookup(self, query: str, top_n: int) -> list:
@@ -1321,8 +1397,9 @@ class CodebaseRAG:
                 log(f"[rag] insert failed for {abs_path}: {e}")
                 return False
 
-            # Chunks changed: invalidate BM25 cache (rebuilt lazily on next search).
-            self._invalidate_bm25()
+            # Chunks changed: refresh only this file's BM25 entries (no full
+            # collection re-read / re-tokenize). Rebuilt lazily on next search.
+            self._bm25_apply_file_update(abs_path, nodes)
 
             # Persist the new SHA. If the hash function failed earlier we
             # leave the cache entry stale; the next change will recompute.
@@ -1341,7 +1418,7 @@ class CodebaseRAG:
         with self._write_lock:
             removed = self._delete_file_chunks(abs_path)
             if removed:
-                self._invalidate_bm25()
+                self._bm25_apply_file_removal(abs_path)
             # Drop the SHA entry regardless of whether chunks existed: the
             # source of truth is that this file is gone.
             had_hash = abs_path in self._file_hashes
@@ -1364,9 +1441,13 @@ class CodebaseRAG:
         are intentionally omitted: changing them has no effect on the stored
         vectors.
 
-        ignored_path_fragments is also omitted: it is currently consumed
-        only by the file watcher in mcp_server.py, not by SimpleDirectoryReader,
-        so it does not affect what is in the index.
+        ignored_path_fragments is deliberately NOT in the snapshot. It now
+        affects the indexed file set (via fs_scan), but the SHA partitioner
+        self-heals on the next build — files that became ignored fall out of
+        the candidate set and their chunks are dropped as "removed". Adding it
+        here would make every pre-upgrade index report a false WARNING drift
+        (the stored snapshot lacks the key, so `None != []` for the common
+        no-fragments case) — pure noise for the majority of users.
         """
         return {
             "codebase_path": str(self.codebase_path.resolve()),

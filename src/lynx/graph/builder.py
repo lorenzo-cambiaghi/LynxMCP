@@ -305,16 +305,25 @@ class GraphLayer:
             }
         self._graph.add_edge(u, v, **attrs)
 
-    def _drop_file(self, abs_path: str) -> None:
+    def _drop_file(self, abs_path: str) -> set:
         """Remove every node/edge attached to `abs_path` from the in-memory
         graph and indices. Raw calls from that file are also cleared.
-        Caller is responsible for persistence after a batch of drops."""
+        Caller is responsible for persistence after a batch of drops.
+
+        Returns the set of leaf symbol names (lowercased) whose symbol-index
+        entry was touched by the removal — i.e. the names whose cross-file
+        resolution may now have changed. Used by the incremental update path to
+        re-resolve only the affected names instead of the whole graph.
+        """
+        touched_names: set = set()
         # Find affected node IDs.
         affected = [nid for nid, n in self._nodes_by_id.items() if n.get("file") == abs_path]
         # Drop edges touching those nodes (DiGraph drops them with the node).
         for nid in affected:
             label = self._nodes_by_id[nid].get("label", "")
             leaf = label.split(".")[-1].lower()
+            if leaf:
+                touched_names.add(leaf)
             if leaf in self._symbol_index:
                 self._symbol_index[leaf] = [x for x in self._symbol_index[leaf] if x != nid]
                 if not self._symbol_index[leaf]:
@@ -326,37 +335,33 @@ class GraphLayer:
         self._raw_inherits_by_file.pop(abs_path, None)
         # Drop the SHA so the next walk re-processes it.
         self._file_hashes.pop(abs_path, None)
+        return touched_names
 
     # ------------------------------------------------------------------
     # File discovery (mirrors CodebaseRAG._list_candidate_files)
     # ------------------------------------------------------------------
 
     def _list_candidate_files(self) -> list:
-        out = []
-        exts = self.supported_extensions
-        ignored = self.ignored_path_fragments
-        root = str(self.codebase_path)
-        for dirpath, dirs, files in os.walk(root):
-            # Match SimpleDirectoryReader(exclude_hidden=True): skip dot dirs.
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for fn in files:
-                if fn.startswith("."):
-                    continue
-                ext = os.path.splitext(fn)[1].lower()
-                if ext not in exts:
-                    continue
-                full = os.path.normpath(os.path.join(dirpath, fn))
-                if ignored and any(frag in full.replace(os.sep, "/") for frag in ignored):
-                    continue
-                out.append(full)
-        return out
+        # Shared with the vector index (rag_manager) via fs_scan so the two
+        # layers never disagree on the file set.
+        from ..fs_scan import list_candidate_files
+        return list_candidate_files(
+            self.codebase_path,
+            self.supported_extensions,
+            self.ignored_path_fragments,
+        )
 
     # ------------------------------------------------------------------
     # Resolution
     # ------------------------------------------------------------------
 
-    def _resolve_raw_calls(self) -> int:
+    def _resolve_raw_calls(self, only_names: "set | None" = None) -> int:
         """Walk every raw_call and emit edges where the callee resolves.
+
+        When `only_names` is given, only raw_calls whose `callee_name` (lower)
+        is in that set are (re-)resolved — the incremental path uses this so a
+        single-file edit doesn't re-walk the entire call set. `only_names=None`
+        resolves everything (the full rebuild path).
 
         Returns the number of edges added. Strategy:
           - 1 candidate                       → confidence="resolved"
@@ -378,6 +383,8 @@ class GraphLayer:
         for file_path, calls in self._raw_calls_by_file.items():
             for rc in calls:
                 key = rc["callee_name"].lower()
+                if only_names is not None and key not in only_names:
+                    continue
                 candidates = self._symbol_index.get(key) or []
                 if not candidates:
                     continue
@@ -417,21 +424,53 @@ class GraphLayer:
                 # member call with multiple candidates: deliberately skipped.
         return added
 
-    def _clear_resolved_and_ambiguous(self) -> None:
+    def _clear_resolved_and_ambiguous(self, only_target_names: "set | None" = None) -> None:
         """Remove derived edges (calls + inherits) whose confidence is
         'resolved' or 'ambiguous'. These come from raw_calls / raw_inherits
-        and must be re-emitted whenever the symbol index changes."""
-        to_drop = [
-            (u, v) for u, v, d in self._graph.edges(data=True)
-            if d.get("relation") in ("calls", "inherits")
-            and d.get("confidence") in ("resolved", "ambiguous")
-        ]
+        and must be re-emitted whenever the symbol index changes.
+
+        When `only_target_names` is given, only edges whose TARGET node's leaf
+        name is in that set are cleared. The target leaf name of a derived edge
+        is exactly the callee/base name it was resolved from, so this clears
+        precisely the edges whose resolution could have changed — letting the
+        incremental path re-resolve only the affected names without disturbing
+        the rest of the graph (and without leaving stale edges that the
+        add-only resolver would never remove)."""
+        to_drop = []
+        for u, v, d in self._graph.edges(data=True):
+            if d.get("relation") not in ("calls", "inherits"):
+                continue
+            if d.get("confidence") not in ("resolved", "ambiguous"):
+                continue
+            if only_target_names is not None:
+                tgt = self._nodes_by_id.get(v)
+                leaf = (tgt.get("label", "").split(".")[-1].lower()) if tgt else ""
+                if leaf not in only_target_names:
+                    continue
+            to_drop.append((u, v))
         for u, v in to_drop:
             self._graph.remove_edge(u, v)
 
-    def _resolve_raw_inherits(self) -> int:
+    def _reresolve_for_names(self, affected_names: set) -> None:
+        """Incremental cross-file re-resolution limited to `affected_names`.
+
+        Clears the derived calls/inherits edges that resolved to those names,
+        then re-resolves only the raw_calls / raw_inherits referencing them.
+        Result is identical to a full clear + full resolve, because a
+        single-file change can only alter the symbol-index entries (and thus
+        the resolution) of the names defined/removed in that file."""
+        if not affected_names:
+            return
+        self._clear_resolved_and_ambiguous(only_target_names=affected_names)
+        self._resolve_raw_calls(only_names=affected_names)
+        self._resolve_raw_inherits(only_names=affected_names)
+
+    def _resolve_raw_inherits(self, only_names: "set | None" = None) -> int:
         """Walk every raw_inherit and emit `inherits` edges using the same
         cross-file resolution policy as raw_calls.
+
+        `only_names` restricts (re-)resolution to raw_inherits whose `base_name`
+        (lower) is in the set — used by the incremental path. None = all.
 
         Returns the number of edges added.
         Policy mirrors _resolve_raw_calls:
@@ -446,6 +485,8 @@ class GraphLayer:
         for file_path, items in self._raw_inherits_by_file.items():
             for ri in items:
                 key = ri["base_name"].lower()
+                if only_names is not None and key not in only_names:
+                    continue
                 candidates = self._symbol_index.get(key) or []
                 if not candidates:
                     continue
@@ -578,8 +619,9 @@ class GraphLayer:
             cached_sha = (self._file_hashes.get(abs_norm) or {}).get("sha256")
             if live_sha and live_sha == cached_sha:
                 return False  # nothing to do
-            # Drop old state for this file.
-            self._drop_file(abs_norm)
+            # Drop old state for this file; capture the names whose symbol-index
+            # entry it touched (their cross-file resolution may now change).
+            affected_names = self._drop_file(abs_norm)
             try:
                 with open(abs_norm, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
@@ -593,16 +635,27 @@ class GraphLayer:
             if res is not None:
                 for n in res["nodes"]:
                     self._add_node_inplace(n)
+                    # New/changed symbols defined here are also affected names.
+                    if n.get("kind") in ("function", "class"):
+                        leaf = (n.get("label", "").split(".")[-1].lower())
+                        if leaf:
+                            affected_names.add(leaf)
                 for e in res["edges"]:
                     self._add_edge_inplace(e, register_external=True)
                 if res["raw_calls"]:
                     self._raw_calls_by_file[abs_norm] = res["raw_calls"]
+                    # The file's OWN outgoing calls reference names defined
+                    # elsewhere; those must be (re-)resolved too, even though
+                    # their definitions didn't change in this edit.
+                    for rc in res["raw_calls"]:
+                        affected_names.add(rc["callee_name"].lower())
                 if res.get("raw_inherits"):
                     self._raw_inherits_by_file[abs_norm] = res["raw_inherits"]
-            # Re-resolve cross-file calls + inherits (the symbol index moved).
-            self._clear_resolved_and_ambiguous()
-            self._resolve_raw_calls()
-            self._resolve_raw_inherits()
+                    for ri in res["raw_inherits"]:
+                        affected_names.add(ri["base_name"].lower())
+            # Re-resolve ONLY the affected names cross-file (the symbol index
+            # only moved for symbols defined/removed in this one file).
+            self._reresolve_for_names(affected_names)
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True
@@ -614,10 +667,10 @@ class GraphLayer:
                 n.get("file") == abs_norm for n in self._nodes_by_id.values()
             ):
                 return False
-            self._drop_file(abs_norm)
-            self._clear_resolved_and_ambiguous()
-            self._resolve_raw_calls()
-            self._resolve_raw_inherits()
+            affected_names = self._drop_file(abs_norm)
+            # Re-resolve only the names this file defined (other files' raw_calls
+            # to them may now resolve differently — or no longer resolve).
+            self._reresolve_for_names(affected_names)
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True

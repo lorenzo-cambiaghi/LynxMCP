@@ -1,5 +1,79 @@
 # Changelog
 
+## 1.7.3 — 2026-06-22
+
+Stabilization & bug-fixing release (plus one small tool that closes a loop).
+
+### Added
+- **`lynx manager feedback`** — read & summarize the local feedback log. The
+  MCP `feedback` tool appends to `<storage>/_feedback/feedback.jsonl` when an
+  agent can't find what it needs, but nothing read it back. This command turns
+  those reports into a summary (total, time span, the recent "trying to do /
+  tried / stuck" entries, and the sources configured at report time). Read-only,
+  100% local, and it reads only `storage_path` from the config — so it works
+  even if a source folder has since moved. `--limit N`, `--json`. Pinned by
+  `tests/test_manager_feedback.py`.
+
+### Fixed
+- **`ignored_path_fragments` now excludes files from the vector index too.**
+  Previously the file watcher and the graph layer honored the configured ignore
+  fragments (`node_modules`, `dist`, `build`, …) but the vector-index build did
+  not — so vendored / build dirs were embedded into ChromaDB and BM25 and leaked
+  into search results, while the watcher never refreshed them and the graph
+  excluded them (the three layers disagreed). The index build now applies the
+  same exclusion. New indexes exclude these files immediately. An existing index
+  that already embedded them clears them on its **next rebuild** — a `lynx build`
+  / `update_source_index(force=true)`, or an update triggered by a new git commit
+  (the SHA partitioner sees the now-ignored files leave the candidate set and
+  drops their chunks). A plain restart reuses the populated index as-is, so a
+  one-time rebuild is the way to clean a pre-existing index. No drift warning is
+  emitted (it would fire for every user, including those with no ignore
+  fragments).
+- **Multi-segment ignore fragments now match on Windows.** Fragment matching is
+  separator-agnostic (both path and fragment normalized to `/`), so a fragment
+  like `src/generated` is excluded regardless of OS path separators.
+
+### Changed
+- **Cross-source reranking in `search_all`.** When the cross-encoder reranker is
+  enabled, a search across all sources (the no-`source` path) now reorders the
+  *merged* candidate pool by content relevance instead of fusing per-source
+  rankings by position only — so the final cross-source order is content-aware,
+  not just RRF. Disabled by default, so existing behavior (pure RRF) is
+  unchanged. Falls back to RRF if the reranker can't load or errors.
+- **BM25: incremental cache on watcher edits.** Editing one file used to
+  invalidate the entire BM25 index, so the next search re-read the whole
+  collection from ChromaDB and re-ran the (regex-heavy) code tokenizer over
+  every chunk. The cache is now refreshed per file — only the edited file's
+  chunks are dropped and re-tokenized, and the BM25Okapi is rebuilt from the
+  in-memory corpus without touching the store. Bulk (re)builds and resets still
+  do a full cold reload. Pinned by `tests/test_bm25_incremental.py`, which
+  asserts the incremental cache equals a cold rebuild of the equivalent corpus
+  (and that resets clear a warm cache).
+- **Graph: incremental cross-file resolution on every save.** A watcher edit
+  used to clear *all* resolved/ambiguous call & inheritance edges and re-resolve
+  the entire raw-call set (O(total calls) per file change). `update_file` /
+  `remove_file` now re-resolve only the symbol names actually touched by the
+  edit (the symbols the file defines/removes plus the names it references). The
+  result is byte-for-byte identical to a full rebuild — pinned by
+  `tests/test_graph_incremental.py`, which asserts the incremental graph equals
+  a from-scratch rebuild after add / edit / remove / ambiguous↔resolved
+  transitions.
+- **Single source of truth for the codebase file walk** (`lynx.fs_scan`). The
+  vector index (`rag_manager`) and the graph layer (`graph.builder`) shared two
+  near-identical copies of the directory walk + extension/ignore filtering; they
+  now both delegate to one module, which is what fixes the divergence above.
+  Ignored directories are pruned during the walk (faster on big trees).
+
+### Internal
+- **`server.py` slimmed down** (1472 → ~1110 lines): the pure output-formatting
+  helpers moved to `lynx/_format.py`, leaving `server.py` to tool registration
+  and bootstrap. The names are re-exported from `server.py`, so
+  `lynx.server._format_*` still resolves (no caller/test churn).
+- Removed an unreachable no-op branch in the cross-encoder reranker and refreshed
+  its docstring.
+- Added `tests/test_fs_scan.py` (pure, model-free) covering extension/hidden
+  filtering, ignore-fragment exclusion, and separator-agnostic matching.
+
 ## 1.7.2 — 2026-06-22
 
 ### Added

@@ -105,7 +105,6 @@ class Reranker:
         No-op fast paths (no model load) when:
           - `results` is empty
           - `len(results) <= 1` (nothing to reorder)
-          - `top_k is not None and len(results) <= top_k AND len(results) <= 1`
 
         With non-trivial `top_k <= len(results)`, we still rerank because
         the cross-encoder can change the ordering of the top results
@@ -113,10 +112,6 @@ class Reranker:
         """
         n = len(results)
         if n == 0 or n == 1:
-            return results
-        # Trivial case: caller wants everything AND there's nothing to
-        # rerank because the order is the only output (with 1 item).
-        if top_k is not None and top_k >= n and n == 1:
             return results
 
         # Loading can fail too (model not in HF cache + offline mode,

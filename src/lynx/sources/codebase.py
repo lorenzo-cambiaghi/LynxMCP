@@ -49,6 +49,10 @@ class CodebaseBackend(SourceBackend):
             # Opt-in cross-encoder reranker (default disabled; see
             # README "Reranking" section for cost/benefit).
             reranker_config=shared_config.search.reranker,
+            # Exclude vendored / build dirs from the vector index too — not
+            # just the watcher and graph (they used to disagree, polluting
+            # search with node_modules etc.).
+            ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
         )
 
         # Watcher state — populated lazily by start_watcher().
@@ -201,7 +205,9 @@ class CodebaseBackend(SourceBackend):
         source_name = self.name
 
         def _is_ignored(path: str) -> bool:
-            return any(frag in path for frag in ignored_fragments)
+            # Shared, separator-agnostic match — same rule the index build uses.
+            from ..fs_scan import is_ignored
+            return is_ignored(path, ignored_fragments)
 
         class _DebouncedHandler(FileSystemEventHandler):
             def __init__(self):
