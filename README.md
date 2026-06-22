@@ -293,6 +293,25 @@ ORDER BY c.last_modified DESC, h.score DESC;
 
 The code graph is one URL away too (`…/api/v1/graph?operation=callers&symbol=…`), so you can pivot a hit to its blast radius and join *that* with your data. Recipes for git freshness, error-log triage, and per-row batch search in **[docs/DUCKDB.md](docs/DUCKDB.md)**.
 
+## Lynx + Steampipe: code as a SQL table that joins *per row*
+
+[Steampipe](https://steampipe.io) exposes APIs as Postgres tables. The [`steampipe-plugin-lynx`](integrations/steampipe/steampipe-plugin-lynx/) plugin maps the local `/api/v1` to three tables — `lynx_source`, `lynx_search`, `lynx_graph` — so you query your code in plain SQL and **join it with Steampipe's 140+ connectors** (GitHub, Jira, AWS, …). Prebuilt **macOS/Linux** binaries on the [latest release](https://github.com/lorenzo-cambiaghi/LynxMCP/releases?q=steampipe) — no Go toolchain to install.
+
+- 🔌 **Drop-in.** Install the binary, point `lynx.spc` at your Lynx API (`127.0.0.1:8765`), query with any Postgres client.
+- ↘️ **Per-row joins — the differentiator.** Steampipe pushes `WHERE` quals **down** and runs a nested loop in joins, so `lynx_search` can be **driven by another table's column — one search per row**. That's the per-row fan-out the plan-time engines (Coral, DuckDB) can't do without a batch helper.
+- 🔒 **Still 100% local.** Only the *other* side of the join (GitHub, Jira, …) hits an API; your code and embeddings never leave the machine.
+
+```sql
+-- for each of your open GitHub issues, find the code that matches its title
+SELECT i.number, i.title, s.file, s.symbol, s.score
+FROM github_my_issue i
+JOIN lynx_search s ON s.query = i.title
+WHERE i.state = 'open' AND s.source = 'app'
+ORDER BY i.number, s.score DESC;
+```
+
+Tables: `lynx_source` (indexed sources), `lynx_search` (semantic + lexical hits; `query` qual, optional `source` / `top_k`), `lynx_graph` (callers / callees / subclasses / imports; `operation` + `symbol` quals). Install, config, and the engine note (macOS / Linux / WSL2) in the **[plugin README](integrations/steampipe/steampipe-plugin-lynx/README.md)**.
+
 ## Documentation
 
 | | |
@@ -304,7 +323,7 @@ The code graph is one URL away too (`…/api/v1/graph?operation=callers&symbol=�
 | [Outline mode (token-efficient triage)](docs/OUTLINE.md) | `view=outline` — signatures instead of bodies; ~2.4× fewer tokens, with the measured data + chart |
 | [MCP recipes](docs/MCP_RECIPES.md) | Agent patterns combining Lynx with GitHub/Sentry/Jira MCP servers (triage, PR impact, ticket→code) |
 | [PR impact analysis (GitHub Action)](integrations/github-action/) | On every PR, comment with the downstream callers + semantically related code, indexed locally on the runner |
-| [Steampipe plugin (design spec)](integrations/steampipe/DESIGN.md) | Spec for a SQL plugin exposing `lynx_source`/`lynx_search`/`lynx_graph`, joinable with Steampipe's connectors — implementation TBD |
+| [Steampipe plugin](integrations/steampipe/steampipe-plugin-lynx/) | SQL plugin exposing `lynx_source`/`lynx_search`/`lynx_graph`, joinable with Steampipe's connectors (GitHub, Jira, AWS, …). Prebuilt macOS/Linux binaries on the [latest release](https://github.com/lorenzo-cambiaghi/LynxMCP/releases?q=steampipe) — no Go toolchain needed. |
 | [config.example.json](config.example.json) | Annotated example configuration |
 
 ## Status
