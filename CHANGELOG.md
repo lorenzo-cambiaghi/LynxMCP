@@ -8,9 +8,10 @@ Stabilization & bug-fixing release (plus one small tool that closes a loop).
 - **`lynx manager feedback`** — read & summarize the local feedback log. The
   MCP `feedback` tool appends to `<storage>/_feedback/feedback.jsonl` when an
   agent can't find what it needs, but nothing read it back. This command turns
-  those reports into an actionable summary (total, time span, which sources keep
-  coming up short, and the recent "trying to do / tried / stuck" entries).
-  Read-only, 100% local. `--limit N`, `--json`. Pinned by
+  those reports into a summary (total, time span, the recent "trying to do /
+  tried / stuck" entries, and the sources configured at report time). Read-only,
+  100% local, and it reads only `storage_path` from the config — so it works
+  even if a source folder has since moved. `--limit N`, `--json`. Pinned by
   `tests/test_manager_feedback.py`.
 
 ### Fixed

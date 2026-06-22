@@ -4,8 +4,10 @@ The MCP `feedback` tool appends a JSON line to
 `<storage_path>/_feedback/feedback.jsonl` whenever an agent couldn't find what
 it needed (100% local, never uploaded). That log was write-only: nothing read
 it back. This command closes the loop — it turns the collected reports into a
-summary the index owner can act on (which sources keep coming up short, what
-agents were trying to do, where they got stuck).
+summary the index owner can act on (how many reports, over what span, what
+agents were trying to do, and where they got stuck). Note: each report records
+the sources configured at that time (not the one that failed — the log doesn't
+carry that), so the per-source counts are "present at report time", not blame.
 
 The parsing/summarizing helpers are pure (no config, no I/O beyond reading the
 given file) so they're trivially testable; `run_feedback` just wires the active
@@ -91,7 +93,10 @@ def format_summary(summary: dict) -> str:
     if by_source:
         ranked = sorted(by_source.items(), key=lambda kv: kv[1], reverse=True)
         lines.append("")
-        lines.append(bold("By source (reports that named it):"))
+        # Each report records the sources configured at that moment (the agent's
+        # search spans them all), so this is "present when the report was filed",
+        # NOT "the source that failed" — the log doesn't carry that.
+        lines.append(bold("Sources configured when reports were filed:"))
         for name, count in ranked:
             lines.append(bullet(f"{name}: {count}"))
 
@@ -112,11 +117,27 @@ def format_summary(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def _storage_path_from_config(config_path: Path) -> Path:
+    """Read just `storage_path` from the config JSON, resolved relative to the
+    config file (mirrors `config._resolve_path` with the same default).
+
+    We deliberately do NOT go through `load_config`: that validates every
+    source (e.g. each codebase path must exist), and reading a local log
+    shouldn't fail just because one source folder has since moved.
+    """
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    sp = raw.get("storage_path", "./rag_storage")
+    p = Path(sp)
+    if not p.is_absolute():
+        p = (config_path.resolve().parent / p).resolve()
+    return p
+
+
 def run_feedback(args) -> int:
     """CLI entry point for `lynx manager feedback`."""
     import sys
 
-    from ..config import resolve_config_path, load_config
+    from ..config import resolve_config_path
 
     config_path = resolve_config_path(getattr(args, "config", None))
     if not config_path.is_file():
@@ -127,12 +148,13 @@ def run_feedback(args) -> int:
         )
         return 1
     try:
-        cfg = load_config(config_path)
-    except SystemExit as e:
-        # load_config exits on validation errors; surface a clean code.
-        return int(e.code) if isinstance(e.code, int) else 1
+        storage_path = _storage_path_from_config(config_path)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"error: could not read storage_path from {config_path}: {e}",
+              file=sys.stderr)
+        return 1
 
-    path = feedback_path_for(cfg.storage_path)
+    path = feedback_path_for(storage_path)
     records = load_feedback(path)
     limit = getattr(args, "limit", 10) or 10
     summary = summarize_feedback(records, limit=limit)

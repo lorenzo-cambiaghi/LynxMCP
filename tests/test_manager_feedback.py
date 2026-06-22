@@ -112,6 +112,26 @@ def test_run_feedback_no_log_yet(tmp_path, capsys):
     assert "No feedback recorded yet" in capsys.readouterr().out
 
 
+def test_run_feedback_works_with_invalid_source_path(tmp_path, capsys):
+    """Reading the log must not require every source to validate — only
+    storage_path is needed (a source folder may have since moved)."""
+    cfg = {
+        "config_version": 2,
+        "storage_path": str(tmp_path / "rag_storage"),
+        "sources": {
+            "gone": {"type": "codebase", "path": str(tmp_path / "does_not_exist")},
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
+    log = fb.feedback_path_for(tmp_path / "rag_storage")
+    _write_log(log, [_rec("2026-06-01", "find the thing", ["gone"])])
+
+    rc = fb.run_feedback(SimpleNamespace(config=str(config_path), limit=10, json=False))
+    assert rc == 0
+    assert "find the thing" in capsys.readouterr().out
+
+
 def test_run_feedback_missing_config(tmp_path, capsys):
     rc = fb.run_feedback(SimpleNamespace(
         config=str(tmp_path / "nope.json"), limit=10, json=False))
