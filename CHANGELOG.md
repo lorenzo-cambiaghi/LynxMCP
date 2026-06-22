@@ -51,6 +51,10 @@ Stabilization & bug-fixing release.
   Ignored directories are pruned during the walk (faster on big trees).
 
 ### Internal
+- **`server.py` slimmed down** (1472 → ~1110 lines): the pure output-formatting
+  helpers moved to `lynx/_format.py`, leaving `server.py` to tool registration
+  and bootstrap. The names are re-exported from `server.py`, so
+  `lynx.server._format_*` still resolves (no caller/test churn).
 - Removed an unreachable no-op branch in the cross-encoder reranker and refreshed
   its docstring.
 - Added `tests/test_fs_scan.py` (pure, model-free) covering extension/hidden
