@@ -416,10 +416,17 @@ class SourceManager:
             raise ValueError("queries must be a non-empty list of strings")
 
         thresholds = self.config.search.deep.score_thresholds
-        # Cross-source fusion uses RRF, so use the hybrid threshold (RRF scale)
-        # for weakness detection unless the caller overrode it explicitly.
+        # Pick the weakness threshold on the scale `search_all` actually returns:
+        #  - reranker ON  → cross-encoder scores (relevant > 0), so use 0.0;
+        #  - reranker OFF → RRF-fused scores, so use the hybrid (RRF) threshold.
+        # An explicit `min_score` always wins.
+        rerank_on = getattr(
+            getattr(self.config.search, "reranker", None), "enabled", False
+        )
         if min_score is not None:
             threshold = float(min_score)
+        elif rerank_on:
+            threshold = 0.0
         else:
             threshold = float(thresholds.get("hybrid", 0.012))
         eff_min_results = int(min_results) if min_results is not None else 2

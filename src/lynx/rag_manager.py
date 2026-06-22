@@ -213,7 +213,6 @@ _DRIFT_SEVERITY = {
     "chunker_version": DRIFT_CRITICAL,       # chunk boundaries / metadata change
     "supported_extensions": DRIFT_WARNING,   # missing files / orphan vectors
     "collection_name": DRIFT_WARNING,        # points at a different collection
-    "ignored_path_fragments": DRIFT_WARNING, # changes the set of indexed files
 }
 
 
@@ -1442,11 +1441,13 @@ class CodebaseRAG:
         are intentionally omitted: changing them has no effect on the stored
         vectors.
 
-        ignored_path_fragments IS tracked: it now flows through fs_scan into
-        `_list_candidate_files`, so changing it changes the indexed file set
-        (a WARNING-level drift). The SHA partitioner self-heals on the next
-        build — files that became ignored fall out of the candidate set and
-        their chunks are dropped as "removed".
+        ignored_path_fragments is deliberately NOT in the snapshot. It now
+        affects the indexed file set (via fs_scan), but the SHA partitioner
+        self-heals on the next build — files that became ignored fall out of
+        the candidate set and their chunks are dropped as "removed". Adding it
+        here would make every pre-upgrade index report a false WARNING drift
+        (the stored snapshot lacks the key, so `None != []` for the common
+        no-fragments case) — pure noise for the majority of users.
         """
         return {
             "codebase_path": str(self.codebase_path.resolve()),
@@ -1454,7 +1455,6 @@ class CodebaseRAG:
             "embedding_model_name": self.embedding_model_name,
             "collection_name": self.collection_name,
             "chunker_version": CHUNKER_VERSION,
-            "ignored_path_fragments": sorted(self.ignored_path_fragments),
         }
 
     def check_config_drift(self):

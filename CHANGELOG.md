@@ -12,9 +12,8 @@ Stabilization & bug-fixing release.
   into search results, while the watcher never refreshed them and the graph
   excluded them (the three layers disagreed). The index build now applies the
   same exclusion. The SHA partitioner self-heals on the next build: files that
-  became ignored fall out of the candidate set and their chunks are dropped.
-  Changing `ignored_path_fragments` is now reported as a WARNING-level config
-  drift.
+  became ignored fall out of the candidate set and their chunks are dropped — so
+  existing indexes upgrade silently (no manual rebuild or drift warning needed).
 - **Multi-segment ignore fragments now match on Windows.** Fragment matching is
   separator-agnostic (both path and fragment normalized to `/`), so a fragment
   like `src/generated` is excluded regardless of OS path separators.
