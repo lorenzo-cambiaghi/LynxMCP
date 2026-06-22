@@ -11,9 +11,14 @@ Stabilization & bug-fixing release.
   not — so vendored / build dirs were embedded into ChromaDB and BM25 and leaked
   into search results, while the watcher never refreshed them and the graph
   excluded them (the three layers disagreed). The index build now applies the
-  same exclusion. The SHA partitioner self-heals on the next build: files that
-  became ignored fall out of the candidate set and their chunks are dropped — so
-  existing indexes upgrade silently (no manual rebuild or drift warning needed).
+  same exclusion. New indexes exclude these files immediately. An existing index
+  that already embedded them clears them on its **next rebuild** — a `lynx build`
+  / `update_source_index(force=true)`, or an update triggered by a new git commit
+  (the SHA partitioner sees the now-ignored files leave the candidate set and
+  drops their chunks). A plain restart reuses the populated index as-is, so a
+  one-time rebuild is the way to clean a pre-existing index. No drift warning is
+  emitted (it would fire for every user, including those with no ignore
+  fragments).
 - **Multi-segment ignore fragments now match on Windows.** Fragment matching is
   separator-agnostic (both path and fragment normalized to `/`), so a fragment
   like `src/generated` is excluded regardless of OS path separators.
