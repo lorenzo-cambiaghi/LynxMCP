@@ -29,6 +29,7 @@ func tableLynxGraph(_ context.Context) *plugin.Table {
 			// Quals echoed back from the WHERE clause.
 			{Name: "operation", Type: proto.ColumnType_STRING, Transform: transform.FromQual("operation"), Description: "Graph operation (required qual): callers|callees|subclasses|superclasses|imports|neighbors."},
 			{Name: "symbol", Type: proto.ColumnType_STRING, Transform: transform.FromQual("symbol"), Description: "Symbol to pivot from (required qual; fuzzy, case-insensitive substring)."},
+			{Name: "source", Type: proto.ColumnType_STRING, Transform: transform.FromQual("source"), Description: "Restrict the graph pivot to one source (optional qual; omit to search every graph-enabled source)."},
 			{Name: "relation_filter", Type: proto.ColumnType_STRING, Transform: transform.FromQual("relation_filter"), Description: "For neighbors: restrict to one edge relation (optional qual)."},
 			{Name: "depth", Type: proto.ColumnType_INT, Transform: transform.FromQual("depth"), Description: "For neighbors: traversal depth 1-6 (optional qual)."},
 			{Name: "edge_limit", Type: proto.ColumnType_INT, Transform: transform.FromQual("edge_limit"), Description: "Max edges to fetch (optional qual; server clamps to 200)."},
