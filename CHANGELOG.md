@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.7.3 — 2026-06-22
+
+Stabilization & bug-fixing release.
+
+### Fixed
+- **`ignored_path_fragments` now excludes files from the vector index too.**
+  Previously the file watcher and the graph layer honored the configured ignore
+  fragments (`node_modules`, `dist`, `build`, …) but the vector-index build did
+  not — so vendored / build dirs were embedded into ChromaDB and BM25 and leaked
+  into search results, while the watcher never refreshed them and the graph
+  excluded them (the three layers disagreed). The index build now applies the
+  same exclusion. The SHA partitioner self-heals on the next build: files that
+  became ignored fall out of the candidate set and their chunks are dropped.
+  Changing `ignored_path_fragments` is now reported as a WARNING-level config
+  drift.
+- **Multi-segment ignore fragments now match on Windows.** Fragment matching is
+  separator-agnostic (both path and fragment normalized to `/`), so a fragment
+  like `src/generated` is excluded regardless of OS path separators.
+
+### Changed
+- **Single source of truth for the codebase file walk** (`lynx.fs_scan`). The
+  vector index (`rag_manager`) and the graph layer (`graph.builder`) shared two
+  near-identical copies of the directory walk + extension/ignore filtering; they
+  now both delegate to one module, which is what fixes the divergence above.
+  Ignored directories are pruned during the walk (faster on big trees).
+
+### Internal
+- Removed an unreachable no-op branch in the cross-encoder reranker and refreshed
+  its docstring.
+- Added `tests/test_fs_scan.py` (pure, model-free) covering extension/hidden
+  filtering, ignore-fragment exclusion, and separator-agnostic matching.
+
 ## 1.7.2 — 2026-06-22
 
 ### Added

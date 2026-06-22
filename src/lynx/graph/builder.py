@@ -332,24 +332,14 @@ class GraphLayer:
     # ------------------------------------------------------------------
 
     def _list_candidate_files(self) -> list:
-        out = []
-        exts = self.supported_extensions
-        ignored = self.ignored_path_fragments
-        root = str(self.codebase_path)
-        for dirpath, dirs, files in os.walk(root):
-            # Match SimpleDirectoryReader(exclude_hidden=True): skip dot dirs.
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for fn in files:
-                if fn.startswith("."):
-                    continue
-                ext = os.path.splitext(fn)[1].lower()
-                if ext not in exts:
-                    continue
-                full = os.path.normpath(os.path.join(dirpath, fn))
-                if ignored and any(frag in full.replace(os.sep, "/") for frag in ignored):
-                    continue
-                out.append(full)
-        return out
+        # Shared with the vector index (rag_manager) via fs_scan so the two
+        # layers never disagree on the file set.
+        from ..fs_scan import list_candidate_files
+        return list_candidate_files(
+            self.codebase_path,
+            self.supported_extensions,
+            self.ignored_path_fragments,
+        )
 
     # ------------------------------------------------------------------
     # Resolution

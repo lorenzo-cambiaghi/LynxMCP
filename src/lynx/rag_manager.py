@@ -58,6 +58,7 @@ import json
 from datetime import datetime
 
 from .chunking import chunk_file, CHUNKER_VERSION
+from . import fs_scan
 
 
 # ----------------------------------------------------------------------------
@@ -212,6 +213,7 @@ _DRIFT_SEVERITY = {
     "chunker_version": DRIFT_CRITICAL,       # chunk boundaries / metadata change
     "supported_extensions": DRIFT_WARNING,   # missing files / orphan vectors
     "collection_name": DRIFT_WARNING,        # points at a different collection
+    "ignored_path_fragments": DRIFT_WARNING, # changes the set of indexed files
 }
 
 
@@ -251,6 +253,7 @@ class CodebaseRAG:
         rrf_k: int = 60,
         candidate_pool_size: int = 30,
         reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
+        ignored_path_fragments=(),
     ):
         self.codebase_path = Path(codebase_path)
         self.storage_path = Path(rag_storage_path)
@@ -260,6 +263,12 @@ class CodebaseRAG:
         self.supported_extensions = frozenset(
             ext.lower() for ext in supported_extensions
         )
+
+        # Path fragments to exclude from indexing (e.g. node_modules, dist).
+        # Tracked as instance state because it now affects the indexed file set
+        # (so it's part of the drift config snapshot) and because the shared
+        # fs_scan walk needs it on every (re)build.
+        self.ignored_path_fragments = tuple(ignored_path_fragments or ())
 
         # Stored as instance state because they are part of the config snapshot
         # used for drift detection.
@@ -515,27 +524,18 @@ class CodebaseRAG:
             self._save_file_hashes()
 
     def _list_candidate_files(self) -> list:
-        """Return abs paths of files we would index, mirroring SimpleDirectoryReader.
+        """Return abs paths of files we would index — the canonical "what should
+        be in the index" set used by the SHA partitioner.
 
-        Walks self.codebase_path recursively, skipping dot-prefixed dirs/files
-        (matching `exclude_hidden=True`) and keeping only files whose extension
-        is in supported_extensions. The result is the canonical "what should
-        be in the index" set, used by the SHA partitioner.
+        Delegates to the shared `fs_scan.list_candidate_files` so the vector
+        index and the graph layer walk the codebase identically (same dot-dir
+        exclusion, same extension filter, same `ignored_path_fragments`).
         """
-        out = []
-        exts = self.supported_extensions
-        root_path = str(self.codebase_path)
-        for dirpath, dirs, files in os.walk(root_path):
-            # Match SimpleDirectoryReader(exclude_hidden=True): prune dot-dirs.
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for f in files:
-                if f.startswith("."):
-                    continue
-                if Path(f).suffix.lower() not in exts:
-                    continue
-                out.append(_norm(os.path.join(dirpath, f)))
-        out.sort()
-        return out
+        return fs_scan.list_candidate_files(
+            self.codebase_path,
+            self.supported_extensions,
+            self.ignored_path_fragments,
+        )
 
     def _partition_files(self, candidate_files: list) -> tuple:
         """Diff disk-state against the SHA cache.
@@ -1364,9 +1364,11 @@ class CodebaseRAG:
         are intentionally omitted: changing them has no effect on the stored
         vectors.
 
-        ignored_path_fragments is also omitted: it is currently consumed
-        only by the file watcher in mcp_server.py, not by SimpleDirectoryReader,
-        so it does not affect what is in the index.
+        ignored_path_fragments IS tracked: it now flows through fs_scan into
+        `_list_candidate_files`, so changing it changes the indexed file set
+        (a WARNING-level drift). The SHA partitioner self-heals on the next
+        build — files that became ignored fall out of the candidate set and
+        their chunks are dropped as "removed".
         """
         return {
             "codebase_path": str(self.codebase_path.resolve()),
@@ -1374,6 +1376,7 @@ class CodebaseRAG:
             "embedding_model_name": self.embedding_model_name,
             "collection_name": self.collection_name,
             "chunker_version": CHUNKER_VERSION,
+            "ignored_path_fragments": sorted(self.ignored_path_fragments),
         }
 
     def check_config_drift(self):
