@@ -41,7 +41,7 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 
 ---
 
-- **AST-aware indexing** — tree-sitter parses 18+ languages and indexes whole functions/classes, not arbitrary text windows.
+- **AST-aware indexing** — tree-sitter parses 18+ languages (19 grammars, counting TSX) and indexes whole functions/classes, not arbitrary text windows.
 - **Hybrid retrieval** — dense embeddings + code-tokenized BM25, fused with RRF; optional cross-encoder reranker.
 - **Token-efficient triage** — `view=outline` returns signatures instead of bodies, so an agent scans the candidates for **~2.4× fewer tokens** and reads only the code it picks ([measured](docs/OUTLINE.md)).
 - **Code knowledge graph (opt-in)** — who-calls-what, inheritance, imports: ask "what breaks if I change this?" and get the actual blast radius — or **export it as a single, shareable, offline graph view** (`lynx graph export`).

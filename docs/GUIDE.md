@@ -1888,7 +1888,9 @@ come back as complete functions the AI can immediately reason about.
 
 The chunker uses **tree-sitter** with per-language grammars bundled in
 their own pip packages — no runtime downloads, no network calls (the
-"100% local" guarantee holds). Supported languages out of the box:
+"100% local" guarantee holds). Supported **out of the box: 18+ languages
+(19 tree-sitter grammars, counting TSX)** — every row below, plus a `.tsx`
+grammar distinct from `.ts`. The code graph covers all of them except SQL.
 
 | Extension | Language | Chunked on |
 |---|---|---|
@@ -2254,7 +2256,8 @@ Graph layer (opt-in, `graph: { enabled: true }`):
 ```
 
 Both layers parse the source files via the **same tree-sitter parsers**
-(18 languages, sharing the parser cache), and both are kept in sync by
+(18+ languages / 19 grammars, sharing the parser cache; the graph covers
+all but SQL), and both are kept in sync by
 the same file watcher (~2s after each save). The graph layer is
 backward-compatible: leave it off and nothing changes.
 
@@ -2373,7 +2376,7 @@ lynx/
 │       │                      + graph layer pass-through
 │       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
 │       │                      per-file SHA-256 incremental cache
-│       ├── chunking.py        AST-aware chunker (tree-sitter for 18 languages +
+│       ├── chunking.py        AST-aware chunker (tree-sitter, 18+ languages / 19 grammars +
 │       │                      SentenceSplitter fallback) with CHUNKER_VERSION,
 │       │                      exposes `parse_file()` shared with graph layer
 │       ├── config.py          v2 config loader with per-type validation
@@ -2458,7 +2461,7 @@ lynx/
   is the explicit `webdoc` fetch, which the user triggers themselves —
   there is no implicit egress for `codebase` sources.
 - **AST chunking, not token windows.** Code is split at function / method /
-  class boundaries via tree-sitter (18 languages supported); other text falls
+  class boundaries via tree-sitter (18+ languages / 19 grammars supported); other text falls
   back to the legacy sentence-window splitter. Each chunk carries a
   qualified `symbol_name` and a 1-based `start_line`/`end_line` range so the
   AI can cite precisely (`Container.cs:L555-580`). Bumping `CHUNKER_VERSION`
