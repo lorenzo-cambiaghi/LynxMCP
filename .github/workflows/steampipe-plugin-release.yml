@@ -1,0 +1,106 @@
+name: Steampipe plugin release
+
+# Cross-compiles the Steampipe plugin for macOS and Linux (amd64 + arm64) and
+# attaches the binaries to a GitHub Release, so end users can install without a
+# Go toolchain. The plugin is pure Go (CGO disabled), so all four targets build
+# on a single Linux runner.
+#
+# Note: the Steampipe *engine* runs only on macOS/Linux (or WSL2 on Windows),
+# so there is no native Windows binary to ship.
+#
+# Trigger:
+#   - push a tag like `steampipe-v0.1.0`  -> builds + publishes a Release
+#   - run manually (workflow_dispatch)     -> builds artifacts only (no Release)
+
+on:
+  push:
+    tags: ["steampipe-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: integrations/steampipe/steampipe-plugin-lynx
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: integrations/steampipe/steampipe-plugin-lynx/go.mod
+          cache-dependency-path: integrations/steampipe/steampipe-plugin-lynx/go.sum
+
+      - name: Determine version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#steampipe-v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.0-dev" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build + package all targets
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            stage="dist/stage/${os}_${arch}"
+            mkdir -p "$stage"
+            GOOS=$os GOARCH=$arch go build -mod=readonly -tags netgo \
+              -o "$stage/lynx.plugin" .
+            cp config/lynx.spc "$stage/lynx.spc"
+            cp README.md "$stage/README.md"
+            tar -C "$stage" -czf \
+              "dist/steampipe-plugin-lynx_${VERSION}_${os}_${arch}.tar.gz" .
+            echo "  packaged: ${os}_${arch}"
+          done
+          ( cd dist && shasum -a 256 *.tar.gz > SHA256SUMS )
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steampipe-plugin-lynx
+          path: integrations/steampipe/steampipe-plugin-lynx/dist/*
+          if-no-files-found: error
+
+      - name: Publish Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            integrations/steampipe/steampipe-plugin-lynx/dist/*.tar.gz
+            integrations/steampipe/steampipe-plugin-lynx/dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## steampipe-plugin-lynx ${{ github.ref_name }}
+
+            A local Steampipe plugin that exposes Lynx (semantic code search +
+            code knowledge graph) as SQL tables. **No Go toolchain needed** —
+            download the build for your platform below.
+
+            ### Install
+            1. Download `steampipe-plugin-lynx_..._<os>_<arch>.tar.gz` for your
+               platform from **Assets** (verify against `SHA256SUMS` if you like).
+            2. Extract and place the plugin binary:
+               ```bash
+               mkdir -p ~/.steampipe/plugins/local/lynx
+               tar xzf steampipe-plugin-lynx_*.tar.gz
+               mv lynx.plugin ~/.steampipe/plugins/local/lynx/lynx.plugin
+               mkdir -p ~/.steampipe/config && cp lynx.spc ~/.steampipe/config/lynx.spc
+               ```
+            3. Start the Lynx backend (`lynx manager ui --port 8765 --no-browser`)
+               and query, e.g.:
+               ```bash
+               steampipe query "select name, type, chunk_count from lynx_source;"
+               ```
+
+            > The Steampipe engine runs on **macOS/Linux** (or **WSL2** on
+            > Windows) — there is no native Windows build.
