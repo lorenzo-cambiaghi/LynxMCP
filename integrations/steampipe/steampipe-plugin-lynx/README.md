@@ -9,6 +9,30 @@ It is a thin SQL skin over Lynx's stable, already-shipped `/api/v1` HTTP API; th
 design (tables, columns, qual → query-param mapping) is in
 [`../DESIGN.md`](../DESIGN.md).
 
+> **Platform note:** the Steampipe **engine** runs on **macOS / Linux** (or
+> **WSL2** on Windows). There is no native-Windows build — on Windows, run it
+> inside WSL2. You can still *write and compile* the plugin on any OS
+> (`go build ./...`); only *running* it needs the engine.
+
+## Install (prebuilt — no Go toolchain)
+
+Grab the build for your platform from the
+[latest release](https://github.com/lorenzo-cambiaghi/LynxMCP/releases?q=steampipe)
+(assets named `steampipe-plugin-lynx_<version>_<os>_<arch>.tar.gz`):
+
+```bash
+mkdir -p ~/.steampipe/plugins/local/lynx ~/.steampipe/config
+tar xzf steampipe-plugin-lynx_*_<os>_<arch>.tar.gz
+mv lynx.plugin ~/.steampipe/plugins/local/lynx/lynx.plugin
+cp lynx.spc  ~/.steampipe/config/lynx.spc       # only if you don't have one yet
+```
+
+Then start the Lynx backend and query (see [Query](#query) below). Optionally
+verify the download against the release's `SHA256SUMS`.
+
+Prefer building from source instead? See
+[Develop / build / test](#develop--build--test).
+
 ## Tables
 
 | Table | Endpoint | Required quals |
@@ -37,25 +61,51 @@ Honest caveat: N joined rows = N embedding passes; for large N, prefer Lynx's
 ## Develop / build / test
 
 Writing and compile-checking work anywhere (incl. Windows). **Running** needs the
-Steampipe engine → macOS or Linux.
+Steampipe engine → macOS, Linux, or WSL2. `go.sum` is committed, so `go mod tidy`
+is only needed when you change dependencies.
 
 ```bash
-# 1. one-time: pull the SDK + transitive deps, write go.sum
-go mod tidy
-
-# 2. compile-check (Windows-friendly, no engine)
+# compile-check (Windows-friendly, no engine)
 make build      # or: go build ./...
+go vet ./...
 
-# 3. build + install as a local plugin (macOS/Linux)
+# build + install as a local plugin (macOS/Linux/WSL2)
 make install    # -> ~/.steampipe/plugins/local/lynx/lynx.plugin
 
-# 4. config: copy config/lynx.spc -> ~/.steampipe/config/lynx.spc
-#    (start the backend first: lynx manager ui --port 8765 --no-browser)
+# config: copy config/lynx.spc -> ~/.steampipe/config/lynx.spc
+cp config/lynx.spc ~/.steampipe/config/lynx.spc
+```
 
-# 5. query
+## Query
+
+Start the backend first (`lynx manager ui --port 8765 --no-browser`), then:
+
+```bash
 steampipe query "select name, type, chunk_count from lynx_source;"
 steampipe query "select file, symbol, score from lynx_search where query = 'where the camera zoom is clamped' and source = 'framework' and top_k = 10;"
 steampipe query "select from_symbol, from_file from lynx_graph where operation = 'callers' and symbol = 'ApplyDamage';"
+```
+
+## CI & releasing
+
+Two GitHub Actions workflows cover this plugin:
+
+- **`steampipe-plugin-ci.yml`** — on every push/PR that touches
+  `integrations/steampipe/**`: `go build`, `go vet`, a cross-compile sanity
+  check for all release targets, and a **load-validation** job that installs the
+  Steampipe engine and asserts it accepts the plugin. That last check catches
+  bugs invisible to `go build` (e.g. a key column without a matching column),
+  which is the safety net when developing on Windows.
+- **`steampipe-plugin-release.yml`** — cross-compiles macOS/Linux × amd64/arm64,
+  packages each as a `.tar.gz` (binary + `lynx.spc` + this README) plus a
+  `SHA256SUMS`, and publishes them to a GitHub Release.
+
+Cut a release by pushing a dedicated tag (independent of the Lynx app's `v*`
+tags):
+
+```bash
+git tag steampipe-v0.1.0
+git push origin steampipe-v0.1.0
 ```
 
 ## Connection config

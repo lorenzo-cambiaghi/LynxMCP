@@ -1,0 +1,87 @@
+name: Steampipe plugin CI
+
+# Compile-checks and validates the Steampipe plugin on every change that
+# touches it. This is the safety net for developing on Windows, where the
+# Steampipe *engine* cannot run: `go build`/`go vet` catch compile errors, and
+# the load-validation job below catches the class of bug that only surfaces
+# when the engine loads the plugin (e.g. a key column with no matching column),
+# which `go build` does NOT detect.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "integrations/steampipe/**"
+      - ".github/workflows/steampipe-plugin-ci.yml"
+  pull_request:
+    paths:
+      - "integrations/steampipe/**"
+      - ".github/workflows/steampipe-plugin-ci.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: integrations/steampipe/steampipe-plugin-lynx
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: integrations/steampipe/steampipe-plugin-lynx/go.mod
+          cache-dependency-path: integrations/steampipe/steampipe-plugin-lynx/go.sum
+
+      - name: go build
+        run: go build -mod=readonly ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: cross-compile sanity (all release targets)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} \
+              go build -mod=readonly -tags netgo -o /dev/null .
+            echo "  ok: $target"
+          done
+
+  validate-load:
+    # Installs the Steampipe engine, builds + installs the plugin as a local
+    # connection, and asserts the engine accepts it. No Lynx backend and no
+    # models are needed — connection/table validation happens at load time,
+    # before any API call. This is exactly what could not be tested on Windows.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: integrations/steampipe/steampipe-plugin-lynx/go.mod
+          cache-dependency-path: integrations/steampipe/steampipe-plugin-lynx/go.sum
+
+      - name: Install Steampipe
+        run: /bin/sh -c "$(curl -fsSL https://steampipe.io/install/steampipe.sh)"
+
+      - name: Build + install the plugin locally
+        run: make install
+
+      - name: Install connection config
+        run: |
+          mkdir -p ~/.steampipe/config
+          cp config/lynx.spc ~/.steampipe/config/lynx.spc
+
+      - name: Assert the engine loads the plugin
+        run: |
+          set -o pipefail
+          out="$(steampipe plugin list 2>&1)" || true
+          echo "$out"
+          if echo "$out" | grep -Eiq "plugin failed to start|validation failed|does not exist in table"; then
+            echo "::error::Steampipe rejected the lynx plugin connection (see output above)"
+            exit 1
+          fi
+          echo "Steampipe accepted the lynx connection."
