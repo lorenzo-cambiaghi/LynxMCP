@@ -20,6 +20,12 @@ Stabilization & bug-fixing release.
   like `src/generated` is excluded regardless of OS path separators.
 
 ### Changed
+- **Cross-source reranking in `search_all`.** When the cross-encoder reranker is
+  enabled, a search across all sources (the no-`source` path) now reorders the
+  *merged* candidate pool by content relevance instead of fusing per-source
+  rankings by position only — so the final cross-source order is content-aware,
+  not just RRF. Disabled by default, so existing behavior (pure RRF) is
+  unchanged. Falls back to RRF if the reranker can't load or errors.
 - **BM25: incremental cache on watcher edits.** Editing one file used to
   invalidate the entire BM25 index, so the next search re-read the whole
   collection from ChromaDB and re-ran the (regex-heavy) code tokenizer over
