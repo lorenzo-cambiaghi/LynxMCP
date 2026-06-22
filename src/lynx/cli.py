@@ -228,6 +228,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Config file to read for model name detection (used by --model).",
     )
 
+    sp_mgr_feedback = manager_sub.add_parser(
+        "feedback",
+        help="Summarize the local feedback log (reports agents filed when the "
+             "index couldn't answer). Read-only; nothing leaves your machine.",
+    )
+    sp_mgr_feedback.add_argument("--config", "-c", metavar="PATH")
+    sp_mgr_feedback.add_argument(
+        "--limit", type=int, default=10,
+        help="How many recent reports to show (default 10).",
+    )
+    sp_mgr_feedback.add_argument(
+        "--json", action="store_true",
+        help="Output the summary as JSON instead of colored text.",
+    )
+
     sp_mgr_ui = manager_sub.add_parser(
         "ui",
         help="Launch the local web UI (FastAPI + HTMX). Listens only on "
@@ -715,7 +730,7 @@ def _cmd_manager(args) -> int:
     if sub is None:
         print(
             "error: `lynx manager` requires a sub-command "
-            "(init | doctor | install | ui).\n"
+            "(init | doctor | install | feedback | ui).\n"
             "Run `lynx manager --help` for details.",
             file=sys.stderr,
         )

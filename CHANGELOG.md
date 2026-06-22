@@ -2,7 +2,16 @@
 
 ## 1.7.3 — 2026-06-22
 
-Stabilization & bug-fixing release.
+Stabilization & bug-fixing release (plus one small tool that closes a loop).
+
+### Added
+- **`lynx manager feedback`** — read & summarize the local feedback log. The
+  MCP `feedback` tool appends to `<storage>/_feedback/feedback.jsonl` when an
+  agent can't find what it needs, but nothing read it back. This command turns
+  those reports into an actionable summary (total, time span, which sources keep
+  coming up short, and the recent "trying to do / tried / stuck" entries).
+  Read-only, 100% local. `--limit N`, `--json`. Pinned by
+  `tests/test_manager_feedback.py`.
 
 ### Fixed
 - **`ignored_path_fragments` now excludes files from the vector index too.**
