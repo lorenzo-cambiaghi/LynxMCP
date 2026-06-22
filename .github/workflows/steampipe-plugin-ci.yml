@@ -65,7 +65,12 @@ jobs:
           cache-dependency-path: integrations/steampipe/steampipe-plugin-lynx/go.sum
 
       - name: Install Steampipe
-        run: /bin/sh -c "$(curl -fsSL https://steampipe.io/install/steampipe.sh)"
+        # The installer drops the binary into /usr/local/bin and chmods that
+        # dir, which the unprivileged runner user can't do ("Operation not
+        # permitted"). Run it under sudo — ubuntu runners allow passwordless
+        # sudo, and the binary ends up world-executable so later non-root
+        # steampipe calls (writing to ~/.steampipe) still work.
+        run: sudo /bin/sh -c "$(curl -fsSL https://steampipe.io/install/steampipe.sh)"
 
       - name: Build + install the plugin locally
         run: make install
