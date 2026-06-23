@@ -78,12 +78,28 @@ cp config/lynx.spc ~/.steampipe/config/lynx.spc
 
 ## Query
 
-Start the backend first (`lynx manager ui --port 8765 --no-browser`), then:
+Start the backend first (`lynx manager ui --port 8765 --no-browser`).
+
+First, a **smoke test that works on any index** — it just lists the sources you
+have indexed and confirms the plugin can reach the Lynx API:
 
 ```bash
 steampipe query "select name, type, chunk_count from lynx_source;"
-steampipe query "select file, symbol, score from lynx_search where query = 'where the camera zoom is clamped' and source = 'framework' and top_k = 10;"
-steampipe query "select from_symbol, from_file from lynx_graph where operation = 'callers' and symbol = 'ApplyDamage';"
+```
+
+The search and graph queries need values **from your own codebase**, so the
+examples below are *illustrative placeholders* — substitute a real `source` name
+(from the smoke test above) and symbols/behaviors that exist in your code (the
+literals here — `framework`, `camera zoom`, `ApplyDamage` — come from an
+example source index that isn't included, so they won't match yours):
+
+```bash
+# semantic + lexical search: describe the behavior in words.
+# `source` and `top_k` are optional; omit `source` to search everything.
+steampipe query "select file, symbol, score from lynx_search where query = '<what the code does>' and source = '<your-source>' and top_k = 10;"
+
+# code graph: who calls a symbol that exists in your code?
+steampipe query "select from_symbol, from_file from lynx_graph where operation = 'callers' and symbol = '<YourSymbol>';"
 ```
 
 ## CI & releasing
