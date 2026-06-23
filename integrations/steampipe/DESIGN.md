@@ -4,10 +4,11 @@ Design for a [Steampipe](https://steampipe.io) plugin that exposes Lynx's local
 code search + code graph as SQL tables, joinable with Steampipe's large catalogue
 of connectors (GitHub, Jira, AWS, …).
 
-This is a **spec**, not an implementation — the plugin is Go and lives in its own
-repo by convention (`steampipe-plugin-lynx`). Everything below maps onto Lynx's
-already-shipped, tested `/api/v1` contract, so the Go code is a thin SQL skin
-over HTTP.
+**Status:** ✅ Implemented and released as `steampipe-v0.1.0`. The Go plugin lives
+in this repo at [`steampipe-plugin-lynx/`](steampipe-plugin-lynx/) (kept in-repo
+alongside Lynx — not a separate repo). This doc is retained as design rationale.
+Everything below maps onto Lynx's already-shipped, tested `/api/v1` contract, so
+the Go code is a thin SQL skin over HTTP.
 
 ## Why Steampipe (and how it differs from Coral)
 

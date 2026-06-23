@@ -1,6 +1,8 @@
 # Design — self-contained HTML export of the code graph
 
-**Status:** draft for review (not implemented)
+**Status:** ✅ Implemented in Lynx 1.7.2 — shipped as the `export_graph` MCP tool
+and the `lynx graph export` CLI. This doc is kept as design rationale and still
+uses the original draft names (`export_graph_html` / `lynx graph report`).
 **Owner:** lcambiaghi
 **Related:** `lynx/graph/query.py`, `impact`/`describe_symbol` tools, the
 deterministic-SVG pattern already used for `docs/img/cost_savings.svg`.
