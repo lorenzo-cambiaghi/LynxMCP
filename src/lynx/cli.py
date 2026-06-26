@@ -217,15 +217,16 @@ def _build_parser() -> argparse.ArgumentParser:
     install_group.add_argument(
         "--from-archive", metavar="PATH_OR_URL",
         help="Import a model archive into the local HF cache (offline / "
-             "air-gapped). Accepts a local path or a direct http(s) URL "
-             "(e.g. a Google Drive download link). The archive must contain "
-             "the `models--ORG--NAME/` layout produced by --export-archive.",
+             "air-gapped). Accepts a local path or a direct http(s) URL that "
+             "serves the file with no auth/interstitial (e.g. a public GitHub "
+             "Release asset). The archive must contain the `models--ORG--NAME/` "
+             "layout produced by --export-archive.",
     )
     install_group.add_argument(
         "--export-archive", metavar="PATH",
         help="Zip the cached model's HF directory to PATH so it can be shared "
-             "(e.g. uploaded to Google Drive) and imported elsewhere with "
-             "--from-archive.",
+             "(copy it to the offline machine, or host it as a public download) "
+             "and imported elsewhere with --from-archive.",
     )
     install_group.add_argument(
         "extra", nargs="?", metavar="EXTRA",

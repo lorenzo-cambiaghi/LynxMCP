@@ -152,7 +152,7 @@ The embedding model is a **public** HuggingFace model (`BAAI/bge-small-en-v1.5`,
   export HF_HOME=/shared/hf-cache            # optional: shared/persistent cache
   lynx manager install --model
   ```
-- **Transfer an archive** — on a machine *with* access, export the model, copy/upload the file (e.g. to Google Drive), then import it on the offline machine:
+- **Transfer an archive** — on a machine *with* access, export the model, copy the file to the offline machine (USB, `scp`, an internal share…), then import it:
   ```bash
   # online machine
   lynx manager install --model
@@ -160,9 +160,9 @@ The embedding model is a **public** HuggingFace model (`BAAI/bge-small-en-v1.5`,
 
   # offline machine — local path or a direct download URL both work
   lynx manager install --from-archive /path/to/bge-small.zip
-  lynx manager install --from-archive "https://drive.google.com/uc?export=download&id=<FILE_ID>"
+  lynx manager install --from-archive "https://<host>/bge-small.zip"
   ```
-  For Google Drive, use the **direct download** form `https://drive.google.com/uc?export=download&id=<FILE_ID>` (take `<FILE_ID>` from the share link `.../file/d/<FILE_ID>/view`).
+  A URL only works if it serves the file **directly, with no authentication and no interstitial page**. A GitHub Release asset on a public repo is the easiest option — the bundled `Publish model archive` workflow can create one for you. **Google Drive does *not* work as a `--from-archive` URL** for this model: for files larger than ~100MB Drive returns a "can't scan for viruses" HTML page instead of the file, so the import would get HTML, not a zip (Lynx detects this and tells you). Use Drive only to hand the file to a person, who downloads it in a browser and passes the **local path**.
 - **Check what's configured** — `lynx manager doctor` reports the active cache dir, whether a mirror is set, and whether the model is present.
 
 ## Why not just let the agent grep?

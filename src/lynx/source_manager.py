@@ -153,7 +153,8 @@ class SourceManager:
             f"  - set HF_ENDPOINT to a reachable mirror, then retry the install\n"
             f"  - `lynx manager install --from-archive <path|url>` (offline / "
             f"air-gapped: import a model archive shared from another machine).\n"
-            f"Do NOT `lynx reset` — the index is fine; this is a model issue.",
+            f"This is almost certainly a model issue, so `lynx reset` won't "
+            f"help (it rebuilds the index but still needs the model).",
             file=sys.stderr,
         )
 

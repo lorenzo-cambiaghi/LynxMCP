@@ -170,7 +170,7 @@ def check_hf_endpoint() -> CheckResult:
             "restricted network, set it to a reachable mirror, or import a "
             "shared archive via `lynx manager install --from-archive`."
         )
-        summary = "huggingface.co (default)"
+        summary = "huggingface.co (default; reachability not checked)"
     return CheckResult(
         name="HF endpoint",
         status=STATUS_OK,

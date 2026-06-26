@@ -20,6 +20,8 @@ Scenarios:
  13. import_model_archive from an http(s) URL (mocked urlopen)
  14. run_install dispatches --from-archive / --export-archive
  15. export_model_archive fails cleanly when the model isn't cached
+ 16. import rejects an HTML body (auth page / Drive interstitial) clearly
+ 17. export skips blobs/ (no double-zip) and still round-trips
 """
 from __future__ import annotations
 
@@ -83,9 +85,13 @@ def main() -> int:
         # ============================================================
         # 3. install_extra invokes `python -m pip install lynx[extra]`
         # ============================================================
+        # Three probes: pre-check (not installed) → pre-check again (still not)
+        # → post-pip re-check (now installed). Anything else takes the
+        # "already installed" short-circuit and never calls pip — which fails
+        # in dev envs where pymupdf happens to be present.
         with mock.patch("subprocess.run") as mock_run, \
              mock.patch.object(install, "_is_installed",
-                               side_effect=[False, True]) as mock_check:
+                               side_effect=[False, False, True]) as mock_check:
             mock_run.return_value = mock.MagicMock(returncode=0)
             rc = install.install_extra("pdf-fast")
         if rc != 0:
@@ -99,7 +105,9 @@ def main() -> int:
         if called_cmd[1:4] != ["-m", "pip", "install"]:
             print(f"[test] FAIL [3/10]: not invoking pip module: {called_cmd}")
             return 3
-        if not called_cmd[-1].startswith("lynx[pdf-fast"):
+        # install_extra installs the requirement directly (`pymupdf>=…`), not
+        # `lynx[pdf-fast]` — see the comment on KNOWN_EXTRAS["pdf-fast"].
+        if not called_cmd[-1].startswith("pymupdf"):
             print(f"[test] FAIL [3/10]: extra spec wrong: {called_cmd}")
             return 3
         print(f"[test] OK [3/10] install_extra: correct pip command")
@@ -340,13 +348,89 @@ def main() -> int:
             os.environ["HF_HUB_CACHE"] = str(empty)
             rc = install.export_model_archive(None, str(tmp / "nope.zip"), None)
             if rc != 2:
-                print(f"[test] FAIL [15/15]: export of missing model should be 2, got {rc}")
+                print(f"[test] FAIL [15/17]: export of missing model should be 2, got {rc}")
                 return 15
         finally:
             os.environ.pop("HF_HUB_CACHE", None)
             if saved_cache_env is not None:
                 os.environ["HF_HUB_CACHE"] = saved_cache_env
-        print(f"[test] OK [15/15] export of uncached model fails cleanly")
+        print(f"[test] OK [15/17] export of uncached model fails cleanly")
+
+        # ============================================================
+        # 16. HTML body (e.g. Google Drive interstitial / auth page) is
+        #     rejected with a clear error, not a cryptic BadZipFile.
+        # ============================================================
+        saved_cache_env = os.environ.pop("HF_HUB_CACHE", None)
+        try:
+            cache = tmp / "cache-html"
+            cache.mkdir()
+            os.environ["HF_HUB_CACHE"] = str(cache)
+            html = tmp / "not-a-model.zip"  # .zip suffix but HTML content
+            html.write_text(
+                "<!DOCTYPE html><html><head><title>Google Drive - "
+                "Virus scan warning</title></head><body>...</body></html>",
+                encoding="utf-8",
+            )
+            rc = install.import_model_archive(str(html), None, None)
+            if rc != 2:
+                print(f"[test] FAIL [16/17]: HTML import should fail with 2, got {rc}")
+                return 16
+            from lynx.config import _hf_model_cached as _cached16
+            if _cached16("BAAI/bge-small-en-v1.5"):
+                print(f"[test] FAIL [16/17]: HTML import should not cache anything")
+                return 16
+            print(f"[test] OK [16/17] HTML-not-archive rejected cleanly")
+        finally:
+            os.environ.pop("HF_HUB_CACHE", None)
+            if saved_cache_env is not None:
+                os.environ["HF_HUB_CACHE"] = saved_cache_env
+
+        # ============================================================
+        # 17. export skips the blobs/ store so content isn't zipped twice.
+        #     Real HF caches keep blobs/<sha> + snapshots/<rev>/file→blob;
+        #     including both doubles the archive size.
+        # ============================================================
+        import zipfile as _zip17
+        saved_cache_env = os.environ.pop("HF_HUB_CACHE", None)
+        try:
+            cache = tmp / "cache-blobs"
+            cache.mkdir()
+            os.environ["HF_HUB_CACHE"] = str(cache)
+            model = "BAAI/bge-small-en-v1.5"
+            safe = model.replace("/", "--")
+            mdir = cache / f"models--{safe}"
+            (mdir / "blobs").mkdir(parents=True)
+            (mdir / "blobs" / "deadbeef").write_text("BIGWEIGHTS", encoding="utf-8")
+            snap = mdir / "snapshots" / "rev1"
+            snap.mkdir(parents=True)
+            (snap / "config.json").write_text("{}", encoding="utf-8")
+            (mdir / "refs").mkdir()
+            (mdir / "refs" / "main").write_text("rev1", encoding="utf-8")
+
+            out = tmp / "dedup.zip"
+            rc = install.export_model_archive(model, str(out), None)
+            if rc != 0 or not out.is_file():
+                print(f"[test] FAIL [17/17]: export rc={rc}, exists={out.is_file()}")
+                return 17
+            names = _zip17.ZipFile(out).namelist()
+            if any("/blobs/" in n or n.endswith("/blobs") for n in names):
+                print(f"[test] FAIL [17/17]: blobs/ should be excluded: {names}")
+                return 17
+            if not any(n.endswith("snapshots/rev1/config.json") for n in names):
+                print(f"[test] FAIL [17/17]: snapshot file missing from zip: {names}")
+                return 17
+            # And it must still round-trip into a usable cache.
+            shutil.rmtree(cache); cache.mkdir()
+            from lynx.config import _hf_model_cached as _cached17
+            if install.import_model_archive(str(out), model, None) != 0 \
+                    or not _cached17(model):
+                print(f"[test] FAIL [17/17]: blob-free archive didn't import")
+                return 17
+            print(f"[test] OK [17/17] export excludes blobs/, still round-trips")
+        finally:
+            os.environ.pop("HF_HUB_CACHE", None)
+            if saved_cache_env is not None:
+                os.environ["HF_HUB_CACHE"] = saved_cache_env
 
         print("\n[test] === SUCCESS: install works as expected ===")
         return 0

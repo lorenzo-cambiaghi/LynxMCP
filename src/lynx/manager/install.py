@@ -8,7 +8,7 @@ Modes:
     HF cache. Without an argument, reads the embedding model from the
     active config. With `--with-reranker`, also downloads the reranker.
   - `lynx manager install --export-archive PATH` — zip a cached model so it
-    can be shared (e.g. via Google Drive).
+    can be shared (copied to the offline machine, or hosted for download).
   - `lynx manager install --from-archive PATH_OR_URL` — import such an
     archive into the HF cache on a machine that can't reach huggingface.co
     (offline / air-gapped / firewalled).
@@ -261,9 +261,12 @@ def _config_embed_model(config_path: Optional[Path]) -> str:
 
 
 def _normalize_archive_source(src: str):
-    """Classify an archive location. Returns ('url', src) for http(s) URLs
-    (including already-direct Google Drive `uc?export=download&id=...` links),
-    else ('path', src) for a local filesystem path. Pure — no I/O."""
+    """Classify an archive location. Returns ('url', src) for http(s) URLs,
+    else ('path', src) for a local filesystem path. Pure — no I/O.
+
+    Note: a URL must serve the file directly (no auth, no HTML interstitial).
+    `_extract_archive` rejects an HTML body with a clear error — see the
+    Google Drive caveat there."""
     lowered = src.strip().lower()
     if lowered.startswith("http://") or lowered.startswith("https://"):
         return ("url", src.strip())
@@ -285,6 +288,25 @@ def _extract_archive(archive: Path, dest: Path) -> int:
     import tarfile
     import zipfile
 
+    # Guard against "downloaded an HTML page instead of the archive": a URL that
+    # needs auth, or a Google Drive "can't scan for viruses" interstitial that
+    # appears for files larger than ~100MB. Without this the user just sees a
+    # cryptic BadZipFile.
+    try:
+        head = archive.read_bytes()[:512].lstrip().lower()
+    except OSError:
+        head = b""
+    if head.startswith((b"<!doctype html", b"<html", b"<?xml", b"<head")):
+        print(error(
+            f"{archive.name} is an HTML page, not a model archive. The URL "
+            f"likely needs authentication, or it's a Google Drive page shown "
+            f"for files larger than ~100MB. Download the file in a browser and "
+            f"pass the local path to --from-archive, or host it where a direct "
+            f"unauthenticated download works (e.g. a GitHub Release asset on a "
+            f"public repo)."
+        ))
+        return 2
+
     name = archive.name.lower()
     dest.mkdir(parents=True, exist_ok=True)
     try:
@@ -301,7 +323,13 @@ def _extract_archive(archive: Path, dest: Path) -> int:
                     if not _is_within(dest, dest / member.name):
                         print(error(f"refusing unsafe path in archive: {member.name!r}"))
                         return 2
-                tf.extractall(dest)
+                try:
+                    # Python 3.12+: also blocks unsafe members (absolute paths,
+                    # `..`, and symlinks whose TARGET escapes dest — our name
+                    # check above doesn't validate link targets).
+                    tf.extractall(dest, filter="data")
+                except TypeError:
+                    tf.extractall(dest)  # older Python: name pre-check is our guard
         else:
             print(error(f"unsupported archive type: {archive.name} "
                         f"(use .zip, .tar.gz, .tgz, or .tar)"))
@@ -316,10 +344,12 @@ def import_model_archive(archive: str, model_name: Optional[str],
                          config_path: Optional[Path]) -> int:
     """Import a model archive into the local HF hub cache (offline path).
 
-    `archive` is a local path or an http(s) URL (a direct Google Drive
-    download link works as a plain URL). The archive must contain the HF hub
-    layout `models--ORG--NAME/...` (what `export_model_archive` produces). On
-    success the model is usable fully offline — no huggingface.co needed.
+    `archive` is a local path or an http(s) URL that serves the file directly
+    (no auth, no HTML interstitial — a public GitHub Release asset works; a
+    Google Drive link for a >100MB file does NOT, see `_extract_archive`). The
+    archive must contain the HF hub layout `models--ORG--NAME/...` (what
+    `export_model_archive` produces). On success the model is usable fully
+    offline — no huggingface.co needed.
     """
     import shutil
     import tempfile
@@ -339,7 +369,10 @@ def import_model_archive(archive: str, model_name: Optional[str],
                 fd, tmp_path = tempfile.mkstemp(prefix="lynx-model-", suffix=".archive")
                 os.close(fd)
                 tmp_download = Path(tmp_path)
-                with urllib.request.urlopen(value) as resp, open(tmp_download, "wb") as out:
+                req = urllib.request.Request(
+                    value, headers={"User-Agent": "lynx-model-import"})
+                with urllib.request.urlopen(req, timeout=60) as resp, \
+                        open(tmp_download, "wb") as out:
                     shutil.copyfileobj(resp, out)
             except Exception as e:
                 print(error(f"download failed: {type(e).__name__}: {e}"))
@@ -384,8 +417,8 @@ def import_model_archive(archive: str, model_name: Optional[str],
 
 def export_model_archive(model_name: Optional[str], dest: str,
                          config_path: Optional[Path]) -> int:
-    """Zip a cached model's hub directory so it can be shared (e.g. uploaded
-    to Google Drive) and imported on an offline machine via
+    """Zip a cached model's hub directory so it can be shared (copied to an
+    offline machine, or hosted as a direct download) and imported via
     `import_model_archive`. Returns 0 on success, 2 on failure."""
     import zipfile
 
@@ -410,11 +443,20 @@ def export_model_archive(model_name: Optional[str], dest: str,
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(dim(f"  Zipping {model_dir} → {dest_path} ..."))
+    blobs_dir = model_dir / "blobs"
     try:
         with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for path in model_dir.rglob("*"):
-                if path.is_file():  # follows symlinks → materializes real files
-                    zf.write(path, arcname=path.relative_to(cache_dir))
+                if not path.is_file():  # is_file() follows symlinks
+                    continue
+                # Skip the blobs/ store. Snapshot entries are symlinks INTO
+                # blobs, and zipfile materializes the real bytes when it writes
+                # the snapshot path — so including blobs/ too would store every
+                # file twice (~2x the archive / download size). The extracted
+                # snapshot copies are all HF needs to load the model offline.
+                if blobs_dir in path.parents:
+                    continue
+                zf.write(path, arcname=path.relative_to(cache_dir))
     except (OSError, zipfile.BadZipFile) as e:
         print(error(f"export failed: {type(e).__name__}: {e}"))
         return 2
