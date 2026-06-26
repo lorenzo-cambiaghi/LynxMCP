@@ -142,6 +142,29 @@ flowchart LR
 
 Everything runs locally: HuggingFace models are downloaded once, then Lynx switches to offline mode. No telemetry, no cloud index, no code upload. The only network access is the model download and the *explicit* `webdoc` fetch step you trigger yourself.
 
+### Restricted networks / air-gapped machines
+
+The embedding model is a **public** HuggingFace model (`BAAI/bge-small-en-v1.5`, ~130MB) — **no account or token is required**. If you hit `We couldn't connect to 'https://huggingface.co'`, the machine simply can't reach the Hub (firewall, proxy, DNS, or an offline box). Three ways to get the model in:
+
+- **Mirror** — point Lynx at a reachable HuggingFace mirror and (optionally) a shared cache, then download normally:
+  ```bash
+  export HF_ENDPOINT=https://<your-mirror>   # e.g. an internal proxy or hf-mirror.com
+  export HF_HOME=/shared/hf-cache            # optional: shared/persistent cache
+  lynx manager install --model
+  ```
+- **Transfer an archive** — on a machine *with* access, export the model, copy/upload the file (e.g. to Google Drive), then import it on the offline machine:
+  ```bash
+  # online machine
+  lynx manager install --model
+  lynx manager install --export-archive bge-small.zip
+
+  # offline machine — local path or a direct download URL both work
+  lynx manager install --from-archive /path/to/bge-small.zip
+  lynx manager install --from-archive "https://drive.google.com/uc?export=download&id=<FILE_ID>"
+  ```
+  For Google Drive, use the **direct download** form `https://drive.google.com/uc?export=download&id=<FILE_ID>` (take `<FILE_ID>` from the share link `.../file/d/<FILE_ID>/view`).
+- **Check what's configured** — `lynx manager doctor` reports the active cache dir, whether a mirror is set, and whether the model is present.
+
 ## Why not just let the agent grep?
 
 Grep is great when you know the identifier. It fails when you (or the agent) know the *behavior*: "where do we clamp the camera zoom?" matches nothing literal. Agentic grep also burns tokens — every wrong file the agent opens is context spent. Lynx answers behavioral queries in one tool call with file + line + symbol citations, and the graph layer answers structural questions (callers, inheritance) that grep fundamentally cannot — polymorphic dispatch leaves no textual trace.

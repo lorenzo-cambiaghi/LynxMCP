@@ -15,6 +15,11 @@ Scenarios:
   8. download_models_for_config without config → falls back to defaults
   9. download_models_for_config + with_reranker → 2 downloads
  10. run_install dispatches correctly based on args
+ 11. _normalize_archive_source classifies url vs local path
+ 12. export_model_archive → import_model_archive round-trips via the HF cache
+ 13. import_model_archive from an http(s) URL (mocked urlopen)
+ 14. run_install dispatches --from-archive / --export-archive
+ 15. export_model_archive fails cleanly when the model isn't cached
 """
 from __future__ import annotations
 
@@ -36,7 +41,19 @@ def _make_args(**kw):
         extra=kw.get("extra", None),
         with_reranker=kw.get("with_reranker", False),
         config=kw.get("config", None),
+        from_archive=kw.get("from_archive", None),
+        export_archive=kw.get("export_archive", None),
+        model_name=kw.get("model_name", None),
     )
+
+
+def _seed_fake_model_cache(cache_dir: Path, model="BAAI/bge-small-en-v1.5") -> Path:
+    """Create a minimal HF hub cache entry for `model` and return its dir."""
+    safe = model.replace("/", "--")
+    snap = cache_dir / f"models--{safe}" / "snapshots" / "abc123"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "config.json").write_text("{}", encoding="utf-8")
+    return cache_dir / f"models--{safe}"
 
 
 def main() -> int:
@@ -228,6 +245,108 @@ def main() -> int:
             print(f"[test] FAIL [10/10]: extra dispatch wrong: {mock_ie.call_args}")
             return 10
         print(f"[test] OK [10/10] run_install dispatch: all 4 paths")
+
+        # ============================================================
+        # 11. _normalize_archive_source: url vs path
+        # ============================================================
+        cases = [
+            ("https://drive.google.com/uc?export=download&id=X", "url"),
+            ("http://example.com/m.zip", "url"),
+            ("/local/path/m.zip", "path"),
+            ("relative/m.tar.gz", "path"),
+        ]
+        for src, want in cases:
+            kind, _ = install._normalize_archive_source(src)
+            if kind != want:
+                print(f"[test] FAIL [11/15]: {src!r} → {kind}, want {want}")
+                return 11
+        print(f"[test] OK [11/15] _normalize_archive_source classifies url/path")
+
+        # ============================================================
+        # 12. export → import round-trip via temp HF cache
+        # ============================================================
+        saved_cache_env = os.environ.pop("HF_HUB_CACHE", None)
+        try:
+            cache = tmp / "cache"
+            cache.mkdir()
+            os.environ["HF_HUB_CACHE"] = str(cache)
+            _seed_fake_model_cache(cache)
+
+            from lynx.config import _hf_model_cached
+            zip_path = tmp / "bge.zip"
+            rc = install.export_model_archive(None, str(zip_path), None)
+            if rc != 0 or not zip_path.is_file():
+                print(f"[test] FAIL [12/15]: export rc={rc}, exists={zip_path.is_file()}")
+                return 12
+            # Wipe the cache so import has to recreate it.
+            shutil.rmtree(cache)
+            cache.mkdir()
+            if _hf_model_cached("BAAI/bge-small-en-v1.5"):
+                print(f"[test] FAIL [12/15]: cache not actually wiped")
+                return 12
+            rc = install.import_model_archive(str(zip_path), None, None)
+            if rc != 0:
+                print(f"[test] FAIL [12/15]: import rc={rc}")
+                return 12
+            if not _hf_model_cached("BAAI/bge-small-en-v1.5"):
+                print(f"[test] FAIL [12/15]: model not cached after import")
+                return 12
+            print(f"[test] OK [12/15] export→import round-trip restores cache")
+
+            # ========================================================
+            # 13. import from URL (mocked urlopen streams the zip)
+            # ========================================================
+            import io
+            shutil.rmtree(cache)
+            cache.mkdir()
+            zip_bytes = zip_path.read_bytes()
+            with mock.patch("urllib.request.urlopen",
+                            return_value=io.BytesIO(zip_bytes)):
+                rc = install.import_model_archive(
+                    "https://example.com/bge.zip", None, None)
+            if rc != 0 or not _hf_model_cached("BAAI/bge-small-en-v1.5"):
+                print(f"[test] FAIL [13/15]: URL import rc={rc}")
+                return 13
+            print(f"[test] OK [13/15] import from URL via mocked urlopen")
+
+            # ========================================================
+            # 14. run_install dispatch: --from-archive / --export-archive
+            # ========================================================
+            with mock.patch.object(install, "import_model_archive",
+                                   return_value=0) as m_imp:
+                rc = install.run_install(_make_args(from_archive="x.zip"))
+            if rc != 0 or m_imp.call_args[0][0] != "x.zip":
+                print(f"[test] FAIL [14/15]: from-archive dispatch {m_imp.call_args}")
+                return 14
+            with mock.patch.object(install, "export_model_archive",
+                                   return_value=0) as m_exp:
+                rc = install.run_install(_make_args(export_archive="out.zip"))
+            if rc != 0 or m_exp.call_args[0][1] != "out.zip":
+                print(f"[test] FAIL [14/15]: export-archive dispatch {m_exp.call_args}")
+                return 14
+            print(f"[test] OK [14/15] run_install dispatch: archive import/export")
+        finally:
+            os.environ.pop("HF_HUB_CACHE", None)
+            if saved_cache_env is not None:
+                os.environ["HF_HUB_CACHE"] = saved_cache_env
+
+        # ============================================================
+        # 15. export error when model not in cache
+        # ============================================================
+        saved_cache_env = os.environ.pop("HF_HUB_CACHE", None)
+        try:
+            empty = tmp / "empty-cache"
+            empty.mkdir()
+            os.environ["HF_HUB_CACHE"] = str(empty)
+            rc = install.export_model_archive(None, str(tmp / "nope.zip"), None)
+            if rc != 2:
+                print(f"[test] FAIL [15/15]: export of missing model should be 2, got {rc}")
+                return 15
+        finally:
+            os.environ.pop("HF_HUB_CACHE", None)
+            if saved_cache_env is not None:
+                os.environ["HF_HUB_CACHE"] = saved_cache_env
+        print(f"[test] OK [15/15] export of uncached model fails cleanly")
 
         print("\n[test] === SUCCESS: install works as expected ===")
         return 0

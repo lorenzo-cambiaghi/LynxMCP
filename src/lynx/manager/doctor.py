@@ -22,6 +22,7 @@ filesystem and the active Python process metadata.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -85,12 +86,15 @@ def _hf_cache_dir_for(model_name: str) -> Path:
     """Return the expected HuggingFace cache directory for a model.
 
     HF Hub stores models under
-    `~/.cache/huggingface/hub/models--{owner}--{repo}/snapshots/<sha>/`
-    where `{owner}--{repo}` comes from replacing `/` with `--` in the
-    model name.
+    `<hub-cache>/models--{owner}--{repo}/snapshots/<sha>/` where
+    `{owner}--{repo}` comes from replacing `/` with `--` in the model
+    name. The hub cache root honors `HF_HUB_CACHE` / `HF_HOME` (resolved
+    via `config._hf_cache_dir`) so we probe the SAME directory the runtime
+    uses, not a hardcoded `~/.cache` that ignores those overrides.
     """
+    from ..config import _hf_cache_dir
     safe = model_name.replace("/", "--")
-    return Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe}"
+    return _hf_cache_dir() / f"models--{safe}"
 
 
 def check_hf_model_cache(model_name: str, label: str = "embedding model") -> CheckResult:
@@ -111,6 +115,9 @@ def check_hf_model_cache(model_name: str, label: str = "embedding model") -> Che
                 "Run `lynx manager install --model` to fetch it now, or "
                 "let the first `lynx serve` download it automatically "
                 "(requires network at that moment; later runs are offline).",
+                "Behind a firewall / can't reach huggingface.co? Set "
+                "HF_ENDPOINT to a reachable mirror, or import a shared model "
+                "archive with `lynx manager install --from-archive <path|url>`.",
             ],
         )
     # Look for at least one snapshot directory with the key files.
@@ -140,6 +147,35 @@ def check_hf_model_cache(model_name: str, label: str = "embedding model") -> Che
         name=f"HF cache: {label}",
         status=STATUS_OK,
         summary=f"{model_name} present in HF cache",
+    )
+
+
+def check_hf_endpoint() -> CheckResult:
+    """Informational: report the HF cache location and whether a mirror
+    (HF_ENDPOINT) is configured. Always OK — this is context, not a problem.
+
+    Useful on restricted networks where huggingface.co is blocked: the user
+    can point HF_ENDPOINT at a reachable mirror and HF_HOME/HF_HUB_CACHE at a
+    shared cache, and this check confirms what the runtime will actually use.
+    """
+    from ..config import _hf_cache_dir
+    endpoint = os.environ.get("HF_ENDPOINT")
+    details = [f"Hub cache: {_hf_cache_dir()}"]
+    if endpoint:
+        details.append(f"HF_ENDPOINT: {endpoint} (downloads use this mirror)")
+        summary = f"using mirror {endpoint}"
+    else:
+        details.append(
+            "HF_ENDPOINT not set — downloads go to huggingface.co. On a "
+            "restricted network, set it to a reachable mirror, or import a "
+            "shared archive via `lynx manager install --from-archive`."
+        )
+        summary = "huggingface.co (default)"
+    return CheckResult(
+        name="HF endpoint",
+        status=STATUS_OK,
+        summary=summary,
+        details=details,
     )
 
 
@@ -354,6 +390,9 @@ def run_all_checks(config_path: Optional[Path]) -> list:
     else:
         embedding_model = "BAAI/bge-small-en-v1.5"
     results.append(check_hf_model_cache(embedding_model, label="embedding"))
+
+    # Where models come from / go (mirror + cache location).
+    results.append(check_hf_endpoint())
 
     # Reranker model only if config says it's enabled.
     if cfg is not None and cfg.search.reranker.enabled:

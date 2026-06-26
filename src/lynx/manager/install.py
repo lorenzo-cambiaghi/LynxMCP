@@ -1,12 +1,17 @@
 """`lynx manager install` — manage optional extras and HuggingFace models.
 
-Three modes:
+Modes:
   - `lynx manager install --list` — enumerate available extras + which
     are installed
   - `lynx manager install <extra>` — pip-install the packages behind an extra
   - `lynx manager install --model [NAME]` — download a model into the
     HF cache. Without an argument, reads the embedding model from the
     active config. With `--with-reranker`, also downloads the reranker.
+  - `lynx manager install --export-archive PATH` — zip a cached model so it
+    can be shared (e.g. via Google Drive).
+  - `lynx manager install --from-archive PATH_OR_URL` — import such an
+    archive into the HF cache on a machine that can't reach huggingface.co
+    (offline / air-gapped / firewalled).
 
 Why this exists
 ---------------
@@ -236,6 +241,192 @@ def download_models_for_config(config_path: Optional[Path],
 
 
 # ---------------------------------------------------------------------------
+# Model archive import / export (offline / air-gapped transfer)
+# ---------------------------------------------------------------------------
+
+
+def _config_embed_model(config_path: Optional[Path]) -> str:
+    """Embedding model name from the active config, or the built-in default.
+
+    Mirrors the resolution in `download_models_for_config` so archive
+    import/export default to the SAME model the runtime will load."""
+    default = "BAAI/bge-small-en-v1.5"
+    if config_path is None or not config_path.exists():
+        return default
+    try:
+        from ..config import load_config
+        return load_config(config_path).embedding.model_name
+    except Exception:
+        return default
+
+
+def _normalize_archive_source(src: str):
+    """Classify an archive location. Returns ('url', src) for http(s) URLs
+    (including already-direct Google Drive `uc?export=download&id=...` links),
+    else ('path', src) for a local filesystem path. Pure — no I/O."""
+    lowered = src.strip().lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return ("url", src.strip())
+    return ("path", src)
+
+
+def _is_within(base: Path, target: Path) -> bool:
+    """True if `target` resolves inside `base` (path-traversal guard)."""
+    try:
+        target.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_archive(archive: Path, dest: Path) -> int:
+    """Extract a .zip or .tar(.gz|.tgz) into `dest`, refusing any member that
+    would escape `dest`. Returns 0 on success, 2 on failure."""
+    import tarfile
+    import zipfile
+
+    name = archive.name.lower()
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(archive) as zf:
+                for member in zf.namelist():
+                    if not _is_within(dest, dest / member):
+                        print(error(f"refusing unsafe path in archive: {member!r}"))
+                        return 2
+                zf.extractall(dest)
+        elif name.endswith((".tar.gz", ".tgz", ".tar")):
+            with tarfile.open(archive) as tf:
+                for member in tf.getmembers():
+                    if not _is_within(dest, dest / member.name):
+                        print(error(f"refusing unsafe path in archive: {member.name!r}"))
+                        return 2
+                tf.extractall(dest)
+        else:
+            print(error(f"unsupported archive type: {archive.name} "
+                        f"(use .zip, .tar.gz, .tgz, or .tar)"))
+            return 2
+    except (OSError, zipfile.BadZipFile, tarfile.TarError) as e:
+        print(error(f"extraction failed: {type(e).__name__}: {e}"))
+        return 2
+    return 0
+
+
+def import_model_archive(archive: str, model_name: Optional[str],
+                         config_path: Optional[Path]) -> int:
+    """Import a model archive into the local HF hub cache (offline path).
+
+    `archive` is a local path or an http(s) URL (a direct Google Drive
+    download link works as a plain URL). The archive must contain the HF hub
+    layout `models--ORG--NAME/...` (what `export_model_archive` produces). On
+    success the model is usable fully offline — no huggingface.co needed.
+    """
+    import shutil
+    import tempfile
+    import urllib.request
+
+    from ..config import _hf_cache_dir, _hf_model_cached
+
+    model = model_name or _config_embed_model(config_path)
+    cache_dir = _hf_cache_dir()
+    kind, value = _normalize_archive_source(archive)
+
+    tmp_download: Optional[Path] = None
+    try:
+        if kind == "url":
+            print(dim(f"  Downloading archive from {value} ..."))
+            try:
+                fd, tmp_path = tempfile.mkstemp(prefix="lynx-model-", suffix=".archive")
+                os.close(fd)
+                tmp_download = Path(tmp_path)
+                with urllib.request.urlopen(value) as resp, open(tmp_download, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+            except Exception as e:
+                print(error(f"download failed: {type(e).__name__}: {e}"))
+                return 2
+            # Name the temp file after the URL so _extract_archive can sniff
+            # the suffix (.zip / .tar.gz). Default to .zip when ambiguous.
+            url_name = value.split("?", 1)[0].rsplit("/", 1)[-1].lower()
+            suffix = next((s for s in (".tar.gz", ".tgz", ".tar", ".zip")
+                           if url_name.endswith(s)), ".zip")
+            archive_path = tmp_download.with_name(tmp_download.name + suffix)
+            tmp_download.rename(archive_path)
+            tmp_download = archive_path
+        else:
+            archive_path = Path(value).expanduser()
+            if not archive_path.is_file():
+                print(error(f"archive not found: {archive_path}"))
+                return 2
+
+        print(dim(f"  Extracting into {cache_dir} ..."))
+        rc = _extract_archive(archive_path, cache_dir)
+        if rc != 0:
+            return rc
+    finally:
+        if tmp_download is not None and tmp_download.exists():
+            try:
+                tmp_download.unlink()
+            except OSError:
+                pass
+
+    if not _hf_model_cached(model):
+        safe = model.replace("/", "--")
+        print(error(
+            f"archive extracted but {model} is still not in the cache. The "
+            f"archive must contain the HF hub layout `models--{safe}/snapshots/"
+            f"<rev>/...` (use `lynx manager install --export-archive` on a "
+            f"machine that has the model to produce a compatible archive)."
+        ))
+        return 2
+    print(success(f"{model} imported into {cache_dir}."))
+    return 0
+
+
+def export_model_archive(model_name: Optional[str], dest: str,
+                         config_path: Optional[Path]) -> int:
+    """Zip a cached model's hub directory so it can be shared (e.g. uploaded
+    to Google Drive) and imported on an offline machine via
+    `import_model_archive`. Returns 0 on success, 2 on failure."""
+    import zipfile
+
+    from ..config import _hf_cache_dir
+
+    model = model_name or _config_embed_model(config_path)
+    safe = model.replace("/", "--")
+    cache_dir = _hf_cache_dir()
+    model_dir = cache_dir / f"models--{safe}"
+    if not model_dir.is_dir():
+        print(error(
+            f"{model} is not in the local cache ({model_dir}). Download it "
+            f"first with `lynx manager install --model {model}`."
+        ))
+        return 2
+
+    dest_path = Path(dest).expanduser()
+    if dest_path.is_dir():
+        dest_path = dest_path / f"{safe}.zip"
+    elif not dest_path.name.lower().endswith(".zip"):
+        dest_path = dest_path.with_name(dest_path.name + ".zip")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(dim(f"  Zipping {model_dir} → {dest_path} ..."))
+    try:
+        with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in model_dir.rglob("*"):
+                if path.is_file():  # follows symlinks → materializes real files
+                    zf.write(path, arcname=path.relative_to(cache_dir))
+    except (OSError, zipfile.BadZipFile) as e:
+        print(error(f"export failed: {type(e).__name__}: {e}"))
+        return 2
+
+    size_mb = dest_path.stat().st_size / (1024 * 1024)
+    print(success(f"{model} exported to {dest_path} ({size_mb:.0f} MB)."))
+    print(bullet(dim("Share this file, then import it on the offline machine "
+                     "with `lynx manager install --from-archive <path|url>`.")))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -263,6 +454,17 @@ def run_install(args) -> int:
             return download_models_for_config(config_path, with_reranker=True)
         return rc
 
+    from_archive = getattr(args, "from_archive", None)
+    export_archive = getattr(args, "export_archive", None)
+    if from_archive is not None or export_archive is not None:
+        from ..config import resolve_config_path
+        resolved = resolve_config_path(getattr(args, "config", None))
+        config_path = resolved if resolved.is_file() else None
+        model_name = getattr(args, "model_name", None)
+        if from_archive is not None:
+            return import_model_archive(from_archive, model_name, config_path)
+        return export_model_archive(model_name, export_archive, config_path)
+
     if getattr(args, "extra", None):
         return install_extra(args.extra)
 
@@ -272,4 +474,8 @@ def run_install(args) -> int:
     print(bullet("`lynx manager install <extra>` — install one (e.g. pdf-fast)"))
     print(bullet("`lynx manager install --model` — download embedding model"))
     print(bullet("`lynx manager install --model NAME` — download a specific model"))
+    print(bullet("`lynx manager install --from-archive <path|url>` — import a "
+                 "shared model archive (offline / air-gapped)"))
+    print(bullet("`lynx manager install --export-archive <path>` — zip the "
+                 "cached model to share it"))
     return 2

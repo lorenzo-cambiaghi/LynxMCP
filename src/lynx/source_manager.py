@@ -76,9 +76,18 @@ class SourceManager:
                     storage_dir=per_source_storage,
                 )
             except Exception as e:
-                # Any failure to bring a source up (corrupt index caught
-                # in-process, bad path, etc.) is isolated: register it as
-                # broken and keep the other sources alive.
+                # Any failure to bring a source up is isolated: register it as
+                # broken and keep the other sources alive. But distinguish the
+                # cause — a missing embedding/reranker model fails EVERY source
+                # the same way and is NOT a corrupt index, so don't tell the
+                # user to `lynx reset` (which rebuilds but still needs the
+                # model → loop). See `_required_models_missing`.
+                missing = self._required_models_missing()
+                if missing:
+                    self._register_model_unavailable(
+                        name, type_name, src_cfg, per_source_storage, missing,
+                    )
+                    continue
                 from .errors import CorruptIndexError
                 detail = e.detail if isinstance(e, CorruptIndexError) else f"{type(e).__name__}: {e}"
                 self._register_broken(
@@ -99,6 +108,52 @@ class SourceManager:
             f"[manager] source {name!r}: index is corrupt — {detail} "
             f"Run `lynx reset --source {name}` (or use the dashboard's Reset "
             f"button); the data is disposable and rebuilds from your files.",
+            file=sys.stderr,
+        )
+
+    def _required_models_missing(self) -> list:
+        """Embedding/reranker models the config needs that are NOT in the HF
+        cache. Empty list when everything is present (or the probe can't run).
+
+        Pure cache probe — no huggingface_hub import — so it stays cheap and
+        never itself touches the network. Used to tell a "model not downloaded"
+        backend failure apart from a genuinely corrupt index."""
+        try:
+            from .config import _hf_model_cached
+            models = [self.config.embedding.model_name]
+            if self.config.search.reranker.enabled:
+                models.append(self.config.search.reranker.model_name)
+            return [m for m in models if not _hf_model_cached(m)]
+        except Exception:
+            return []
+
+    def _register_model_unavailable(self, name, type_name, src_cfg, storage_dir,
+                                    missing: list) -> None:
+        """Register a source as broken because its embedding/reranker model
+        could not be loaded (not in cache + couldn't be fetched). Distinct from
+        `_register_broken`: the index is fine, so the fix is to get the model,
+        NOT to `lynx reset`."""
+        model_list = ", ".join(missing)
+        detail = (
+            f"embedding/reranker model not available: {model_list}. The local "
+            f"index is intact — Lynx just couldn't load (or download) the model."
+        )
+        self.broken[name] = {
+            "name": name,
+            "type": type_name,
+            "path": str(src_cfg.get("path") or src_cfg.get("url") or ""),
+            "error": detail,
+            "storage_dir": str(storage_dir),
+            "crashed": False,
+        }
+        print(
+            f"[manager] source {name!r}: {detail} Get the model with one of:\n"
+            f"  - `lynx manager install --model` (needs network access to "
+            f"huggingface.co)\n"
+            f"  - set HF_ENDPOINT to a reachable mirror, then retry the install\n"
+            f"  - `lynx manager install --from-archive <path|url>` (offline / "
+            f"air-gapped: import a model archive shared from another machine).\n"
+            f"Do NOT `lynx reset` — the index is fine; this is a model issue.",
             file=sys.stderr,
         )
 
