@@ -1,0 +1,106 @@
+name: Publish model archive
+
+# Hosts the embedding model on a GitHub Release so users who can't reach
+# huggingface.co can fetch it with `lynx manager install --from-archive <url>`.
+#
+# Runs on GitHub's runners (which CAN reach huggingface.co), so the maintainer
+# never has to download the ~130MB model locally or install the `gh` CLI: the
+# job downloads the model into the HF cache, zips it in the HF hub layout via
+# `lynx manager install --export-archive`, and attaches it to a Release.
+#
+# IMPORTANT: the asset's download URL is only publicly reachable (no auth) when
+# the repo is PUBLIC. On a private repo the URL needs a token, so plain
+# `--from-archive <url>` won't work for end users.
+#
+# Trigger: manual (Actions tab → "Run workflow"). Choose the model, the
+# release tag the asset lands on, and whether to also publish the reranker.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "HuggingFace model repo id to publish"
+        default: "BAAI/bge-small-en-v1.5"
+        required: true
+      tag:
+        description: "Release tag to attach the asset to (created if missing)"
+        default: "models"
+        required: true
+      with_reranker:
+        description: "Also download+publish the reranker model"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Lynx
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Download model into the HF cache
+        run: |
+          args=(manager install --model "${{ inputs.model }}")
+          if [ "${{ inputs.with_reranker }}" = "true" ]; then
+            args+=(--with-reranker)
+          fi
+          lynx "${args[@]}"
+
+      - name: Export model archive
+        id: export
+        run: |
+          model='${{ inputs.model }}'
+          safe="${model//\//--}"          # BAAI/bge-… -> BAAI--bge-…
+          out="${safe}.zip"
+          lynx manager install --export-archive "$out" --model-name "$model"
+          echo "asset=$out" >> "$GITHUB_OUTPUT"
+          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+
+      - name: Export reranker archive
+        if: ${{ inputs.with_reranker }}
+        run: |
+          # Reranker repo id comes from the default config; publish the common one.
+          model='cross-encoder/ms-marco-MiniLM-L-6-v2'
+          safe="${model//\//--}"
+          lynx manager install --export-archive "${safe}.zip" --model-name "$model"
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: Model archives
+          body: |
+            Prebuilt HuggingFace model archives for offline installs.
+
+            On a machine that can't reach huggingface.co:
+            ```
+            lynx manager install --from-archive \
+              "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ steps.export.outputs.asset }}"
+            ```
+          files: "*.zip"
+          fail_on_unmatched_files: true
+
+      - name: Summary
+        run: |
+          url="https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ steps.export.outputs.asset }}"
+          {
+            echo "### Model published"
+            echo ""
+            echo "End users (no huggingface.co access) can now run:"
+            echo ""
+            echo '```'
+            echo "lynx manager install --from-archive \"$url\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
