@@ -22,6 +22,8 @@ Scenarios:
  15. export_model_archive fails cleanly when the model isn't cached
  16. import rejects an HTML body (auth page / Drive interstitial) clearly
  17. export skips blobs/ (no double-zip) and still round-trips
+ 18. download_model falls back to the GitHub archive when HF is unreachable
+ 19. LYNX_MODEL_ARCHIVE_BASE_URL overrides the fallback host
 """
 from __future__ import annotations
 
@@ -174,19 +176,25 @@ def main() -> int:
         print(f"[test] OK [6/10] download_model: temp clear + restore offline flags")
 
         # ============================================================
-        # 7. snapshot raises → env still restored
+        # 7. snapshot raises → GitHub fallback attempted; if it also
+        #    fails → exit 2 + env still restored
         # ============================================================
         os.environ["HF_HUB_OFFLINE"] = "1"
         with mock.patch("huggingface_hub.snapshot_download",
-                        side_effect=RuntimeError("simulated network failure")):
+                        side_effect=RuntimeError("simulated network failure")), \
+             mock.patch.object(install, "import_model_archive",
+                               return_value=2) as m_fb7:
             rc = install.download_model("bad/model")
         if rc != 2:
-            print(f"[test] FAIL [7/10]: download failure should exit 2, got {rc}")
+            print(f"[test] FAIL [7/10]: both-fail should exit 2, got {rc}")
+            return 7
+        if not m_fb7.called:
+            print(f"[test] FAIL [7/10]: GitHub fallback was not attempted")
             return 7
         if os.environ.get("HF_HUB_OFFLINE") != "1":
             print(f"[test] FAIL [7/10]: flag not restored after failure")
             return 7
-        print(f"[test] OK [7/10] snapshot failure: exit 2 + env restored")
+        print(f"[test] OK [7/10] snapshot failure: GitHub fallback + env restored")
 
         # Cleanup env
         os.environ.pop("HF_HUB_OFFLINE", None)
@@ -431,6 +439,45 @@ def main() -> int:
             os.environ.pop("HF_HUB_CACHE", None)
             if saved_cache_env is not None:
                 os.environ["HF_HUB_CACHE"] = saved_cache_env
+
+        # ============================================================
+        # 18. download_model: HF fails → GitHub fallback succeeds (exit 0),
+        #     and the fallback URL points at the project's models Release.
+        # ============================================================
+        with mock.patch("huggingface_hub.snapshot_download",
+                        side_effect=RuntimeError("net down")), \
+             mock.patch.object(install, "import_model_archive",
+                               return_value=0) as m_fb:
+            rc = install.download_model("BAAI/bge-small-en-v1.5")
+        if rc != 0:
+            print(f"[test] FAIL [18/19]: fallback success should exit 0, got {rc}")
+            return 18
+        fb_url = m_fb.call_args[0][0]
+        fb_model = m_fb.call_args[0][1]
+        if "releases/download/models" not in fb_url \
+                or not fb_url.endswith("BAAI--bge-small-en-v1.5.zip"):
+            print(f"[test] FAIL [18/19]: wrong fallback URL: {fb_url!r}")
+            return 18
+        if fb_model != "BAAI/bge-small-en-v1.5":
+            print(f"[test] FAIL [18/19]: fallback model name wrong: {fb_model!r}")
+            return 18
+        print(f"[test] OK [18/19] download_model: HF→GitHub fallback succeeds")
+
+        # ============================================================
+        # 19. LYNX_MODEL_ARCHIVE_BASE_URL overrides the fallback host.
+        # ============================================================
+        saved_base = os.environ.pop("LYNX_MODEL_ARCHIVE_BASE_URL", None)
+        try:
+            os.environ["LYNX_MODEL_ARCHIVE_BASE_URL"] = "https://mirror.local/m/"
+            url = install._model_archive_url("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            if url != "https://mirror.local/m/cross-encoder--ms-marco-MiniLM-L-6-v2.zip":
+                print(f"[test] FAIL [19/19]: override URL wrong: {url!r}")
+                return 19
+        finally:
+            os.environ.pop("LYNX_MODEL_ARCHIVE_BASE_URL", None)
+            if saved_base is not None:
+                os.environ["LYNX_MODEL_ARCHIVE_BASE_URL"] = saved_base
+        print(f"[test] OK [19/19] LYNX_MODEL_ARCHIVE_BASE_URL override honored")
 
         print("\n[test] === SUCCESS: install works as expected ===")
         return 0

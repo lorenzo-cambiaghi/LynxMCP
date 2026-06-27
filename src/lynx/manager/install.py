@@ -171,6 +171,41 @@ def _is_installed(package: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Project-hosted model archives (the `publish-model.yml` workflow uploads here).
+# Used as an automatic fallback when huggingface.co can't be reached. Forks /
+# private mirrors can repoint it with LYNX_MODEL_ARCHIVE_BASE_URL.
+GITHUB_MODEL_RELEASE_BASE = (
+    "https://github.com/lorenzo-cambiaghi/LynxMCP/releases/download/models"
+)
+
+
+def _model_archive_url(model_name: str) -> str:
+    """Direct download URL for `model_name`'s archive on the project's GitHub
+    Release (or the LYNX_MODEL_ARCHIVE_BASE_URL override)."""
+    base = os.environ.get("LYNX_MODEL_ARCHIVE_BASE_URL",
+                          GITHUB_MODEL_RELEASE_BASE).rstrip("/")
+    safe = model_name.replace("/", "--")
+    return f"{base}/{safe}.zip"
+
+
+def _download_model_from_github(model_name: str, hf_error: Exception) -> int:
+    """Fallback when huggingface.co is unreachable: pull `model_name` from the
+    project's GitHub Release archive instead. Best-effort — the archive only
+    exists for models the maintainer published (the default embedding/reranker),
+    so an arbitrary model just yields a clear combined error."""
+    url = _model_archive_url(model_name)
+    print(dim(f"  HuggingFace unreachable — trying the GitHub model archive: {url}"))
+    if import_model_archive(url, model_name, None) == 0:
+        return 0
+    print(error(
+        f"couldn't fetch {model_name} from HuggingFace ({type(hf_error).__name__}: "
+        f"{hf_error}) nor from the GitHub fallback. If you're offline / "
+        f"air-gapped, import a shared archive manually with "
+        f"`lynx manager install --from-archive <path|url>`."
+    ))
+    return 2
+
+
 def download_model(model_name: str) -> int:
     """Explicitly fetch a HuggingFace model into the local cache.
 
@@ -178,6 +213,10 @@ def download_model(model_name: str) -> int:
     already cached (see config.configure_hf_offline). We clear the flags
     here ONLY for the duration of the download (restoring them on exit so
     any follow-up code keeps the offline guarantee).
+
+    If huggingface.co can't be reached, fall back to the project's GitHub
+    Release archive (`_download_model_from_github`) so a firewalled / flaky-
+    network user still gets the model with no manual step.
     """
     print(dim(f"  Downloading {model_name} (this can take a minute)..."))
 
@@ -195,8 +234,8 @@ def download_model(model_name: str) -> int:
         try:
             snapshot_download(repo_id=model_name)
         except Exception as e:
-            print(error(f"download failed: {type(e).__name__}: {e}"))
-            return 2
+            print(warn(f"HuggingFace download failed ({type(e).__name__}: {e})."))
+            return _download_model_from_github(model_name, hf_error=e)
     finally:
         # Restore the env exactly as we found it
         for key, val in saved.items():

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Automatic GitHub fallback for the model download.** When `download_model`
+  can't reach huggingface.co (firewall, proxy, DNS, flaky network), it now
+  automatically pulls the model from the project's GitHub Release archive
+  instead of failing — no manual `--from-archive` step needed. Best-effort: the
+  fallback only has the models the maintainer published (the default embedding /
+  reranker); an unmatched model yields a clear combined error. Forks / private
+  mirrors can repoint the host with `LYNX_MODEL_ARCHIVE_BASE_URL`. This covers
+  the installer first-run path (`manager init` → `download_model`).
+- **`publish-model.yml` now triggers on the `v*` tag push** instead of
+  `release: published` — a Release created by `release.yml` with the default
+  `GITHUB_TOKEN` does not fire `release` workflows (GitHub recursion guard), so
+  the model archive never got published automatically. A human-pushed tag does.
+
 ## 1.7.4 — 2026-06-27
 
 Installation hardening: make the first-run HuggingFace model download survive
