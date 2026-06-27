@@ -8,11 +8,12 @@ name: Publish model archive
 # downloads the model into the HF cache, zips it in the HF hub layout via
 # `lynx manager install --export-archive`, and attaches it to a Release.
 #
-# IDEMPOTENT: the asset name encodes the model (`BAAI--bge-small-en-v1.5.zip`),
-# so a model that's already published is SKIPPED — no redundant ~130MB
-# re-upload. A *different* model (new repo id) gets a new asset name and is
-# published. That's why running this on every release is cheap: it only does
-# work the first time a given model appears.
+# IDEMPOTENT BY CONTENT: each run rebuilds the archive, then compares its size
+# to the asset already on the `models` release. Same size -> skip the upload (no
+# redundant ~130MB push). Different size, a new model, or a missing asset ->
+# (re)upload, overwriting the old one. So a slimmer rebuild or an updated model
+# is picked up automatically, with NO manual asset deletion. (We must rebuild to
+# know the size — cheap now that the download skips unused weight formats.)
 #
 # IMPORTANT: the asset's download URL is only publicly reachable (no auth) when
 # the repo is PUBLIC. On a private repo the URL needs a token, so plain
@@ -66,12 +67,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Download + export only the models not already published
+      - name: Build archives; upload only the ones whose size changed
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Fall back to defaults on the `release` trigger, where `inputs.*`
+          # Fall back to defaults on the tag-push trigger, where `inputs.*`
           # don't exist (the fixed `models` tag keeps the download URL stable).
           model='${{ inputs.model || 'BAAI/bge-small-en-v1.5' }}'
           tag='${{ inputs.tag || 'models' }}'
@@ -82,22 +83,27 @@ jobs:
             models+=("cross-encoder/ms-marco-MiniLM-L-6-v2")
           fi
 
-          # Asset names already on the release ("" if the tag doesn't exist yet).
-          existing="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
-            --json assets -q '.assets[].name' 2>/dev/null || true)"
-
           published_any=false
           for m in "${models[@]}"; do
             safe="${m//\//--}"            # BAAI/bge-… -> BAAI--bge-…
             asset="${safe}.zip"
-            if printf '%s\n' "$existing" | grep -qx "$asset"; then
-              echo "::notice::$asset already on '$tag' — model unchanged, skipping."
-              continue
-            fi
             echo "Downloading + exporting $m ..."
             lynx manager install --model "$m"
             lynx manager install --export-archive "$asset" --model-name "$m"
-            published_any=true
+
+            local_size="$(stat -c%s "$asset")"
+            # Size of the asset already on the release ("" if absent / no tag).
+            pub_size="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+              --json assets -q ".assets[] | select(.name == \"$asset\") | .size" \
+              2>/dev/null || true)"
+
+            if [ -n "$pub_size" ] && [ "$pub_size" = "$local_size" ]; then
+              echo "::notice::$asset unchanged (size $local_size) — skipping upload."
+              rm -f "$asset"            # keep it out of the upload glob below
+            else
+              echo "$asset will be (re)published (local=$local_size, published=${pub_size:-none})."
+              published_any=true
+            fi
           done
 
           # Primary (embedding) asset name + URL for the release notes / summary.
@@ -140,6 +146,6 @@ jobs:
             {
               echo "### Nothing to publish"
               echo ""
-              echo "The requested model(s) are already attached to the \`${{ steps.plan.outputs.tag }}\` release — no redundant upload."
+              echo "The rebuilt archive(s) match the size already on the \`${{ steps.plan.outputs.tag }}\` release — no redundant upload."
             } >> "$GITHUB_STEP_SUMMARY"
           fi

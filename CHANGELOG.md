@@ -26,6 +26,10 @@
   `release: published` — a Release created by `release.yml` with the default
   `GITHUB_TOKEN` does not fire `release` workflows (GitHub recursion guard), so
   the model archive never got published automatically. A human-pushed tag does.
+- **`publish-model.yml` re-uploads when the archive size changes.** It rebuilds
+  the archive every run and compares its size to the published asset: same size
+  → skip the upload, different/new/missing → (re)publish. So a slimmer rebuild
+  or an updated model is picked up automatically, with no manual asset deletion.
 
 ## 1.7.4 — 2026-06-27
 
