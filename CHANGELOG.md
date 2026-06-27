@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.5 — 2026-06-27
 
 ### Changed
 - **Model download fetches only the weights Lynx uses.** `download_model` now
