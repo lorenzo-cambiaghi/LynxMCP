@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.7.4 — 2026-06-27
+
+Installation hardening: make the first-run HuggingFace model download survive
+restricted networks, and give clear, actionable errors when it can't.
+
+### Added
+- **Offline / air-gapped model install.** `lynx manager install --export-archive
+  PATH` zips a cached model in the HF hub layout, and `--from-archive PATH_OR_URL`
+  imports it into the cache on a machine that can't reach huggingface.co. The URL
+  form accepts any direct, unauthenticated download (a public GitHub Release asset
+  is the easiest); it rejects an HTML body — an auth page or a Google Drive
+  ">100MB virus-scan" interstitial — with a clear message instead of a cryptic
+  `BadZipFile`. Path-traversal-safe extraction (zip + tar, `filter="data"` on
+  3.12+). Pinned by `tests/test_manager_install.py`.
+- **Publish-model GitHub Action.** A workflow downloads the embedding model on
+  GitHub's runners and attaches it to a stable `models` Release, so users behind
+  a firewall can `--from-archive` it from this repo. Runs on every release and is
+  idempotent — the asset name encodes the model, so an unchanged model is skipped
+  (no redundant ~130MB re-upload) while a different model is published.
+- **`lynx manager doctor` HF endpoint check.** Reports the active hub cache
+  directory and whether an `HF_ENDPOINT` mirror is configured.
+
+### Fixed
+- **"Model not downloaded" no longer masquerades as a corrupt index.** When a
+  source failed to start because the embedding/reranker model wasn't in the cache
+  (and couldn't be fetched), Lynx used to suggest `lynx reset` — which rebuilds
+  but still needs the model, a loop. It now detects the missing-model case and
+  points at the real fix (`--model`, an `HF_ENDPOINT` mirror, or `--from-archive`).
+  Pinned by `tests/test_source_manager_model_missing.py`.
+- **`doctor` probes the cache the runtime actually uses.** The model-cache check
+  now honors `HF_HUB_CACHE` / `HF_HOME` instead of a hardcoded `~/.cache`.
+
 ## 1.7.3 — 2026-06-22
 
 Stabilization & bug-fixing release (plus one small tool that closes a loop).
