@@ -19,14 +19,19 @@ name: Publish model archive
 # `--from-archive <url>` won't work for end users.
 #
 # Triggers:
-#   - automatically when a Release is published (publishes to the fixed `models`
-#     tag, NOT the release's own tag, so the download URL stays stable);
+#   - automatically when a version tag (`v*`) is pushed. NOTE: we trigger on the
+#     tag push, NOT on `release: published`, on purpose. The `release.yml`
+#     workflow creates the GitHub Release with the default GITHUB_TOKEN, and
+#     GitHub does NOT fire `on: release` workflows for events produced by that
+#     token (recursion prevention) — so a `release` trigger here never runs. A
+#     human-pushed tag has no such limitation. It still publishes to the fixed
+#     `models` tag (not the version tag), so the download URL stays stable.
 #   - manually (Actions tab → "Run workflow") to publish a specific model/tag
 #     or to also publish the reranker.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       model:
