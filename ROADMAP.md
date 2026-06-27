@@ -40,23 +40,26 @@ quality, we're considering **blessing and documenting a step-up preset**
 
 ## On the radar (additive, lower-risk)
 
-### Coral community source
-Submit Lynx as an official source in Coral's
+### Coral community source — submitted & approved, awaiting merge
+Lynx is submitted as an official source in Coral's
 [`sources/community/`](https://github.com/withcoral/coral/tree/main/sources/community)
-directory (manifest + README), so Coral users can add it without leaving the
-directory. The source spec already exists
-([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml)) and
-works; the open question is the convention for sources that point at a **local**
-service (the directory's CI `test_queries` can't reach `127.0.0.1`) — to be
-sorted out with the Coral maintainers first.
+directory (PR [#1297](https://github.com/withcoral/coral/pull/1297)). The manifest
+([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml)) is
+reviewed and **approved**; the local-service question (the directory's CI
+`test_queries` can't reach `127.0.0.1`) was resolved with a live-validation
+section. The only thing left is the Coral maintainers merging it (community
+sources are merged by the team). Once merged, Coral users can add Lynx without
+leaving the directory.
 
 ### More language parsers
 Lynx ships tree-sitter grammars for 18+ languages today (Python, TypeScript,
 JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift, Bash, SQL,
 Scala, Lua, **Objective-C**). Adding more is cheap and additive — each grammar is a small wheel
 bundled in the install, no runtime download. Remaining demand-driven candidates
-(e.g. Elixir, Zig, R, Dart, HTML/CSS) — open an issue with the language you need
-and it moves up.
+(e.g. Elixir, Zig, HTML/CSS) — open an issue with the language you need and it
+moves up. A few (notably Dart and R) are on hold: their community tree-sitter
+grammars don't currently expose a usable parser for our chunker, so they wait
+until that changes upstream.
 
 ## Non-goals
 
