@@ -145,8 +145,9 @@ def main() -> int:
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         captured: dict = {}
 
-        def fake_snapshot(repo_id):
+        def fake_snapshot(repo_id, **kwargs):
             captured["repo_id"] = repo_id
+            captured["ignore_patterns"] = kwargs.get("ignore_patterns")
             captured["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE")
             captured["TRANSFORMERS_OFFLINE"] = os.environ.get("TRANSFORMERS_OFFLINE")
             return "/fake/path"
@@ -158,6 +159,11 @@ def main() -> int:
             return 6
         if captured.get("repo_id") != "test/model":
             print(f"[test] FAIL [6/10]: wrong repo_id: {captured}")
+            return 6
+        # Unused heavy formats must be excluded from the download.
+        ip = captured.get("ignore_patterns") or []
+        if not any("onnx" in p for p in ip) or not any("h5" in p for p in ip):
+            print(f"[test] FAIL [6/10]: ignore_patterns missing onnx/tf: {ip}")
             return 6
         # During the call, both flags must be unset
         if captured.get("HF_HUB_OFFLINE") is not None:

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+- **Model download fetches only the weights Lynx uses.** `download_model` now
+  passes `ignore_patterns` to `snapshot_download`, skipping the ONNX (incl.
+  quantized / graph-optimized), TensorFlow, Flax and OpenVINO copies that HF
+  repos like `bge-small` ship alongside the Torch weights. Lynx loads via
+  sentence-transformers (embedding *and* reranker), which needs only
+  `*.safetensors` / `pytorch_model.bin` + configs/tokenizer. Result: a much
+  faster download, a smaller published archive, and a quicker `--from-archive`
+  fetch for end users. Both Torch formats are kept (some models, e.g. the
+  reranker, ship only `pytorch_model.bin`).
+
 ### Added
 - **Automatic GitHub fallback for the model download.** When `download_model`
   can't reach huggingface.co (firewall, proxy, DNS, flaky network), it now

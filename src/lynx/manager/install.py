@@ -206,6 +206,28 @@ def _download_model_from_github(model_name: str, hf_error: Exception) -> int:
     return 2
 
 
+# Weight formats Lynx never loads. Both the embedding (llama-index →
+# SentenceTransformer) and the reranker (CrossEncoder) use sentence-transformers,
+# which needs only the Torch weights (`*.safetensors` / `pytorch_model.bin`) plus
+# the configs/tokenizer. HF repos like bge-small ALSO ship ONNX (incl. quantized
+# + graph-optimized variants), TensorFlow, Flax and OpenVINO copies — easily
+# several hundred MB of dead weight that slowed the download, the zip and the
+# user's `--from-archive` fetch. We blacklist those rather than whitelist what we
+# keep: a whitelist risks dropping a needed file in a module subfolder
+# (`1_Pooling/`, …) and isn't portable across models. We deliberately keep BOTH
+# Torch formats — some models (e.g. the reranker) ship only `pytorch_model.bin`.
+_MODEL_IGNORE_PATTERNS = [
+    "onnx/*", "*.onnx", "*.onnx_data",   # ONNX (model.onnx, *_quantized, O1..O4)
+    "openvino/*", "*openvino*",          # OpenVINO
+    "*.h5", "tf_model.*",                # TensorFlow
+    "*.msgpack", "flax_model.*",         # Flax
+    "*.tflite",                          # TFLite
+    "*.ckpt", "*.ckpt.*",               # TF checkpoints
+    "rust_model.ot", "*.ot",            # Rust
+    "coreml/*", "*.mlmodel", "*.mlpackage/*",  # CoreML
+]
+
+
 def download_model(model_name: str) -> int:
     """Explicitly fetch a HuggingFace model into the local cache.
 
@@ -213,6 +235,11 @@ def download_model(model_name: str) -> int:
     already cached (see config.configure_hf_offline). We clear the flags
     here ONLY for the duration of the download (restoring them on exit so
     any follow-up code keeps the offline guarantee).
+
+    Only the files sentence-transformers actually loads are fetched (see
+    `_MODEL_IGNORE_PATTERNS`) — the unused ONNX/TF/Flax/OpenVINO copies are
+    skipped, which shrinks the download, the published archive and the
+    `--from-archive` fetch.
 
     If huggingface.co can't be reached, fall back to the project's GitHub
     Release archive (`_download_model_from_github`) so a firewalled / flaky-
@@ -232,7 +259,8 @@ def download_model(model_name: str) -> int:
             print(error(f"huggingface_hub not available: {e}"))
             return 2
         try:
-            snapshot_download(repo_id=model_name)
+            snapshot_download(repo_id=model_name,
+                              ignore_patterns=_MODEL_IGNORE_PATTERNS)
         except Exception as e:
             print(warn(f"HuggingFace download failed ({type(e).__name__}: {e})."))
             return _download_model_from_github(model_name, hf_error=e)
