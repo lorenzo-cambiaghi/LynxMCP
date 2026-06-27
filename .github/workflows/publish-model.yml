@@ -4,18 +4,29 @@ name: Publish model archive
 # huggingface.co can fetch it with `lynx manager install --from-archive <url>`.
 #
 # Runs on GitHub's runners (which CAN reach huggingface.co), so the maintainer
-# never has to download the ~130MB model locally or install the `gh` CLI: the
-# job downloads the model into the HF cache, zips it in the HF hub layout via
+# never has to download the ~130MB model locally or install anything: the job
+# downloads the model into the HF cache, zips it in the HF hub layout via
 # `lynx manager install --export-archive`, and attaches it to a Release.
+#
+# IDEMPOTENT: the asset name encodes the model (`BAAI--bge-small-en-v1.5.zip`),
+# so a model that's already published is SKIPPED — no redundant ~130MB
+# re-upload. A *different* model (new repo id) gets a new asset name and is
+# published. That's why running this on every release is cheap: it only does
+# work the first time a given model appears.
 #
 # IMPORTANT: the asset's download URL is only publicly reachable (no auth) when
 # the repo is PUBLIC. On a private repo the URL needs a token, so plain
 # `--from-archive <url>` won't work for end users.
 #
-# Trigger: manual (Actions tab → "Run workflow"). Choose the model, the
-# release tag the asset lands on, and whether to also publish the reranker.
+# Triggers:
+#   - automatically when a Release is published (publishes to the fixed `models`
+#     tag, NOT the release's own tag, so the download URL stays stable);
+#   - manually (Actions tab → "Run workflow") to publish a specific model/tag
+#     or to also publish the reranker.
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       model:
@@ -50,36 +61,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Download model into the HF cache
+      - name: Download + export only the models not already published
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          args=(manager install --model "${{ inputs.model }}")
-          if [ "${{ inputs.with_reranker }}" = "true" ]; then
-            args+=(--with-reranker)
+          # Fall back to defaults on the `release` trigger, where `inputs.*`
+          # don't exist (the fixed `models` tag keeps the download URL stable).
+          model='${{ inputs.model || 'BAAI/bge-small-en-v1.5' }}'
+          tag='${{ inputs.tag || 'models' }}'
+          with_reranker='${{ inputs.with_reranker || false }}'
+
+          models=("$model")
+          if [ "$with_reranker" = "true" ]; then
+            models+=("cross-encoder/ms-marco-MiniLM-L-6-v2")
           fi
-          lynx "${args[@]}"
 
-      - name: Export model archive
-        id: export
-        run: |
-          model='${{ inputs.model }}'
-          safe="${model//\//--}"          # BAAI/bge-… -> BAAI--bge-…
-          out="${safe}.zip"
-          lynx manager install --export-archive "$out" --model-name "$model"
-          echo "asset=$out" >> "$GITHUB_OUTPUT"
-          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+          # Asset names already on the release ("" if the tag doesn't exist yet).
+          existing="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name' 2>/dev/null || true)"
 
-      - name: Export reranker archive
-        if: ${{ inputs.with_reranker }}
-        run: |
-          # Reranker repo id comes from the default config; publish the common one.
-          model='cross-encoder/ms-marco-MiniLM-L-6-v2'
-          safe="${model//\//--}"
-          lynx manager install --export-archive "${safe}.zip" --model-name "$model"
+          published_any=false
+          for m in "${models[@]}"; do
+            safe="${m//\//--}"            # BAAI/bge-… -> BAAI--bge-…
+            asset="${safe}.zip"
+            if printf '%s\n' "$existing" | grep -qx "$asset"; then
+              echo "::notice::$asset already on '$tag' — model unchanged, skipping."
+              continue
+            fi
+            echo "Downloading + exporting $m ..."
+            lynx manager install --model "$m"
+            lynx manager install --export-archive "$asset" --model-name "$m"
+            published_any=true
+          done
+
+          # Primary (embedding) asset name + URL for the release notes / summary.
+          primary_safe="${model//\//--}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=${primary_safe}.zip" >> "$GITHUB_OUTPUT"
+          echo "published_any=$published_any" >> "$GITHUB_OUTPUT"
 
       - name: Publish to Release
+        if: steps.plan.outputs.published_any == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag }}
+          tag_name: ${{ steps.plan.outputs.tag }}
           name: Model archives
           body: |
             Prebuilt HuggingFace model archives for offline installs.
@@ -87,20 +113,28 @@ jobs:
             On a machine that can't reach huggingface.co:
             ```
             lynx manager install --from-archive \
-              "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ steps.export.outputs.asset }}"
+              "https://github.com/${{ github.repository }}/releases/download/${{ steps.plan.outputs.tag }}/${{ steps.plan.outputs.asset }}"
             ```
           files: "*.zip"
           fail_on_unmatched_files: true
 
       - name: Summary
         run: |
-          url="https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ steps.export.outputs.asset }}"
-          {
-            echo "### Model published"
-            echo ""
-            echo "End users (no huggingface.co access) can now run:"
-            echo ""
-            echo '```'
-            echo "lynx manager install --from-archive \"$url\""
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          url="https://github.com/${{ github.repository }}/releases/download/${{ steps.plan.outputs.tag }}/${{ steps.plan.outputs.asset }}"
+          if [ "${{ steps.plan.outputs.published_any }}" = "true" ]; then
+            {
+              echo "### Model published"
+              echo ""
+              echo "End users (no huggingface.co access) can now run:"
+              echo ""
+              echo '```'
+              echo "lynx manager install --from-archive \"$url\""
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Nothing to publish"
+              echo ""
+              echo "The requested model(s) are already attached to the \`${{ steps.plan.outputs.tag }}\` release — no redundant upload."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
