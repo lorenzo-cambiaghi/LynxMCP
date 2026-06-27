@@ -144,8 +144,15 @@ Everything runs locally: HuggingFace models are downloaded once, then Lynx switc
 
 ### Restricted networks / air-gapped machines
 
-The embedding model is a **public** HuggingFace model (`BAAI/bge-small-en-v1.5`, ~130MB) — **no account or token is required**. If you hit `We couldn't connect to 'https://huggingface.co'`, the machine simply can't reach the Hub (firewall, proxy, DNS, or an offline box). Three ways to get the model in:
+The embedding model is a **public** HuggingFace model (`BAAI/bge-small-en-v1.5`, ~130MB) — **no account or token is required**. If you hit `We couldn't connect to 'https://huggingface.co'`, the machine simply can't reach the Hub (firewall, proxy, DNS, or an offline box).
 
+**You usually don't need to do anything.** When the HuggingFace download fails, Lynx **automatically falls back** to a copy of the model hosted on this repo's GitHub Releases and installs it from there — including on the installer's first run. You only need the steps below if *GitHub is also unreachable*, or if you want to use a mirror / a shared cache / your own host.
+
+- **Point the fallback elsewhere** — if you can't reach github.com either but you host the archive somewhere reachable (an internal server, an artifact store), set the base URL and the automatic fallback uses it:
+  ```bash
+  export LYNX_MODEL_ARCHIVE_BASE_URL=https://<your-host>/lynx-models
+  # expects <base>/BAAI--bge-small-en-v1.5.zip (produced by --export-archive)
+  ```
 - **Mirror** — point Lynx at a reachable HuggingFace mirror and (optionally) a shared cache, then download normally:
   ```bash
   export HF_ENDPOINT=https://<your-mirror>   # e.g. an internal proxy or hf-mirror.com
