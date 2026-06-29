@@ -67,6 +67,15 @@ class SourceManager:
                         result["detail"], crashed=result.get("crashed", False),
                     )
                     continue
+                if result["status"] == "unverified":
+                    # The probe timed out — ambiguous, NOT proven corruption. We
+                    # still don't open the index in-process (crash-safety), but
+                    # we don't brand it corrupt or push the user to reset it.
+                    self._register_unverified(
+                        name, type_name, src_cfg, per_source_storage,
+                        result["detail"],
+                    )
+                    continue
 
             try:
                 self.backends[name] = backend_cls(
@@ -103,11 +112,36 @@ class SourceManager:
             "error": detail,
             "storage_dir": str(storage_dir),
             "crashed": crashed,
+            "health": "corrupt",
         }
         print(
             f"[manager] source {name!r}: index is corrupt — {detail} "
             f"Run `lynx reset --source {name}` (or use the dashboard's Reset "
             f"button); the data is disposable and rebuilds from your files.",
+            file=sys.stderr,
+        )
+
+    def _register_unverified(self, name, type_name, src_cfg, storage_dir,
+                             detail) -> None:
+        """Register a source whose integrity probe TIMED OUT. Distinct from
+        `_register_broken`: a timeout is not proof of corruption, so the fix is
+        usually to retry (close other Lynx processes, restart) — NOT to `lynx
+        reset`, which would wipe a likely-healthy index. We still keep it out of
+        `backends` so the host never opens a possibly-bad index in-process."""
+        self.broken[name] = {
+            "name": name,
+            "type": type_name,
+            "path": str(src_cfg.get("path") or src_cfg.get("url") or ""),
+            "error": detail,
+            "storage_dir": str(storage_dir),
+            "crashed": False,
+            "health": "unverified",
+        }
+        print(
+            f"[manager] source {name!r}: {detail}. Lynx left it unopened to stay "
+            f"safe. Close any other running Lynx process (a build or a second "
+            f"manager) and restart; if it persists, `lynx reset --source {name}` "
+            f"rebuilds from your files.",
             file=sys.stderr,
         )
 
@@ -613,7 +647,7 @@ class SourceManager:
                 "name": info["name"],
                 "type": info["type"],
                 "path": info["path"],
-                "health": "corrupt",
+                "health": info.get("health", "corrupt"),
                 "error": info["error"],
                 "chunk_count": None,
                 "last_commit": None,

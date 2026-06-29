@@ -1123,6 +1123,17 @@ def _register_build_routes(app) -> None:
         )
         return HTMLResponse(_render_job_widget(job, name))
 
+    @app.post("/api/manager/reload")
+    def api_manager_reload():
+        """Drop the cached manager so the next request rebuilds it, which
+        re-runs the integrity probes. The 'index not verified' card uses this to
+        re-check after the user has cleared whatever was holding the index (a
+        concurrent build or a second Lynx process). Cheap here — the rebuild
+        cost is paid on the page load that follows the redirect."""
+        app.state.manager = None
+        app.state.manager_error = None
+        return HTMLResponse("", headers={"HX-Redirect": "/"})
+
     @app.get("/api/jobs/{job_id}")
     def api_job_status(job_id: str):
         """JSON view of a job — for external callers / debugging."""

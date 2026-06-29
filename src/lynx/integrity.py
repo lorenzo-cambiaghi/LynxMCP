@@ -63,54 +63,79 @@ def check_index(
 
     Returns one of::
 
-        {"status": "ok",      "count": N}
-        {"status": "empty"}                       # nothing built yet / 0 chunks
-        {"status": "corrupt", "detail": "...", "crashed": bool}
+        {"status": "ok",         "count": N}
+        {"status": "empty"}                          # nothing built yet / 0 chunks
+        {"status": "corrupt",    "detail": "...", "crashed": bool}
+        {"status": "unverified", "detail": "..."}    # probe timed out — NOT proof
+                                                     # of corruption (slow disk,
+                                                     # large index, or another
+                                                     # Lynx process holding it)
+
+    A genuinely corrupt or version-incompatible index makes the child exit
+    non-zero (caught exception) or crash natively — those are the only signals
+    we treat as ``corrupt``. A *timeout* is ambiguous: a healthy probe returns
+    in ~1s, so a timeout almost always means the index is large, on a slow /
+    AV-scanned disk, or locked by a concurrent build or an orphaned probe. We
+    retry once with a larger budget and, if it still doesn't finish, report
+    ``unverified`` — the host still won't open the index (crash-safety is
+    preserved), but we don't tell the user to wipe a possibly-healthy one.
     """
     storage_dir = Path(storage_dir)
     # Nothing on disk yet → a fresh source, not a corrupt one.
     if not (storage_dir / "chroma.sqlite3").exists():
         return {"status": "empty"}
 
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "lynx.integrity", str(storage_dir), collection_name],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    # Two attempts: a transient lock/race usually clears by the retry, and the
+    # second, longer budget gives a legitimately slow open room to finish.
+    budgets = (timeout, timeout * 2)
+    timed_out_after = 0.0
+    for budget in budgets:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "lynx.integrity", str(storage_dir), collection_name],
+                capture_output=True,
+                text=True,
+                timeout=budget,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out_after = budget
+            continue  # retry with a larger budget before concluding anything
+        except Exception as e:  # pragma: no cover - spawn failure is environmental
+            # If we can't even spawn the probe, fail open: assume healthy and let
+            # the in-process CorruptIndexError net catch real problems. Better than
+            # marking every source corrupt because of an unrelated OS hiccup.
+            return {"status": "ok", "count": None, "detail": f"probe unavailable: {e}"}
+
+        if proc.returncode == 0:
+            try:
+                data = json.loads(proc.stdout.strip().splitlines()[-1])
+                count = data.get("count")
+            except Exception:
+                return {"status": "ok", "count": None}
+            return {"status": "ok", "count": count} if count else {"status": "empty"}
+
+        # Non-zero exit. returncode 1 == our caught-exception path; anything else
+        # (negative on POSIX, large codes like 0xC0000005 on Windows) == the child
+        # crashed natively. Either way this IS a real corruption signal.
+        crashed = proc.returncode != 1
+        stderr_lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
+        tail = stderr_lines[-1] if stderr_lines else f"probe exited with code {proc.returncode}"
+        prefix = "the index crashed the probe process" if crashed else "the index is unreadable"
         return {
             "status": "corrupt",
-            "detail": f"integrity probe timed out after {timeout:.0f}s "
-                      f"(index likely wedged)",
-            "crashed": True,
+            "detail": f"{prefix}: {tail}",
+            "crashed": crashed,
         }
-    except Exception as e:  # pragma: no cover - spawn failure is environmental
-        # If we can't even spawn the probe, fail open: assume healthy and let
-        # the in-process CorruptIndexError net catch real problems. Better than
-        # marking every source corrupt because of an unrelated OS hiccup.
-        return {"status": "ok", "count": None, "detail": f"probe unavailable: {e}"}
 
-    if proc.returncode == 0:
-        try:
-            data = json.loads(proc.stdout.strip().splitlines()[-1])
-            count = data.get("count")
-        except Exception:
-            return {"status": "ok", "count": None}
-        return {"status": "ok", "count": count} if count else {"status": "empty"}
-
-    # Non-zero exit. returncode 1 == our caught-exception path; anything else
-    # (negative on POSIX, large codes like 0xC0000005 on Windows) == the child
-    # crashed natively.
-    crashed = proc.returncode != 1
-    stderr_lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
-    tail = stderr_lines[-1] if stderr_lines else f"probe exited with code {proc.returncode}"
-    prefix = "the index crashed the probe process" if crashed else "the index is unreadable"
+    # Every attempt timed out. This is NOT proof of corruption — most often the
+    # index is large, on a slow/AV-scanned disk, or locked by another Lynx
+    # process (a concurrent build or an orphaned probe). Surface it as such.
     return {
-        "status": "corrupt",
-        "detail": f"{prefix}: {tail}",
-        "crashed": crashed,
+        "status": "unverified",
+        "detail": f"could not verify the index within {timed_out_after:.0f}s — it may "
+                  f"be large, on a slow disk, or locked by another running Lynx "
+                  f"process; this is not necessarily corruption",
+        "crashed": False,
     }
 
 

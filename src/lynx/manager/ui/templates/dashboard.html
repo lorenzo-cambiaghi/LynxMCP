@@ -96,6 +96,38 @@
         </button>
       </div>
     </div>
+    {% elif s.health == "unverified" %}
+    <div class="p-4 bg-amber-50 border border-amber-200 rounded shadow-sm">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <span class="font-semibold text-amber-900">{{ s.name }}</span>
+          <div class="text-xs text-amber-700 mt-0.5">type: {{ s.type }}</div>
+        </div>
+        <span class="badge bg-amber-100 text-amber-800" title="The integrity probe timed out — likely a large index, a slow/AV-scanned disk, or another Lynx process holding it. Not necessarily corrupt.">⚠ index not verified</span>
+      </div>
+      {% if s.path %}
+        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
+      {% endif %}
+      <p class="text-xs text-amber-800 mb-1">{{ s.error }}</p>
+      <p class="text-xs text-slate-600 mb-2">Lynx left it unopened to stay safe. Close any other running Lynx process (a build or a second manager) and reload this page; reset only if it keeps failing.</p>
+      <div class="flex items-center gap-2">
+        <button
+          hx-post="/api/manager/reload"
+          hx-swap="none"
+          class="px-3 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700">
+          Re-check
+        </button>
+        <div id="reset-status-{{ s.name }}">
+          <button
+            hx-post="/api/sources/{{ s.name }}/reset"
+            hx-target="#reset-status-{{ s.name }}"
+            hx-swap="innerHTML"
+            class="px-3 py-1.5 text-sm rounded border border-amber-300 text-amber-800 hover:bg-amber-100">
+            Reset anyway
+          </button>
+        </div>
+      </div>
+    </div>
     {% else %}
     <div class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
       <div class="flex items-start justify-between mb-2">

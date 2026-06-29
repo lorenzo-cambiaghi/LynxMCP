@@ -474,12 +474,22 @@ def _cmd_build(args) -> int:
     source_name = _resolve_source(args, config)
     _, manager = _build_manager(config_path)
     if source_name in getattr(manager, "broken", {}):
-        print(
-            f"[cli] source {source_name!r} has a corrupt index and can't be "
-            f"incrementally built. Run `lynx reset --source {source_name}` to "
-            f"wipe and rebuild it from scratch.",
-            file=sys.stderr,
-        )
+        info = manager.broken[source_name]
+        if info.get("health") == "unverified":
+            print(
+                f"[cli] source {source_name!r} could not be verified "
+                f"({info['error']}). Close any other running Lynx process and "
+                f"retry; use `lynx reset --source {source_name}` only if it "
+                f"persists.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[cli] source {source_name!r} has a corrupt index and can't be "
+                f"incrementally built. Run `lynx reset --source {source_name}` to "
+                f"wipe and rebuild it from scratch.",
+                file=sys.stderr,
+            )
         return 1
     manager.update(source_name, force=True)
     print(f"Source {source_name!r} ready.")
@@ -589,12 +599,17 @@ def _cmd_status(args) -> int:
     for name in names:
         if name in getattr(manager, "broken", {}):
             info = manager.broken[name]
+            unverified = info.get("health") == "unverified"
             print(f"=== Source: {name} (type: {info['type']}) ===")
-            print(f"Status:       CORRUPT INDEX")
+            print(f"Status:       {'UNVERIFIED (probe timed out)' if unverified else 'CORRUPT INDEX'}")
             if info.get("path"):
                 print(f"Path:         {info['path']}")
             print(f"Error:        {info['error']}")
-            print(f"Fix:          lynx reset --source {name}")
+            if unverified:
+                print(f"Fix:          close other Lynx processes and retry; "
+                      f"`lynx reset --source {name}` only if it persists")
+            else:
+                print(f"Fix:          lynx reset --source {name}")
             print()
             continue
         backend = manager.get(name)
