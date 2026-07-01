@@ -499,8 +499,11 @@ def main() -> int:
             if needle not in r.text:
                 print(f"[test] FAIL [24/27]: /integrations missing {needle!r}")
                 return 24
-        # The snippet must contain the current python executable path
-        if sys.executable not in r.text:
+        # The snippet embeds the interpreter path inside a JSON block, so on
+        # Windows its backslashes are doubled (C:\\Users\\...). Match that
+        # escaped form — a no-op on POSIX, where the path has no backslashes.
+        expected_python = sys.executable.replace("\\", "\\\\")
+        if expected_python not in r.text:
             print(f"[test] FAIL [24/27]: snippet doesn't include current python path")
             return 24
         print(f"[test] OK [24/27] /integrations: per-client cards + snippet")
@@ -519,7 +522,10 @@ def main() -> int:
             print(f"[test] FAIL [25/27]: wrong filename in disposition: "
                   f"{r.headers.get('content-disposition')}")
             return 25
-        if "Code Reuse" not in r.text or "search_demo" not in r.text:
+        # Tools take a `source=` argument now (not per-source `search_<name>`),
+        # so the rules list the source name and the generic search tool.
+        if ("Code Reuse" not in r.text or "`demo`" not in r.text
+                or "search(query" not in r.text):
             print(f"[test] FAIL [25/27]: rules content unexpected: {r.text[:200]}")
             return 25
         print(f"[test] OK [25/27] /api/integrations/claude/rules: CLAUDE.md downloaded")
