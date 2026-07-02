@@ -13,6 +13,15 @@ byte leaving your machine.
   `LIMIT` — Coral maps it to Lynx's `top_k` (clamped to 50). Each row carries
   `source`, `file`, `file_path`, `symbol`, `kind`, `language`,
   `start_line`/`end_line`, `score`, and the code `content` itself.
+- **Code-graph functions** — pivot from a `lynx.search` hit's `symbol` to its
+  structural neighbourhood (who calls it, what it depends on, what breaks if it
+  changes), then JOIN that blast radius with live data:
+  `lynx.callers`, `lynx.callees`, `lynx.subclasses`, `lynx.superclasses`,
+  `lynx.imports`, and `lynx.neighbors` — each called as
+  `lynx.callers(symbol => '...')` with an optional `source`. Rows are flat edges
+  (`from_*` → `to_*` with `relation`, plus the `call_site_*`); SQL `LIMIT` caps
+  the edge count. Symbol matching is fuzzy (case-insensitive substring).
+  Available only for **codebase sources that have the graph layer enabled**.
 
 ## Setup
 
@@ -78,6 +87,42 @@ List what you've indexed:
 
 ```sql
 SELECT name, type, chunk_count FROM lynx.sources;
+```
+
+### From a hit to its blast radius (the graph functions)
+
+Find the code behind a behaviour, then ask the graph who calls it — the set of
+things a change would ripple into:
+
+```sql
+-- 1. locate the symbol
+SELECT symbol FROM lynx.search(q => 'verify a webhook signature') LIMIT 1;
+-- 2. who would a change to it affect?
+SELECT from_symbol, from_file, from_start_line
+FROM lynx.callers(symbol => 'WebhookVerifier.verify')
+LIMIT 50;
+```
+
+`callees` (what it calls), `superclasses`/`subclasses` (inheritance, either
+direction), and `imports` (the imported `module`) work the same way.
+`neighbors` returns every incident edge and also takes an optional `relation`
+filter and a `depth` (hops):
+
+```sql
+SELECT relation, from_symbol, to_symbol
+FROM lynx.neighbors(symbol => 'PaymentService', relation => 'calls', depth => 2)
+LIMIT 50;
+```
+
+The payoff is joining structural impact with live data — e.g. who *owns* the
+code a change ripples into, by pairing callers with open PRs:
+
+```sql
+SELECT c.from_symbol, c.from_file, p.html_url
+FROM lynx.callers(symbol => 'PaymentService.charge') c
+CROSS JOIN github.pulls p
+WHERE p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
+LIMIT 20;
 ```
 
 ## Live validation
@@ -148,6 +193,41 @@ capped at 50:
 | `SELECT file FROM lynx.search(...) LIMIT 3`   | 3 |
 | `SELECT file FROM lynx.search(...) LIMIT 12`  | 12 — exceeds Lynx's default 8, so `LIMIT` is driving `top_k` |
 | `SELECT file FROM lynx.search(...) LIMIT 100` | 50 — Lynx clamps `top_k` to its `[1, 50]` ceiling |
+
+### Graph functions
+
+Same run, against the same indexed codebase source (it has the graph layer
+enabled). `Math.Clamp` is a real symbol in that tree; matching is fuzzy, so the
+short name resolves to `Framework.Utility.Math.Clamp`:
+
+```console
+$ coral sql "SELECT from_symbol, from_kind, from_start_line, relation FROM lynx.callers(symbol => 'Math.Clamp') LIMIT 5"
++-----------------------------------------------------------------+-----------+-----------------+----------+
+| from_symbol                                                     | from_kind | from_start_line | relation |
++-----------------------------------------------------------------+-----------+-----------------+----------+
+| Framework.Utility.Math.Clamp01                                  | function  | 167             | calls    |
+| Framework.Animation.Editor.TimelinePanel.SetFrame               | function  | 164             | calls    |
+| Framework.Animation.Editor.TimelinePanel.FrameFromPanelPosition | function  | 449             | calls    |
+| Framework.Animation.AvatarMoveEvent.Validate                    | function  | 67              | calls    |
+| Framework.Animation.Events.PhasedStateMoveEvent.Validate        | function  | 62              | calls    |
++-----------------------------------------------------------------+-----------+-----------------+----------+
+
+$ coral sql "SELECT relation, from_symbol, to_symbol FROM lynx.neighbors(symbol => 'Math.Clamp') LIMIT 6"
++----------+-------------------------------------------------------------------------------------+------------------------------+
+| relation | from_symbol                                                                         | to_symbol                    |
++----------+-------------------------------------------------------------------------------------+------------------------------+
+| calls    | Framework.Voxel.VoxelWorldGI.CreateResources                                        | Framework.Utility.Math.Clamp |
+| calls    | Framework.ElementsOnTrackV2.TrackMovement.UpdateMovement                            | Framework.Utility.Math.Clamp |
+| calls    | Framework.SplineUtility.Smoothing.SmoothingSplinesSmoothing.CalculateOptimalLambda  | Framework.Utility.Math.Clamp |
+| calls    | Framework.Track.Editor.RuntimePreviewGenerator.Padding                              | Framework.Utility.Math.Clamp |
+| calls    | Framework.SplineUtility.Smoothing.SmoothingSplinesSmoothing.GetWrappedIndex         | Framework.Utility.Math.Clamp |
+| calls    | Framework.Utility.Editor.CachedAnimationCurvePropertyDrawer.CreateSegmentsContainer | Framework.Utility.Math.Clamp |
++----------+-------------------------------------------------------------------------------------+------------------------------+
+```
+
+Each row is a real call edge from the codebase's graph layer — the inbound set
+for `callers` is exactly the blast radius of a change to `Math.Clamp`. SQL
+`LIMIT` caps the edge count (Lynx's `limit`, clamped to 200).
 
 ## Notes
 

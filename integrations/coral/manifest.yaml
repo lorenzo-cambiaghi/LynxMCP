@@ -168,3 +168,260 @@ functions:
         nullable: true
         description: The code chunk itself.
         expr: { kind: path, path: [content] }
+
+  # --- Code knowledge-graph functions --------------------------------------
+  # One function per graph operation over the same /api/v1/graph endpoint, so
+  # an agent can pivot from a lynx.search hit's `symbol` to its structural
+  # neighbourhood and JOIN that blast radius with live data (PRs, tickets,
+  # owners). Symbol matching is fuzzy (case-insensitive substring), same as
+  # Lynx's `graph_query` MCP tool. Every function returns flat edge rows
+  # (`from_*` -> `to_*` with `relation`); SQL `LIMIT` caps the edge count
+  # (mapped to the API's `limit`, server-clamped to [1, 200]). `source` is
+  # optional when exactly one indexed source has the graph layer; only
+  # codebase sources with the graph layer enabled answer these.
+  - name: callers
+    description: >-
+      Inbound call edges — who calls `symbol`. The blast radius of a change:
+      pivot from a lynx.search hit to everything that would break if you touch
+      it. Call as lynx.callers(symbol => 'MyClass.handle').
+    args: &graph_args
+      - name: symbol
+        required: true
+        bind: { arg: symbol }
+      - name: source
+        required: false
+        bind: { arg: source }
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: callers
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+    response: &graph_response
+      rows_path:
+        - results
+    # SQL `LIMIT` -> the Lynx `limit` query param (clamped to [1, 200]).
+    pagination: &graph_pagination
+      mode: none
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns: &graph_columns
+      - name: relation
+        type: Utf8
+        nullable: false
+        description: Edge type (e.g. calls, inherits, imports).
+        expr: { kind: path, path: [relation] }
+      - name: base_kind
+        type: Utf8
+        nullable: true
+        description: Normalised relation family for the edge.
+        expr: { kind: path, path: [base_kind] }
+      - name: confidence
+        type: Utf8
+        nullable: true
+        description: Resolver confidence for the edge, when available.
+        expr: { kind: path, path: [confidence] }
+      - name: module
+        type: Utf8
+        nullable: true
+        description: For `imports`, the imported module/path (the target node is often synthetic).
+        expr: { kind: path, path: [module] }
+      - name: from_symbol
+        type: Utf8
+        nullable: false
+        description: Qualified symbol of the edge's source node.
+        expr: { kind: path, path: [from_symbol] }
+      - name: from_kind
+        type: Utf8
+        nullable: true
+        description: Symbol kind of the source node (function, class, method, ...).
+        expr: { kind: path, path: [from_kind] }
+      - name: from_file
+        type: Utf8
+        nullable: true
+        description: File of the source node.
+        expr: { kind: path, path: [from_file] }
+      - name: from_start_line
+        type: Int64
+        nullable: true
+        description: First line of the source node (1-based).
+        expr: { kind: path, path: [from_start_line] }
+      - name: from_end_line
+        type: Int64
+        nullable: true
+        description: Last line of the source node.
+        expr: { kind: path, path: [from_end_line] }
+      - name: to_symbol
+        type: Utf8
+        nullable: false
+        description: Qualified symbol of the edge's target node.
+        expr: { kind: path, path: [to_symbol] }
+      - name: to_kind
+        type: Utf8
+        nullable: true
+        description: Symbol kind of the target node.
+        expr: { kind: path, path: [to_kind] }
+      - name: to_file
+        type: Utf8
+        nullable: true
+        description: File of the target node.
+        expr: { kind: path, path: [to_file] }
+      - name: to_start_line
+        type: Int64
+        nullable: true
+        description: First line of the target node (1-based).
+        expr: { kind: path, path: [to_start_line] }
+      - name: to_end_line
+        type: Int64
+        nullable: true
+        description: Last line of the target node.
+        expr: { kind: path, path: [to_end_line] }
+      - name: call_site_file
+        type: Utf8
+        nullable: true
+        description: File where the edge occurs (the call site), when known.
+        expr: { kind: path, path: [call_site_file] }
+      - name: call_site_line
+        type: Int64
+        nullable: true
+        description: Line of the call site, when known.
+        expr: { kind: path, path: [call_site_line] }
+
+  - name: callees
+    description: >-
+      Outbound call edges — what `symbol` calls. The direct dependencies of a
+      function/method. Call as lynx.callees(symbol => 'MyClass.handle').
+    args: *graph_args
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: callees
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+    response: *graph_response
+    pagination: *graph_pagination
+    columns: *graph_columns
+
+  - name: subclasses
+    description: >-
+      Types that extend/implement `symbol` (inbound inheritance edges). Call as
+      lynx.subclasses(symbol => 'BaseRepository').
+    args: *graph_args
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: subclasses
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+    response: *graph_response
+    pagination: *graph_pagination
+    columns: *graph_columns
+
+  - name: superclasses
+    description: >-
+      Types `symbol` extends/implements (outbound inheritance edges). Call as
+      lynx.superclasses(symbol => 'SqlUserRepository').
+    args: *graph_args
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: superclasses
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+    response: *graph_response
+    pagination: *graph_pagination
+    columns: *graph_columns
+
+  - name: imports
+    description: >-
+      Modules/paths `symbol`'s file imports (outbound import edges). The
+      imported target is in the `module` column. Call as
+      lynx.imports(symbol => 'payment/webhooks.py').
+    args: *graph_args
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: imports
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+    response: *graph_response
+    pagination: *graph_pagination
+    columns: *graph_columns
+
+  - name: neighbors
+    description: >-
+      All edges incident to `symbol`, in either direction — the full local
+      neighbourhood. Optionally filter to one `relation` and widen to `depth`
+      hops. Call as lynx.neighbors(symbol => 'MyClass.handle').
+    args:
+      - name: symbol
+        required: true
+        bind: { arg: symbol }
+      - name: source
+        required: false
+        bind: { arg: source }
+      - name: relation
+        required: false
+        bind: { arg: relation }
+      - name: depth
+        required: false
+        bind: { arg: depth }
+    request:
+      method: GET
+      path: /api/v1/graph
+      query:
+        - name: operation
+          from: literal
+          value: neighbors
+        - name: symbol
+          from: arg
+          key: symbol
+        - name: source
+          from: arg
+          key: source
+        - name: relation
+          from: arg
+          key: relation
+        - name: depth
+          from: arg
+          key: depth
+    response: *graph_response
+    pagination: *graph_pagination
+    columns: *graph_columns

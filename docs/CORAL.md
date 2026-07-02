@@ -14,6 +14,9 @@ code search with the tools your team already lives in**, all on your machine:
   implements it.
 - 🎫 Pull open tickets from Coral and (with the Python helper) batch-search
   Lynx to map each to its likely code area.
+- 🕸️ Pivot from a code hit to its **structural blast radius** — who calls it,
+  what it depends on, what breaks if it changes — and JOIN that with the
+  owners/PRs/tickets living in your other sources.
 
 With the source spec in [`integrations/coral/manifest.yaml`](../integrations/coral/manifest.yaml),
 Lynx becomes a Coral schema, and your agent can JOIN code search with live
@@ -63,6 +66,26 @@ itself — so the agent cites precisely without extra reads.
    FROM lynx.search(q => 'where passwords are hashed') LIMIT 5;
    ```
 
+4. **Walk the code graph.** Six functions pivot from a `symbol` (e.g. one you
+   got from `lynx.search`) to its structural neighbourhood, each over the
+   `/api/v1/graph` endpoint: `lynx.callers` / `lynx.callees` (call edges),
+   `lynx.subclasses` / `lynx.superclasses` (inheritance), `lynx.imports`, and
+   `lynx.neighbors` (every incident edge; also takes `relation` and `depth`).
+   Call them with `symbol => '...'` (optional `source => ...`); rows are flat
+   edges (`from_*` → `to_*` with `relation`), and SQL `LIMIT` caps the edge
+   count. They answer only for codebase sources with the graph layer enabled:
+
+   ```sql
+   -- who would a change to this symbol ripple into?
+   SELECT from_symbol, from_file FROM lynx.callers(symbol => 'PaymentService.charge') LIMIT 50;
+   -- and which of those is touched by an open PR?
+   SELECT c.from_symbol, p.html_url
+   FROM lynx.callers(symbol => 'PaymentService.charge') c
+   CROSS JOIN github.pulls p
+   WHERE p.owner = 'your-org' AND p.repo = 'your-repo' AND p.state = 'open'
+   LIMIT 20;
+   ```
+
 ## The API behind it
 
 The spec talks to Lynx's stable local JSON API (additive-only within v1):
@@ -88,9 +111,11 @@ not a dependency. All three GET endpoints also accept `format=ndjson` (one JSON
 row per line) so they drop straight into DuckDB / `jq` / pandas; see
 [DUCKDB.md](DUCKDB.md) for join recipes.
 
-> A first-class Coral table-function over the graph (e.g. `lynx.callers(symbol)`)
-> is planned as a follow-up to the initial `lynx.search` / `lynx.sources` source;
-> the `GET /api/v1/graph` endpoint above is the bridge it will sit on.
+The source spec exposes this endpoint as the six graph functions above
+(`lynx.callers`, `lynx.callees`, `lynx.subclasses`, `lynx.superclasses`,
+`lynx.imports`, `lynx.neighbors`) — one `operation` each, sharing the flat-edge
+column set — so the structural pivot is plain SQL, JOINable with any other
+Coral source.
 
 ## Build your own: row-driven search from Python
 
