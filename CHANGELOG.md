@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+- **`lynx manager doctor` detects a wedged index WAL — and `--heal-wal` fixes
+  it without a rebuild.** A process killed mid-write (Ctrl-C during watcher
+  indexing, a killed serve) can leave pending rows in chroma's
+  `embeddings_queue` with a segment behind the queue tail; chromadb (observed
+  on 1.5.9) then deadlocks forever on every open, which surfaced as integrity
+  probe timeouts at every start. The per-source doctor check now reads the
+  fingerprint via plain read-only sqlite (never a Chroma client — that's what
+  hangs) and reports "index WAL is wedged" with the remedy. `lynx manager
+  doctor --heal-wal SOURCE` purges the stuck writes and stale write locks,
+  drops the affected files from the SHA cache so the next build / watcher
+  pass re-indexes them (nothing silently lost), and proves the result with
+  the out-of-process probe. Refuses while any Lynx process holds the store.
+
 ### Fixed
 - **A store held by another Lynx process no longer alarms the dashboard.**
   While `lynx serve` holds a source's ChromaDB store, an out-of-process

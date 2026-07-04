@@ -199,6 +199,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Output results as JSON instead of colored text.",
     )
+    sp_mgr_doctor.add_argument(
+        "--heal-wal", metavar="SOURCE",
+        help="Surgically heal SOURCE's wedged index WAL (writes left stuck "
+             "by a killed process make ChromaDB hang on every open). Purges "
+             "the stuck writes and queues the affected files for re-indexing "
+             "— no full rebuild. Stop all Lynx processes first.",
+    )
 
     sp_mgr_install = manager_sub.add_parser(
         "install",

@@ -282,6 +282,48 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
         if chroma_db.exists():
             size_mb = chroma_db.stat().st_size / (1024 * 1024)
             details.append(f"ChromaDB: {size_mb:.1f} MB at {chroma_db}")
+
+            # 2b. WAL wedge fingerprint. A process killed mid-write can leave
+            # pending queue rows on which chromadb deadlocks forever (every
+            # open hangs — it shows up as integrity-probe timeouts at every
+            # serve/UI start). Read-only plain-sqlite inspection, never a
+            # Chroma client. Skip the verdict while another process holds the
+            # store: a live indexer legitimately has ops in flight.
+            try:
+                from ..integrity import inspect_wal, _store_usage
+                wal = inspect_wal(source_storage)
+            except Exception:
+                wal = None
+            if wal and wal["pending_ops"]:
+                if _store_usage(source_storage) == "other":
+                    details.append(
+                        f"WAL: {wal['pending_ops']} write(s) in flight — index "
+                        f"in use by another Lynx process, skipping the wedge check"
+                    )
+                elif wal["wedged"]:
+                    mins = int(wal["oldest_pending_s"] // 60)
+                    return CheckResult(
+                        name=f"Source {name!r}",
+                        status=STATUS_ERROR,
+                        summary=(f"index WAL is wedged — {wal['pending_ops']} "
+                                 f"write(s) stuck for {mins} min"),
+                        details=details + [
+                            "A process was likely killed mid-write; ChromaDB "
+                            "deadlocks on this state (every open hangs forever, "
+                            "surfacing as probe timeouts / 'index not verified').",
+                            f"Files awaiting re-index: {len(wal['affected_files'])}",
+                            f"Fix: stop every Lynx process, then run "
+                            f"`lynx manager doctor --heal-wal {name}` — it purges "
+                            f"the stuck writes and queues the affected files for "
+                            f"re-indexing. `lynx reset --source {name}` also "
+                            f"works but rebuilds the whole index.",
+                        ],
+                    )
+                else:
+                    details.append(
+                        f"WAL: {wal['pending_ops']} write(s) in flight "
+                        f"(normal during indexing)"
+                    )
         else:
             details.append(f"ChromaDB: not yet built (run `lynx build --source {name}`)")
     else:
@@ -455,6 +497,10 @@ def run_doctor(args) -> int:
     from ..config import resolve_config_path
     resolved = resolve_config_path(getattr(args, "config", None))
     config_path = resolved if resolved.is_file() else None
+
+    if getattr(args, "heal_wal", None):
+        return _run_heal_wal(args.heal_wal, config_path)
+
     results = run_all_checks(config_path)
 
     if getattr(args, "json", False):
@@ -464,3 +510,57 @@ def run_doctor(args) -> int:
 
     worst = _worst_status(results)
     return {STATUS_OK: 0, STATUS_WARN: 1, STATUS_ERROR: 2}[worst]
+
+
+def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
+    """`lynx manager doctor --heal-wal SOURCE` — surgically unwedge a store
+    whose WAL was left half-written by a killed process (the state the
+    per-source doctor check flags as 'index WAL is wedged'). Purges the
+    stuck writes, queues the affected files for re-indexing, then proves
+    the result with the out-of-process integrity probe."""
+    if config_path is None:
+        print("[doctor] no config file found — pass --config PATH", file=sys.stderr)
+        return 2
+    from ..config import load_config
+    cfg = load_config(config_path)
+    if name not in cfg.sources:
+        print(f"[doctor] unknown source {name!r}. "
+              f"Available: {list(cfg.sources)}", file=sys.stderr)
+        return 2
+
+    storage_dir = Path(cfg.storage_path) / name
+    from ..integrity import check_index, heal_wal, inspect_wal
+
+    wal = inspect_wal(storage_dir)
+    if wal is None:
+        print(f"[doctor] source {name!r} has no index yet — nothing to heal.")
+        return 0
+    if not wal["pending_ops"] and not wal["stale_locks"]:
+        print(f"[doctor] source {name!r}: WAL is clean — nothing to heal.")
+        return 0
+
+    try:
+        outcome = heal_wal(storage_dir)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"[doctor] can't heal {name!r}: {e}", file=sys.stderr)
+        return 2
+
+    print(f"[doctor] purged {outcome['purged_ops']} stuck write(s) and "
+          f"{outcome['purged_locks']} stale write lock(s).")
+    if outcome["reindex_files"]:
+        print(f"[doctor] {len(outcome['reindex_files'])} file(s) queued for "
+              f"re-indexing on the next build / watcher pass:")
+        for f in outcome["reindex_files"]:
+            print(f"  - {f}")
+
+    print("[doctor] verifying the healed index (out-of-process probe)...")
+    result = check_index(storage_dir, name)
+    if result["status"] in ("ok", "empty"):
+        count = result.get("count")
+        print(f"[doctor] index verified healthy"
+              + (f" ({count} chunks)." if count else "."))
+        return 0
+    print(f"[doctor] index still {result['status']} after the heal "
+          f"({result.get('detail', '')}). Fall back to "
+          f"`lynx reset --source {name}`.", file=sys.stderr)
+    return 2

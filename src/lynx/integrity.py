@@ -341,6 +341,153 @@ def check_index(
     }
 
 
+# ---------------------------------------------------------------------------
+# WAL wedge: fingerprint + surgical heal
+# ---------------------------------------------------------------------------
+
+def inspect_wal(storage_dir) -> dict | None:
+    """Read-only WAL fingerprint of a store, via plain sqlite.
+
+    Never goes through a Chroma client: on the state this looks for, any
+    Chroma client deadlocks forever at zero CPU — that's the very failure
+    being diagnosed. A process killed mid-write can leave pending rows in
+    ``embeddings_queue`` with a segment's ``max_seq_id`` behind the queue
+    tail; chromadb (observed on 1.5.9) then hangs on the first read, from
+    any process, even on a byte-for-byte copy of the store.
+
+    Returns None when there is no store, else a dict:
+
+        pending_ops       rows still in embeddings_queue
+        oldest_pending_s  age in seconds of the oldest pending row (0 if none)
+        lagging_segments  segments whose max_seq_id trails the queue tail
+        stale_locks       rows in acquire_write (killed writers' leftovers)
+        affected_files    file_path values named by the pending rows
+        wedged            True on the deadlock fingerprint: pending ops older
+                          than 10 minutes with a lagging segment. A live
+                          indexer drains its queue in seconds, so age is the
+                          discriminator — but the caller should still skip
+                          the verdict when another process holds the store.
+    """
+    import sqlite3
+
+    sqlite_path = Path(storage_dir) / "chroma.sqlite3"
+    if not sqlite_path.exists():
+        return None
+
+    info = {"pending_ops": 0, "oldest_pending_s": 0.0, "lagging_segments": 0,
+            "stale_locks": 0, "affected_files": [], "wedged": False}
+    db = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    try:
+        def one(sql, default=0):
+            # Tables differ across chroma versions — a missing one just
+            # means "no signal", not an error.
+            try:
+                row = db.execute(sql).fetchone()
+                return row[0] if row and row[0] is not None else default
+            except sqlite3.Error:
+                return default
+
+        info["pending_ops"] = one("SELECT count(*) FROM embeddings_queue")
+        if info["pending_ops"]:
+            info["oldest_pending_s"] = float(one(
+                "SELECT (julianday('now') - julianday(min(created_at))) * 86400"
+                " FROM embeddings_queue"))
+            info["lagging_segments"] = one(
+                "SELECT count(*) FROM max_seq_id WHERE seq_id <"
+                " (SELECT max(seq_id) FROM embeddings_queue)")
+            files = set()
+            try:
+                for (meta,) in db.execute("SELECT metadata FROM embeddings_queue"):
+                    try:
+                        m = json.loads(meta) if meta else {}
+                    except ValueError:
+                        continue
+                    fp = m.get("file_path") or (m.get("metadata") or {}).get("file_path")
+                    if fp:
+                        files.add(fp)
+            except sqlite3.Error:
+                pass
+            info["affected_files"] = sorted(files)
+        info["stale_locks"] = one("SELECT count(*) FROM acquire_write")
+    finally:
+        db.close()
+
+    info["wedged"] = bool(
+        info["pending_ops"]
+        and info["lagging_segments"]
+        and info["oldest_pending_s"] > 600
+    )
+    return info
+
+
+def heal_wal(storage_dir) -> dict:
+    """Surgically unwedge a store: purge the pending queue and the stale
+    write locks, then drop the affected files from ``file_hashes.json`` so
+    the next build / watcher pass re-indexes them — nothing is silently
+    lost, and no full rebuild is needed.
+
+    Refuses while ANY process (this one included) holds the store: the
+    purge must not race a live Chroma client. Verified against the real
+    wedge of 2026-07-04: the integrity probe went from an infinite hang to
+    ``ok`` the moment the queue was purged.
+    """
+    import sqlite3
+
+    storage_dir = Path(storage_dir)
+    sqlite_path = storage_dir / "chroma.sqlite3"
+    if not sqlite_path.exists():
+        raise FileNotFoundError(f"no store at {sqlite_path}")
+    usage = _store_usage(storage_dir)
+    if usage in ("other", "self"):
+        holder = ("another running Lynx process (usually `lynx serve`)"
+                  if usage == "other" else "this very process")
+        raise RuntimeError(
+            f"the store is currently open in {holder} — stop it and retry; "
+            f"healing must not race a live client"
+        )
+
+    fingerprint = inspect_wal(storage_dir) or {}
+    affected = fingerprint.get("affected_files", [])
+
+    db = sqlite3.connect(str(sqlite_path))
+    try:
+        purged_ops = db.execute("DELETE FROM embeddings_queue").rowcount
+        try:
+            purged_locks = db.execute("DELETE FROM acquire_write").rowcount
+        except sqlite3.Error:
+            purged_locks = 0
+        db.commit()
+    finally:
+        db.close()
+
+    dropped = _drop_from_file_hashes(storage_dir, affected)
+    return {"purged_ops": purged_ops, "purged_locks": purged_locks,
+            "reindex_files": dropped}
+
+
+def _drop_from_file_hashes(storage_dir: Path, files) -> list:
+    """Remove `files` from the store's SHA cache so the next build re-indexes
+    them. Path-normalized matching — the cache may use either slash style."""
+    hashes_path = storage_dir / "file_hashes.json"
+    if not files or not hashes_path.exists():
+        return []
+
+    def norm(p):
+        return os.path.normcase(os.path.normpath(str(p)))
+
+    wanted = {norm(f) for f in files}
+    try:
+        data = json.loads(hashes_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    dropped = [k for k in data if norm(k) in wanted]
+    for k in dropped:
+        del data[k]
+    if dropped:
+        hashes_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return dropped
+
+
 if __name__ == "__main__":
     # This runs as a fresh subprocess (not through cli.main), and an
     # HTTPS-inspecting antivirus re-injects SSLKEYLOGFILE into every new
