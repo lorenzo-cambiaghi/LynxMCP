@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.7.6 — 2026-07-04
 
 ### Added
+- **Coral: the code graph is now queryable as six functions.** On top of the
+  merged `lynx.search` source, `lynx.callers` / `callees` / `subclasses` /
+  `superclasses` / `imports` / `neighbors(symbol => '...')` expose the
+  GET /api/v1/graph endpoint with a shared flat-edge column set
+  (`from_*` → `to_*` with relation + call site), so a search hit's symbol can
+  be pivoted to its structural blast radius and JOINed with live data.
+  Canonical spec in `integrations/coral/manifest.yaml`; a mirror restyled
+  to Coral's house conventions is staged for the community PR.
 - **`lynx manager doctor` detects a wedged index WAL — and `--heal-wal` fixes
   it without a rebuild.** A process killed mid-write (Ctrl-C during watcher
   indexing, a killed serve) can leave pending rows in chroma's
@@ -17,6 +25,14 @@
   the out-of-process probe. Refuses while any Lynx process holds the store.
 
 ### Fixed
+- **A timed-out integrity probe is no longer branded a corrupt index.** A
+  slow/large index, an AV-scanned disk, or another process holding the store
+  made the probe time out, and Lynx reported `corrupt` — telling the user to
+  reset a healthy index. Only a non-zero probe exit (caught exception or
+  native crash) counts as corruption now; a timeout retries once with a
+  larger budget and then reports a new `unverified` status: amber "index not
+  verified" card with a Re-check button instead of the red corrupt/reset
+  card, mirrored in CLI status and build.
 - **A store held by another Lynx process no longer alarms the dashboard.**
   While `lynx serve` holds a source's ChromaDB store, an out-of-process
   integrity probe can never finish (chroma's Rust core blocks a second
@@ -40,6 +56,9 @@
   deleted the unlocked files first and then failed on the held sqlite,
   half-destroying a healthy (just busy) index. `reset_source` now raises a
   clear error up front; stop the other Lynx process and retry.
+- **The dashboard sidebar shows the real version instead of "vdev".** The
+  lookup asked importlib.metadata for the distribution `lynx`, but the
+  package is published as `lynx-mcp`, so it always fell back to "dev".
 
 ## 1.7.5 — 2026-06-27
 
