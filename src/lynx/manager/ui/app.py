@@ -121,11 +121,15 @@ def create_app(config_path: Optional[Path] = None):
 
 def _lynx_version() -> str:
     """Best-effort lookup of the installed package version."""
-    try:
-        from importlib.metadata import version
-        return version("lynx")
-    except Exception:
-        return "dev"
+    from importlib.metadata import version
+    # The distribution is `lynx-mcp` (bare `lynx` on PyPI is an unrelated
+    # 2014 library); only an uninstalled source tree falls back to "dev".
+    for dist in ("lynx-mcp", "lynx"):
+        try:
+            return version(dist)
+        except Exception:
+            continue
+    return "dev"
 
 
 def _get_manager(app):
