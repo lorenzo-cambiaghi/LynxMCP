@@ -475,7 +475,13 @@ def _cmd_build(args) -> int:
     _, manager = _build_manager(config_path)
     if source_name in getattr(manager, "broken", {}):
         info = manager.broken[source_name]
-        if info.get("health") == "unverified":
+        if info.get("health") == "in_use":
+            print(
+                f"[cli] source {source_name!r} is busy: {info['error']}. "
+                f"Stop the other Lynx process (usually `lynx serve`) and retry.",
+                file=sys.stderr,
+            )
+        elif info.get("health") == "unverified":
             print(
                 f"[cli] source {source_name!r} could not be verified "
                 f"({info['error']}). Close any other running Lynx process and "
@@ -599,13 +605,20 @@ def _cmd_status(args) -> int:
     for name in names:
         if name in getattr(manager, "broken", {}):
             info = manager.broken[name]
-            unverified = info.get("health") == "unverified"
+            health = info.get("health", "corrupt")
+            label = {
+                "unverified": "UNVERIFIED (probe timed out)",
+                "in_use": "IN USE (held by another Lynx process)",
+            }.get(health, "CORRUPT INDEX")
             print(f"=== Source: {name} (type: {info['type']}) ===")
-            print(f"Status:       {'UNVERIFIED (probe timed out)' if unverified else 'CORRUPT INDEX'}")
+            print(f"Status:       {label}")
             if info.get("path"):
                 print(f"Path:         {info['path']}")
             print(f"Error:        {info['error']}")
-            if unverified:
+            if health == "in_use":
+                print(f"Fix:          nothing to fix — the index is healthy and "
+                      f"serving that process; stop `lynx serve` if you need it here")
+            elif health == "unverified":
                 print(f"Fix:          close other Lynx processes and retry; "
                       f"`lynx reset --source {name}` only if it persists")
             else:

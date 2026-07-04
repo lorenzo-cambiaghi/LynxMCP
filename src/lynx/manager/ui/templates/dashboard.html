@@ -96,6 +96,26 @@
         </button>
       </div>
     </div>
+    {% elif s.health == "in_use" %}
+    <div class="p-4 bg-sky-50 border border-sky-200 rounded shadow-sm">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <span class="font-semibold text-sky-900">{{ s.name }}</span>
+          <div class="text-xs text-sky-700 mt-0.5">type: {{ s.type }}</div>
+        </div>
+        <span class="badge bg-sky-100 text-sky-800" title="Another running Lynx process (usually `lynx serve`) holds this index. It is healthy and serving queries there — ChromaDB just doesn't allow a second process to open it.">🔒 in use by lynx serve</span>
+      </div>
+      {% if s.path %}
+        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
+      {% endif %}
+      <p class="text-xs text-slate-600 mb-2">Nothing is wrong — the index is busy serving the MCP server. Stop that process and Re-check if you want to manage this source here.</p>
+      <button
+        hx-post="/api/manager/reload"
+        hx-swap="none"
+        class="px-3 py-1.5 text-sm rounded bg-sky-600 text-white hover:bg-sky-700">
+        Re-check
+      </button>
+    </div>
     {% elif s.health == "unverified" %}
     <div class="p-4 bg-amber-50 border border-amber-200 rounded shadow-sm">
       <div class="flex items-start justify-between mb-2">

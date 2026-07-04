@@ -76,6 +76,16 @@ class SourceManager:
                         result["detail"],
                     )
                     continue
+                if result["status"] == "in_use":
+                    # Another running Lynx process (usually `lynx serve`) holds
+                    # the store. The index is healthy and serving queries there;
+                    # ChromaDB just won't let a second process use it, so we
+                    # can't open or verify it here. Nothing is wrong.
+                    self._register_in_use(
+                        name, type_name, src_cfg, per_source_storage,
+                        result["detail"],
+                    )
+                    continue
 
             try:
                 self.backends[name] = backend_cls(
@@ -142,6 +152,30 @@ class SourceManager:
             f"safe. Close any other running Lynx process (a build or a second "
             f"manager) and restart; if it persists, `lynx reset --source {name}` "
             f"rebuilds from your files.",
+            file=sys.stderr,
+        )
+
+    def _register_in_use(self, name, type_name, src_cfg, storage_dir,
+                         detail) -> None:
+        """Register a source whose store is held by ANOTHER Lynx process
+        (usually `lynx serve`). Unlike `_register_broken`/`_register_unverified`
+        this is a healthy, expected state — the index is fine and busy serving
+        the other process; it just can't be opened twice. Never suggest reset:
+        wiping files a live server holds open is the one action that could
+        actually cause damage here."""
+        self.broken[name] = {
+            "name": name,
+            "type": type_name,
+            "path": str(src_cfg.get("path") or src_cfg.get("url") or ""),
+            "error": detail,
+            "storage_dir": str(storage_dir),
+            "crashed": False,
+            "health": "in_use",
+        }
+        print(
+            f"[manager] source {name!r}: {detail}. This is normal while "
+            f"`lynx serve` is running; stop it and reload if you need to "
+            f"manage this source here.",
             file=sys.stderr,
         )
 
