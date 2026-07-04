@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **A store held by another Lynx process no longer alarms the dashboard.**
+  While `lynx serve` holds a source's ChromaDB store, an out-of-process
+  integrity probe can never finish (chroma's Rust core blocks a second
+  process's first read forever), so every manager-UI start burned the full
+  60s+120s timeout and showed a scary warning about a healthy index. On
+  Windows, `check_index` now detects who holds the store up front (zero-sharing
+  open + Restart Manager attribution) and returns a new `in_use` status
+  instantly: the dashboard shows a neutral "in use by another Lynx process"
+  card (Re-check button, deliberately no Reset), and CLI status/build mirror
+  the message. A store held only by the current process (e.g. after a manager
+  reload, via chroma's client cache) is reported healthy instead of probed
+  into a guaranteed deadlock. POSIX keeps the previous probe-and-timeout
+  behavior. A transient non-Lynx holder (AV scan, backup tool) is filtered by
+  a short re-check before the store is declared in use.
+- **Orphaned integrity probes no longer wedge a store.** Windows doesn't reap
+  children when the parent dies (Ctrl-C, closed terminal), and an orphaned
+  probe blocked on another process's store lock lingered forever holding a
+  handle — making every later probe time out too. The probe child now
+  hard-exits on its own once the parent's timeout budget is over.
+- **Reset refuses to wipe a store another process holds open.** The wipe path
+  deleted the unlocked files first and then failed on the held sqlite,
+  half-destroying a healthy (just busy) index. `reset_source` now raises a
+  clear error up front; stop the other Lynx process and retry.
+
 ## 1.7.5 — 2026-06-27
 
 ### Changed

@@ -264,8 +264,22 @@ class SourceManager:
             status.setdefault("health", "ok")
             return status
 
-        # Otherwise we delete the storage dir. Drop the backend and stop its
-        # watcher first; a broken source has no live backend at all.
+        # Otherwise we delete the storage dir — but never out from under
+        # another live process. rmtree would delete the unlocked files first
+        # and then fail on the held sqlite, turning a healthy (just busy)
+        # index into a genuinely broken one. Guard BEFORE mutating any state.
+        storage_dir = Path(self.config.storage_path) / name
+        from .integrity import store_in_use_by_other_process
+        if storage_dir.exists() and store_in_use_by_other_process(storage_dir):
+            raise RuntimeError(
+                f"the index for {name!r} is open in another running Lynx "
+                f"process (usually `lynx serve`); wiping it now would only "
+                f"half-succeed and cause real damage. Stop the other process "
+                f"and retry."
+            )
+
+        # Drop the backend and stop its watcher first; a broken source has no
+        # live backend at all.
         self.backends.pop(name, None)
         if backend is not None:
             try:
@@ -279,7 +293,6 @@ class SourceManager:
             gc.collect()
         self.broken.pop(name, None)
 
-        storage_dir = Path(self.config.storage_path) / name
         if storage_dir.exists():
             self._rmtree_with_retry(storage_dir)
 

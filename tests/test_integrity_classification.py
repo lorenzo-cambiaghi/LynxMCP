@@ -151,6 +151,56 @@ def test_windows_handle_probe_sees_open_handles(tmp_path):
     assert integrity._store_usage(storage) == "free"
 
 
+def test_transient_holder_is_not_in_use(tmp_path, monkeypatch):
+    # An AV scan / backup tool holding the sqlite for a moment must not brand
+    # the store as held: _store_usage re-checks after a short pause and only
+    # a holder that survives it counts.
+    monkeypatch.setattr(integrity.time, "sleep", lambda s: None)
+    readings = iter(["other", "free"])
+    monkeypatch.setattr(integrity, "_classify_store_usage",
+                        lambda p: next(readings))
+    assert integrity._store_usage(tmp_path) == "free"
+
+
+def test_persistent_holder_stays_in_use(tmp_path, monkeypatch):
+    monkeypatch.setattr(integrity.time, "sleep", lambda s: None)
+    monkeypatch.setattr(integrity, "_classify_store_usage", lambda p: "other")
+    assert integrity._store_usage(tmp_path) == "other"
+
+
+def test_reset_refuses_store_held_by_other_process(tmp_path, monkeypatch):
+    # Wiping a store a live serve holds open would delete the unlocked files
+    # and then fail on the held sqlite — half-destroying a healthy index.
+    # reset_source must refuse up front, before mutating any state.
+    from types import SimpleNamespace
+    from lynx import source_manager as sm_mod
+
+    storage = tmp_path / "framework"
+    storage.mkdir()
+    (storage / "chroma.sqlite3").write_text("held")
+
+    mgr = object.__new__(sm_mod.SourceManager)
+    mgr.config = SimpleNamespace(
+        storage_path=str(tmp_path),
+        sources={"framework": {"type": "codebase", "path": "x"}},
+    )
+    mgr.backends = {}
+    mgr.broken = {"framework": {"health": "in_use"}}
+
+    monkeypatch.setattr(integrity, "_store_usage", lambda p: "other")
+    with pytest.raises(RuntimeError, match="another running Lynx process"):
+        mgr.reset_source("framework", rebuild=False)
+    # Nothing was deleted and the manager state wasn't touched.
+    assert (storage / "chroma.sqlite3").exists()
+    assert "framework" in mgr.broken
+
+    # With the holder gone, the same wipe goes through.
+    monkeypatch.setattr(integrity, "_store_usage", lambda p: "free")
+    result = mgr.reset_source("framework", rebuild=False)
+    assert result["health"] == "reset"
+    assert not storage.exists()
+
+
 def test_probe_child_self_destructs_when_orphaned():
     # Orphan insurance: a probe child whose parent died must hard-exit on its
     # own once its lifetime is over, instead of lingering forever holding the

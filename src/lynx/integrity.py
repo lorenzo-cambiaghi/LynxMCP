@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -178,6 +179,29 @@ def _store_usage(storage_dir: Path) -> str:
       "unknown" — no way to tell (POSIX, or detection failed). Fall back to
                   the probe-and-timeout path.
     """
+    usage = _classify_store_usage(storage_dir)
+    if usage in ("other", "self"):
+        # A transient handle — an AV scan, a backup tool, the search indexer,
+        # or one of our own short-lived sqlite probes — shouldn't brand the
+        # store as held. Any holder that matters (a serve's Chroma client, our
+        # own cached one) easily survives this pause; a scanner's does not.
+        time.sleep(0.15)
+        usage = _classify_store_usage(storage_dir)
+    return usage
+
+
+def store_in_use_by_other_process(storage_dir) -> bool:
+    """Guard for destructive operations (reset / wipe): True when ANOTHER
+    process currently holds the store open. Deleting files a live process
+    holds open half-succeeds on Windows — the unlocked files go first, then
+    the delete fails on the held sqlite — turning a healthy index into a
+    genuinely broken one."""
+    return _store_usage(Path(storage_dir)) == "other"
+
+
+def _classify_store_usage(storage_dir: Path) -> str:
+    """Single-shot classification behind `_store_usage` (which re-checks to
+    filter transient holders)."""
     if os.name != "nt":
         return "unknown"
     sqlite_path = storage_dir / "chroma.sqlite3"
