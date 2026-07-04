@@ -16,7 +16,9 @@
 # https://withcoral.com/docs/guides/write-a-custom-source).
 
 name: lynx
-version: 0.1.0
+# 0.1.0 = the search source merged into the community repo; 0.2.0 adds the
+# six code-graph functions.
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-

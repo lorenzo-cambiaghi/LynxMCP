@@ -53,6 +53,14 @@ _test_watch_stderr.log
 # Registry publisher used to push server.json.
 /mcp-publisher.exe
 
+# uv-generated lockfile — deliberately untracked: the published artifact is a
+# PyPI package/uv tool, so resolution happens on the user's machine; CI tests
+# against fresh resolutions on purpose.
+uv.lock
+
+# Claude Code session transcripts saved into the repo root (date-prefixed).
+/20??-??-??-??????-*.txt
+
 # OS
 .DS_Store
 Thumbs.db
