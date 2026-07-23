@@ -46,6 +46,17 @@
       <a href="/doctor" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/doctor' else 'false' }}">
         <span class="inline-block w-5">🩺</span> Doctor
       </a>
+
+      <!-- Restart: drop the cached manager so every source is reloaded — indexes re-opened,
+           watchers restarted, integrity re-probed. Same endpoint the problem-cards use; here it's
+           always available (e.g. to pick up a source after a `doctor --heal-wal` or a manual fix). -->
+      <button
+        hx-post="/api/manager/reload"
+        hx-swap="none"
+        hx-confirm="Restart Lynx? Reloads every source — re-opens each index, restarts its watcher, and re-runs the integrity checks. Nothing is lost."
+        class="w-full text-left px-3 py-2 mt-1 rounded hover:bg-slate-100 text-slate-700 border border-slate-200">
+        <span class="inline-block w-5">🔄</span> Restart
+      </button>
     </nav>
 
     <div class="px-4 py-3 mt-auto border-t border-slate-200 text-xs text-slate-500">

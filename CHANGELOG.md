@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **A Restart button in the LynxManager sidebar.** Always-available action that
+  drops the cached manager so every source is reloaded — indexes re-opened,
+  watchers restarted, integrity re-probed (the same `/api/manager/reload` the
+  "index not verified" / "in use" cards already used, now surfaced globally).
+  Handy right after a `doctor --heal-wal` or a manual fix, without hunting for a
+  problem card. Confirms first; nothing is lost.
 - **Scope a search to a subset of sources, per request.** `search` and
   `deep_search` already took ONE `source` (or omitted it for all). Now `source`
   also accepts a LIST of names — the rankings are fused (RRF) across just those
