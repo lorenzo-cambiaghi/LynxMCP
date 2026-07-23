@@ -93,6 +93,15 @@ _SourceArg = Annotated[
                       "all sources for `search`/`deep_search` (RRF-fused), or the "
                       "single applicable source for the others."),
 ]
+# `search` / `deep_search` accept ONE name, a LIST of names, or omit (all). This is how you
+# scope a query to a subset of sources at request time — no server restart, no config change.
+_SourcesArg = Annotated[
+    str | list[str] | None,
+    Field(description="Which source(s) from `list_sources` to search. Omit = ALL sources "
+                      "(RRF-fused). One name = that source. A LIST of names = just those "
+                      "sources, fused — the way to contextualize a query to a subset "
+                      "(e.g. [\"skelforge\"] or [\"skelforge\", \"framework\"])."),
+]
 _FileGlobArg = Annotated[
     str | None,
     Field(description="fnmatch glob to restrict results by path/filename, "
@@ -262,6 +271,27 @@ def _resolve_source(manager, source, *, predicate=None, kind: str = "source"):
     )
 
 
+def _normalize_sources(manager, source):
+    """Normalize the `source` arg of search / deep_search to a validated list of names,
+    or None for "all sources". Accepts a single name, a comma-separated string, or a list —
+    so a query can be scoped to a subset of sources at request time. Raises ValueError naming
+    any unknown source so the client can retry against `list_sources`."""
+    if source is None:
+        return None
+    if isinstance(source, str):
+        names = [s.strip() for s in source.split(",") if s.strip()]
+    else:
+        names = [str(s).strip() for s in source if str(s).strip()]
+    if not names:
+        return None
+    unknown = [n for n in names if n not in manager.backends]
+    if unknown:
+        raise ValueError(
+            f"unknown source(s) {unknown}. Available: {list(manager.backends)}"
+        )
+    return list(dict.fromkeys(names))  # de-dup, preserve order
+
+
 def _register_search_tools(mcp, manager):
     """Register `search` and `deep_search` (fixed names, `source` param)."""
     catalog = _source_catalog(manager)
@@ -270,7 +300,9 @@ def _register_search_tools(mcp, manager):
         f"Semantic + lexical (hybrid) search over an indexed source. "
         f"This is your PRIMARY search tool — use it FIRST for any question about the indexed "
         f"code or docs. Omit `source` to search ALL sources at once (rankings fused via RRF, "
-        f"each hit tagged with its source); pass `source` to target one. "
+        f"each hit tagged with its source); pass ONE name to target a single source, or a "
+        f"LIST of names to fuse just those — the way to scope a query to a subset of sources "
+        f"(e.g. source=[\"skelforge\"] or [\"skelforge\", \"framework\"]) at request time. "
         f"Configured sources: {catalog}. "
         f"Best practices: use natural-language descriptions of what the code does, not exact "
         f"identifiers (use grep for those). Good: 'method that handles player damage calculation'. "
@@ -285,7 +317,7 @@ def _register_search_tools(mcp, manager):
     @mcp.tool(name="search", description=_desc_search, annotations=_ANN_READ)
     def _search(
         query: Annotated[str, Field(description="Natural-language description of the behavior to find (e.g. 'method that handles player damage calculation'), NOT an identifier — use grep for exact names.")],
-        source: _SourceArg = None,
+        source: _SourcesArg = None,
         top_k: Annotated[int | None, Field(description="Maximum number of results to return. Defaults to the server's configured value.")] = None,
         outline: Annotated[bool, Field(description="If true, return each hit's signature + first doc line instead of its full body — cheap triage for broad queries or a large top_k. Scan the signatures, then read the one body you need (find_definition, or its file:line). Default false = full bodies, for when you'll use the code right away.")] = False,
         file_glob: _FileGlobArg = None,
@@ -297,13 +329,16 @@ def _register_search_tools(mcp, manager):
             filters = dict(
                 file_glob=file_glob, extensions=extensions, path_contains=path_contains
             )
-            if source is None:
+            names = _normalize_sources(manager, source)
+            if not names:
                 results = manager.search_all(query, top_k=effective_top_k, **filters)
                 label = "all sources"
+            elif len(names) == 1:
+                results = manager.search(names[0], query, top_k=effective_top_k, **filters)
+                label = f"source {names[0]!r}"
             else:
-                manager.get(source)  # raises KeyError with the available names
-                results = manager.search(source, query, top_k=effective_top_k, **filters)
-                label = f"source {source!r}"
+                results = manager.search_all(query, top_k=effective_top_k, only=names, **filters)
+                label = f"sources {names}"
             filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
             fmt = _format_outline_results if outline else _format_search_results
             return fmt(query, results, label, filter_suffix)
@@ -316,7 +351,8 @@ def _register_search_tools(mcp, manager):
         f"Slower than `search` because it runs multiple retrievals. "
         f"How it works: tries each query variant in order; stops at the first whose results pass "
         f"the weakness threshold. If all fail, returns the strongest weak set with a warning. "
-        f"Omit `source` to run across ALL sources (RRF-fused); pass `source` to target one. "
+        f"Omit `source` to run across ALL sources (RRF-fused); pass one name for a single "
+        f"source, or a LIST of names to fuse just that subset. "
         f"Configured sources: {catalog}. "
         f"Best practices: provide 2-4 GENUINELY DIFFERENT phrasings (different angles, not "
         f"paraphrases). Good: ['player health system', 'damage and healing logic', 'HP component "
@@ -330,7 +366,7 @@ def _register_search_tools(mcp, manager):
     @mcp.tool(name="deep_search", description=_desc_deep, annotations=_ANN_READ)
     def _deep_search(
         queries: Annotated[list[str], Field(description="2-4 genuinely different phrasings of the same need (different angles, not paraphrases), tried in priority order.")],
-        source: _SourceArg = None,
+        source: _SourcesArg = None,
         top_k: Annotated[int | None, Field(description="Maximum number of results to return. Defaults to the configured value.")] = None,
         mode: Annotated[str | None, Field(description="Retrieval mode override (single-source only): 'dense', 'sparse', or 'hybrid'. Defaults to the server's configured mode.")] = None,
         file_glob: _FileGlobArg = None,
@@ -345,19 +381,23 @@ def _register_search_tools(mcp, manager):
             filters = dict(
                 file_glob=file_glob, extensions=extensions, path_contains=path_contains
             )
-            if source is None:
+            names = _normalize_sources(manager, source)
+            # mode / return_all_variants are single-source only; a subset (or all) fuses.
+            single = names[0] if names and len(names) == 1 else None
+            if single is None:
                 response = manager.deep_search_all(
                     queries=queries,
                     top_k=effective_top_k,
                     min_score=min_score,
                     min_results=min_results,
+                    only=names,  # None = every source; a subset restricts the fusion
                     **filters,
                 )
-                label = "all sources"
+                label = "all sources" if not names else f"sources {names}"
             else:
-                manager.get(source)
+                manager.get(single)
                 response = manager.deep_search(
-                    source,
+                    single,
                     queries=queries,
                     top_k=effective_top_k,
                     mode=mode,
@@ -366,9 +406,9 @@ def _register_search_tools(mcp, manager):
                     return_all_variants=return_all_variants,
                     **filters,
                 )
-                label = f"source {source!r}"
+                label = f"source {single!r}"
             meta_parts = []
-            if mode and source is not None:
+            if mode and single is not None:
                 meta_parts.append(f"mode={mode!r}")
             if file_glob:
                 meta_parts.append(f"file_glob={file_glob!r}")

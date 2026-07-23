@@ -496,16 +496,24 @@ class SourceManager:
     # Cross-source operations
     # ------------------------------------------------------------------
 
-    def search_all(self, query: str, top_k: int = 5, **kw) -> list[dict]:
+    def search_all(self, query: str, top_k: int = 5, *, only=None, **kw) -> list[dict]:
         """Run `query` against every source and fuse the rankings via RRF.
 
         Each result is tagged with `source` so the AI can tell which source
         produced it. RRF constant `k` comes from the shared search config so
         the fusion is consistent with the intra-source hybrid fusion.
+
+        `only` (optional): an iterable of source names to restrict the fusion to
+        — the per-query way to scope a search to a subset of sources without
+        touching config. None = every source. Unknown names are ignored here
+        (the tool layer validates and reports them).
         """
+        only = set(only) if only is not None else None
         pool_size = max(top_k, self.config.search.candidate_pool_size)
         per_source_results = []
         for name, backend in self.backends.items():
+            if only is not None and name not in only:
+                continue
             try:
                 hits = backend.search(query, top_k=pool_size, **kw)
             except Exception as e:
@@ -539,11 +547,13 @@ class SourceManager:
         *,
         min_score=None,
         min_results=None,
+        only=None,
         **kw,
     ) -> dict:
         """Multi-query + multi-source fallback.
 
-        Tries each query variant in order across ALL sources (RRF-fused).
+        Tries each query variant in order across ALL sources (RRF-fused), or the
+        subset named in `only` (per-query source scoping).
         First variant whose fused top-K passes the weakness threshold wins.
         Threshold uses the same mode-aware logic as deep_search; the mode for
         threshold lookup is `self.config.search.mode` since fusion is mode-
@@ -573,7 +583,7 @@ class SourceManager:
         winning_idx = None
 
         for idx, variant in enumerate(queries):
-            results = self.search_all(variant, top_k=top_k, **kw)
+            results = self.search_all(variant, top_k=top_k, only=only, **kw)
             top_score = results[0]["score"] if results else float("-inf")
             if top_score > best_top:
                 best_top = top_score

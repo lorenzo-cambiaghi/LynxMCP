@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Scope a search to a subset of sources, per request.** `search` and
+  `deep_search` already took ONE `source` (or omitted it for all). Now `source`
+  also accepts a LIST of names — the rankings are fused (RRF) across just those
+  sources, each hit still tagged with its origin. So a query can be contextualized
+  to certain data sources at request time (`source=["skelforge"]` or
+  `["skelforge", "framework"]`) with no server restart and no config change; omit
+  for all, one name for a single source. `SourceManager.search_all` /
+  `deep_search_all` gained an `only=` filter that backs it.
+
 ## 1.7.6 — 2026-07-04
 
 ### Added
