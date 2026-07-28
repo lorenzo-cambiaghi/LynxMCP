@@ -324,6 +324,70 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                         f"WAL: {wal['pending_ops']} write(s) in flight "
                         f"(normal during indexing)"
                     )
+            if (wal and wal["discarding_writes"]
+                    and _store_usage(source_storage) != "other"):
+                return CheckResult(
+                    name=f"Source {name!r}",
+                    status=STATUS_ERROR,
+                    summary="the index silently discards every write",
+                    details=details + [
+                        f"The write queue numbers below the segments' watermark "
+                        f"({wal['watermark']}). Queue ids restart at 1 "
+                        f"(INTEGER PRIMARY KEY, no AUTOINCREMENT), so every new "
+                        f"write is numbered below what the segments already "
+                        f"consumed and is dropped as a duplicate.",
+                        "Nothing raises: indexing logs success, count() stays "
+                        "healthy, and the index never moves again.",
+                        f"Fix: stop every Lynx process, then run "
+                        f"`lynx manager doctor --heal-wal {name}` — it anchors "
+                        f"the queue above the watermark so writes land again.",
+                    ],
+                )
+
+            # 2c. Coverage drift. The SHA cache is what decides which files get
+            # work: an entry written for a file whose chunks never landed makes
+            # that file permanently invisible to search — silently, and with a
+            # perfectly healthy count(). Cheap read-only comparison.
+            try:
+                from ..integrity import inspect_coverage
+                coverage = inspect_coverage(source_storage)
+            except Exception:
+                coverage = None
+            if coverage and coverage["drifted"]:
+                phantom = len(coverage["phantom_files"])
+                unvectorized = coverage["unvectorized"]
+                parts = []
+                if phantom:
+                    parts.append(f"{phantom} file(s) cached as indexed are "
+                                 f"missing from the index")
+                if unvectorized:
+                    parts.append(f"{unvectorized} chunk(s) have no vector")
+                findings = details + [
+                    f"Indexed files: {coverage['indexed_files']} of "
+                    f"{coverage['cached_files']} in the hash cache.",
+                ]
+                if phantom:
+                    findings.append(
+                        "Those files are skipped as 'unchanged' on every pass, so "
+                        "they will never be retried: searches simply cannot find "
+                        "them.")
+                if unvectorized:
+                    findings.append(
+                        f"The metadata hands out {unvectorized} id(s) the vector "
+                        f"index can't resolve (from "
+                        f"{len(coverage['unvectorized_files'])} file(s)): every "
+                        f"search fails with 'Error querying knn' / 'Error finding "
+                        f"id' even though count() looks healthy.")
+                findings.append(
+                    f"Fix: stop every Lynx process, then run "
+                    f"`lynx manager doctor --heal-coverage {name}` — it drops "
+                    f"just those entries so the next update re-indexes them.")
+                return CheckResult(
+                    name=f"Source {name!r}",
+                    status=STATUS_ERROR,
+                    summary=" and ".join(parts),
+                    details=findings,
+                )
         else:
             details.append(f"ChromaDB: not yet built (run `lynx build --source {name}`)")
     else:
@@ -501,6 +565,9 @@ def run_doctor(args) -> int:
     if getattr(args, "heal_wal", None):
         return _run_heal_wal(args.heal_wal, config_path)
 
+    if getattr(args, "heal_coverage", None):
+        return _run_heal_coverage(args.heal_coverage, config_path)
+
     results = run_all_checks(config_path)
 
     if getattr(args, "json", False):
@@ -535,9 +602,13 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
     if wal is None:
         print(f"[doctor] source {name!r} has no index yet — nothing to heal.")
         return 0
-    if not wal["pending_ops"] and not wal["stale_locks"]:
+    if (not wal["pending_ops"] and not wal["stale_locks"]
+            and not wal["discarding_writes"]):
         print(f"[doctor] source {name!r}: WAL is clean — nothing to heal.")
         return 0
+    if wal["discarding_writes"]:
+        print(f"[doctor] segments parked at seq {wal['watermark']} with an "
+              f"empty queue: every write is being discarded as already-applied.")
 
     try:
         outcome = heal_wal(storage_dir)
@@ -547,6 +618,14 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
 
     print(f"[doctor] purged {outcome['purged_ops']} stuck write(s) and "
           f"{outcome['purged_locks']} stale write lock(s).")
+    if outcome.get("forwarded_segments"):
+        print(f"[doctor] fast-forwarded {outcome['forwarded_segments']} lagging "
+              f"segment(s) that were waiting on purged rows; the chunks whose "
+              f"vectors were lost are re-queued by --heal-coverage.")
+    if outcome.get("anchored_seq"):
+        print(f"[doctor] anchored the write queue at seq "
+              f"{outcome['anchored_seq']} so new writes land above the "
+              f"segments' watermark and are accepted again.")
     if outcome["reindex_files"]:
         print(f"[doctor] {len(outcome['reindex_files'])} file(s) queued for "
               f"re-indexing on the next build / watcher pass:")
@@ -564,3 +643,50 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
           f"({result.get('detail', '')}). Fall back to "
           f"`lynx reset --source {name}`.", file=sys.stderr)
     return 2
+
+
+def _run_heal_coverage(name: str, config_path: Optional[Path]) -> int:
+    """`lynx manager doctor --heal-coverage SOURCE` — drop the SHA-cache entries
+    of files that are cached as indexed but absent from the index, so the next
+    build re-indexes exactly those. The alternative for this state used to be a
+    full rebuild, because nothing detected it in the first place."""
+    if config_path is None:
+        print("[doctor] no config file found — pass --config PATH", file=sys.stderr)
+        return 2
+    from ..config import load_config
+    cfg = load_config(config_path)
+    if name not in cfg.sources:
+        print(f"[doctor] unknown source {name!r}. "
+              f"Available: {list(cfg.sources)}", file=sys.stderr)
+        return 2
+
+    storage_dir = Path(cfg.storage_path) / name
+    from ..integrity import heal_coverage, inspect_coverage
+
+    report = inspect_coverage(storage_dir)
+    if report is None:
+        print(f"[doctor] source {name!r} has no readable index yet — "
+              f"nothing to heal.")
+        return 0
+    if not report["drifted"]:
+        print(f"[doctor] source {name!r}: hash cache agrees with the index "
+              f"({report['indexed_files']} file(s) indexed) — nothing to heal.")
+        return 0
+
+    try:
+        outcome = heal_coverage(storage_dir)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"[doctor] can't heal {name!r}: {e}", file=sys.stderr)
+        return 2
+
+    if outcome["phantom"]:
+        print(f"[doctor] {outcome['phantom']} file(s) were cached as indexed "
+              f"but absent from the index.")
+    if outcome["unvectorized"]:
+        print(f"[doctor] {outcome['unvectorized']} chunk(s) across "
+              f"{outcome['unvectorized_files']} file(s) had no vector — the "
+              f"state that makes every search fail with 'Error querying knn'.")
+    print(f"[doctor] dropped {len(outcome['reindex_files'])} cache entry(ies).")
+    print(f"[doctor] they will be re-indexed on the next build / watcher pass "
+          f"(`lynx build --source {name}`).")
+    return 0

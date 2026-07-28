@@ -336,6 +336,17 @@ class CodebaseRAG:
         # changed but old vectors still in store).
         self._check_and_log_drift()
 
+    def _collection_count(self):
+        """Chunks currently in the collection, or None when the store can't
+        answer. Used to verify that writes actually landed — never to decide
+        emptiness (that's `_load_or_build_index`, which must not mask a read
+        failure as 0)."""
+        try:
+            return self.vector_store._collection.count()
+        except Exception as e:
+            log(f"[rag] could not read collection count: {e}")
+            return None
+
     def _get_or_create_collection(self):
         """Open or create the persistent ChromaDB collection on local disk."""
         import chromadb
@@ -443,13 +454,22 @@ class CodebaseRAG:
         except OSError as e:
             log(f"[rag] could not persist file_hashes.json: {e}")
 
-    def _record_file_hash(self, abs_path: str, sha: str):
+    def _record_file_hash(self, abs_path: str, sha: str, *, chunks: int | None = None):
         """Update one entry in the in-memory cache. Caller persists via
         _save_file_hashes when convenient (batched at end of a rebuild,
-        or per-event in the watcher path)."""
+        or per-event in the watcher path).
+
+        `chunks` is how many chunks of this file are in the index right now — 0
+        is a legitimate value (nothing chunkable in the file). It exists so a
+        coverage check can tell "absent because empty" from "absent because the
+        insert failed"; entries written before this field existed carry None,
+        which reads as "expected to be present". An entry must only be written
+        AFTER the chunks are in the index (see _build_index / update_file):
+        this cache is what `_partition_files` trusts to skip work."""
         self._file_hashes[abs_path] = {
             "sha256": sha,
             "last_indexed_at": datetime.now().isoformat(),
+            "chunks": chunks,
         }
 
     def _forget_file_hash(self, abs_path: str):
@@ -624,26 +644,66 @@ class CodebaseRAG:
         files_to_index = sorted(changed | added)
         index = VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
         if files_to_index:
+            chunks_before = self._collection_count()
             total_nodes = 0
+            indexed = {}   # abs_path -> chunk count actually inserted
+            failed = []    # insert raised: nothing of this file is in the index
             for abs_path in files_to_index:
                 nodes = self._build_nodes_for_file(abs_path)
                 if not nodes:
+                    # Legitimately empty (no chunks produced): record it below
+                    # with chunks=0 so we don't re-chunk it on every rebuild,
+                    # and so a coverage check knows the absence is expected.
+                    indexed[abs_path] = 0
                     continue
                 try:
                     index.insert_nodes(nodes)
                     total_nodes += len(nodes)
+                    indexed[abs_path] = len(nodes)
                 except Exception as e:
                     log(f"[rag] insert failed for {abs_path}: {e}")
+                    failed.append(abs_path)
 
-            # Record SHAs for the files we just (re-)indexed. Compute fresh —
-            # _partition_files already computed them for 'changed' but not for
-            # 'added', and we want the source-of-truth to be a single point.
-            for abs_path in files_to_index:
-                sha = self._compute_file_hash(abs_path)
-                if sha:
-                    self._record_file_hash(abs_path, sha)
+            # Prove the writes landed before trusting them. An insert can fail
+            # WITHOUT raising — stale rows in chroma's `acquire_write` (left by
+            # a killed process) make every write a silent no-op, which is how an
+            # index stayed frozen for 25 days while each pass logged success.
+            # So the cache is only updated when the collection grew by exactly
+            # the number of chunks we sent; on any mismatch nothing is recorded
+            # and the next pass retries the whole batch (safe: re-indexing a
+            # file deletes its chunks first, so a partial success can't
+            # duplicate).
+            chunks_after = self._collection_count()
+            grew = (chunks_after - chunks_before) if None not in (
+                chunks_before, chunks_after) else None
+            if total_nodes and grew is not None and grew != total_nodes:
+                log(f"[rag] REFUSING to record {len(indexed)} file(s) as indexed: "
+                    f"sent {total_nodes} chunk(s) but the collection grew by "
+                    f"{grew}. The store is not accepting writes — check "
+                    f"`lynx manager doctor` (stale write locks are the usual "
+                    f"cause). Nothing is lost: the files stay queued for the "
+                    f"next pass.")
+            else:
+                # Record SHAs ONLY for the files whose chunks actually landed in
+                # the index. Recording a failed one would mark it "unchanged"
+                # forever: _partition_files trusts this cache, so the file would
+                # never be retried and would stay invisible to search — silently,
+                # since the failure was only ever a log line. (Real incident
+                # 2026-07-03: 202 files of the `framework` source cached as
+                # indexed, absent from the index, never retried for 25 days.)
+                for abs_path, chunk_count in indexed.items():
+                    sha = self._compute_file_hash(abs_path)
+                    if sha:
+                        self._record_file_hash(abs_path, sha, chunks=chunk_count)
+                # A file that failed must not keep a stale entry either —
+                # dropping it is what makes the next pass treat it as `added`.
+                for abs_path in failed:
+                    self._forget_file_hash(abs_path)
 
-            log(f"[rag] Indexed {len(files_to_index)} file(s) -> {total_nodes} chunk(s).")
+                if failed:
+                    log(f"[rag] {len(failed)} file(s) failed to insert and will "
+                        f"be retried on the next update (not recorded).")
+                log(f"[rag] Indexed {len(indexed)} file(s) -> {total_nodes} chunk(s).")
 
         self._save_file_hashes()
         # Collection contents changed: drop the BM25 cache so the next search
@@ -1391,10 +1451,21 @@ class CodebaseRAG:
                 log(f"[rag] no chunks produced from {abs_path}")
                 return False
 
+            before = self._collection_count()
             try:
                 self.index.insert_nodes(nodes)
             except Exception as e:
                 log(f"[rag] insert failed for {abs_path}: {e}")
+                return False
+
+            # Same silent-no-op guard as the batch path: a store with stale
+            # write locks accepts the call and writes nothing. Recording the SHA
+            # then would retire this file from every future pass.
+            after = self._collection_count()
+            if None not in (before, after) and after - before != len(nodes):
+                log(f"[rag] insert of {Path(abs_path).name} did not land "
+                    f"({after - before} of {len(nodes)} chunk(s) stored); not "
+                    f"recording it as indexed. Run `lynx manager doctor`.")
                 return False
 
             # Chunks changed: refresh only this file's BM25 entries (no full
@@ -1403,8 +1474,10 @@ class CodebaseRAG:
 
             # Persist the new SHA. If the hash function failed earlier we
             # leave the cache entry stale; the next change will recompute.
+            # Reached only after insert_nodes succeeded (the except above
+            # returns), so the entry never claims more than the index holds.
             if new_sha:
-                self._record_file_hash(abs_path, new_sha)
+                self._record_file_hash(abs_path, new_sha, chunks=len(nodes))
                 self._save_file_hashes()
 
         log(f"[rag] Re-indexed {Path(abs_path).name} ({removed} old chunks dropped, {len(nodes)} new)")

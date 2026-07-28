@@ -206,6 +206,14 @@ def _build_parser() -> argparse.ArgumentParser:
              "the stuck writes and queues the affected files for re-indexing "
              "— no full rebuild. Stop all Lynx processes first.",
     )
+    sp_mgr_doctor.add_argument(
+        "--heal-coverage", metavar="SOURCE",
+        help="Re-queue SOURCE's files that the SHA cache lists as indexed but "
+             "that are absent from the index (a failed insert used to be "
+             "recorded as success, so those files were skipped forever and "
+             "were invisible to search). Drops just those cache entries — no "
+             "full rebuild. Stop all Lynx processes first.",
+    )
 
     sp_mgr_install = manager_sub.add_parser(
         "install",

@@ -54,11 +54,24 @@ def _probe_child(storage_dir: str, collection_name: str) -> int:
     # Touch the HNSW segment read path too — count() alone doesn't always
     # exercise the segment that tends to be the corrupt one.
     try:
-        collection.get(limit=1)
+        sample = collection.get(limit=1, include=["embeddings"])
     except Exception:
         # A get() failure on a non-empty collection still signals trouble,
         # but count() is the authoritative health signal; don't fail here.
-        pass
+        sample = None
+
+    # And exercise the KNN path, which is the one searches actually use and the
+    # one that fails on a vector segment out of step with the metadata: count()
+    # and get() read sqlite and stay green while every query raises "Error
+    # querying knn" / "Error finding id". A probe that never queries reports a
+    # search-dead index as healthy — which is how this went unnoticed.
+    if count:
+        vectors = (sample or {}).get("embeddings")
+        dim = len(vectors[0]) if vectors is not None and len(vectors) else None
+        if dim:
+            # Raising here exits non-zero via __main__ = the "corrupt" verdict.
+            collection.query(query_embeddings=[[0.0] * dim], n_results=1)
+
     print(json.dumps({"ok": True, "count": count}))
     return 0
 
@@ -367,6 +380,17 @@ def inspect_wal(storage_dir) -> dict | None:
                           indexer drains its queue in seconds, so age is the
                           discriminator — but the caller should still skip
                           the verdict when another process holds the store.
+        discarding_writes True on a second, quieter wedge: the queue is EMPTY
+                          while segments still hold a high watermark. Because
+                          `embeddings_queue.seq_id` is an INTEGER PRIMARY KEY
+                          with no AUTOINCREMENT, an emptied queue restarts
+                          numbering at 1 — and every segment sitting at N > 1
+                          treats those rows as already applied and drops them.
+                          The store then ACCEPTS every write and stores none,
+                          without raising. Purging the queue and leaving the
+                          watermarks behind (what `heal_wal` used to do) is
+                          exactly how a store gets here.
+        watermark         highest segment watermark (0 when clean)
     """
     import sqlite3
 
@@ -375,7 +399,8 @@ def inspect_wal(storage_dir) -> dict | None:
         return None
 
     info = {"pending_ops": 0, "oldest_pending_s": 0.0, "lagging_segments": 0,
-            "stale_locks": 0, "affected_files": [], "wedged": False}
+            "stale_locks": 0, "affected_files": [], "wedged": False,
+            "watermark": 0, "discarding_writes": False}
     db = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     try:
         def one(sql, default=0):
@@ -387,17 +412,24 @@ def inspect_wal(storage_dir) -> dict | None:
             except sqlite3.Error:
                 return default
 
-        info["pending_ops"] = one("SELECT count(*) FROM embeddings_queue")
+        # The sequence anchor (see _anchor_queue_sequence) is an inert row that
+        # lives in the queue on purpose: it must never read as a pending write,
+        # or every anchored store would look permanently wedged.
+        info["pending_ops"] = one(
+            f"SELECT count(*) FROM embeddings_queue"
+            f" WHERE id != '{SEQ_ANCHOR_ID}'")
         if info["pending_ops"]:
             info["oldest_pending_s"] = float(one(
-                "SELECT (julianday('now') - julianday(min(created_at))) * 86400"
-                " FROM embeddings_queue"))
+                f"SELECT (julianday('now') - julianday(min(created_at))) * 86400"
+                f" FROM embeddings_queue WHERE id != '{SEQ_ANCHOR_ID}'"))
             info["lagging_segments"] = one(
                 "SELECT count(*) FROM max_seq_id WHERE seq_id <"
                 " (SELECT max(seq_id) FROM embeddings_queue)")
             files = set()
             try:
-                for (meta,) in db.execute("SELECT metadata FROM embeddings_queue"):
+                for (meta,) in db.execute(
+                        f"SELECT metadata FROM embeddings_queue"
+                        f" WHERE id != '{SEQ_ANCHOR_ID}'"):
                     try:
                         m = json.loads(meta) if meta else {}
                     except ValueError:
@@ -409,6 +441,8 @@ def inspect_wal(storage_dir) -> dict | None:
                 pass
             info["affected_files"] = sorted(files)
         info["stale_locks"] = one("SELECT count(*) FROM acquire_write")
+        info["watermark"] = one("SELECT max(seq_id) FROM max_seq_id")
+        queue_tail = one("SELECT max(seq_id) FROM embeddings_queue")
     finally:
         db.close()
 
@@ -416,6 +450,14 @@ def inspect_wal(storage_dir) -> dict | None:
         info["pending_ops"]
         and info["lagging_segments"]
         and info["oldest_pending_s"] > 600
+    )
+    # Queue numbering below the segments' watermark = every future write is
+    # numbered under what they already consumed, so it is accepted and dropped.
+    # Silent, permanent, and invisible to count() — the index just stops moving.
+    # An anchored queue (tail == watermark) is precisely the cured state, which
+    # is why the comparison is against the tail and not against zero.
+    info["discarding_writes"] = bool(
+        not info["pending_ops"] and info["watermark"] > queue_tail
     )
     return info
 
@@ -456,13 +498,327 @@ def heal_wal(storage_dir) -> dict:
             purged_locks = db.execute("DELETE FROM acquire_write").rowcount
         except sqlite3.Error:
             purged_locks = 0
+        # Order matters: fast-forward first (a lagging segment blocks every
+        # later write), then anchor the queue above the resulting watermark.
+        forwarded = _fast_forward_lagging_segments(db)
+        anchored = _anchor_queue_sequence(db)
         db.commit()
     finally:
         db.close()
 
     dropped = _drop_from_file_hashes(storage_dir, affected)
     return {"purged_ops": purged_ops, "purged_locks": purged_locks,
+            "forwarded_segments": forwarded, "anchored_seq": anchored,
             "reindex_files": dropped}
+
+
+SEQ_ANCHOR_ID = "__lynx_seq_anchor__"
+
+
+def _fast_forward_lagging_segments(db) -> int:
+    """Bring segments left behind the queue's history up to the leading one.
+
+    A segment consumes the WAL from its own watermark forward. If the rows it
+    still needs have been purged (which is what unwedging a queue does), they
+    are gone: the segment can never reach the tail and simply stops consuming —
+    and every later write waits on it, so indexing crawls at a few chunks per
+    minute while the vector index stays frozen. Observed exactly so: a metadata
+    segment at 64116 and a vector segment stuck at 63966 since the day it was
+    interrupted.
+
+    Moving it forward is the only way out, and it is honest: the chunks whose
+    vectors were lost stay in the metadata WITHOUT a vector, where
+    `inspect_coverage` finds them and `heal_coverage` re-indexes their files.
+    Nothing is silently dropped — it is queued for rebuild.
+
+    Only safe with an empty queue (nothing left to legitimately apply).
+    Returns the number of segments moved.
+    """
+    import sqlite3
+
+    try:
+        pending = db.execute(
+            "SELECT count(*) FROM embeddings_queue WHERE id != ?",
+            (SEQ_ANCHOR_ID,)).fetchone()[0]
+        if pending:
+            return 0
+        top = db.execute("SELECT max(seq_id) FROM max_seq_id").fetchone()[0]
+        if not top:
+            return 0
+        cur = db.execute("UPDATE max_seq_id SET seq_id = ? WHERE seq_id < ?",
+                         (top, top))
+        return cur.rowcount or 0
+    except sqlite3.Error:
+        return 0
+
+
+def _anchor_queue_sequence(db) -> int:
+    """Make an emptied queue resume numbering ABOVE the segments' watermarks.
+
+    ``embeddings_queue.seq_id`` is an INTEGER PRIMARY KEY with no AUTOINCREMENT:
+    sqlite hands out ``max(seq_id) + 1``, so an emptied queue restarts at 1. A
+    segment parked at 64111 then discards every new row as already-applied —
+    the store accepts writes and stores nothing, forever, without raising.
+
+    The obvious repair (lower the watermarks) is WRONG and was verified to be
+    so: a vector segment carries a persisted HNSW built up to its watermark, so
+    telling it "you are at 0" asks it to replay tens of thousands of operations
+    the WAL no longer holds. It then falls behind the queue tail — the exact
+    fingerprint `inspect_wal` calls wedged — and chromadb deadlocks at zero CPU
+    on the next read.
+
+    So instead of moving the segments down to the queue, we move the queue up
+    to the segments: one sentinel row at ``max(watermark)``. Every segment has
+    already consumed that seq (rows are read with ``seq_id >`` watermark), so
+    it is inert — and the next real write lands at watermark + 1, where the
+    segments expect it. Returns the anchored seq (0 when nothing was needed).
+    """
+    import sqlite3
+
+    try:
+        pending = db.execute(
+            "SELECT count(*) FROM embeddings_queue WHERE id != ?",
+            (SEQ_ANCHOR_ID,)).fetchone()[0]
+        if pending:
+            # Rows still waiting: the numbering is in use and consistent.
+            return 0
+        watermark = db.execute(
+            "SELECT max(seq_id) FROM max_seq_id").fetchone()[0] or 0
+        tail = db.execute(
+            "SELECT max(seq_id) FROM embeddings_queue").fetchone()[0] or 0
+        if watermark <= tail:
+            return 0
+        db.execute(
+            "INSERT OR REPLACE INTO embeddings_queue "
+            "(seq_id, operation, topic, id) VALUES (?, 0, ?, ?)",
+            (watermark, "lynx:seq-anchor", SEQ_ANCHOR_ID))
+        return watermark
+    except sqlite3.Error:
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage drift: the SHA cache claims files the index does not hold
+# ---------------------------------------------------------------------------
+
+def inspect_coverage(storage_dir) -> dict | None:
+    """Read-only audit of the store's SHA cache against what the index HOLDS.
+
+    ``file_hashes.json`` is what ``_partition_files`` trusts to decide which
+    files need work: a file listed there with a matching SHA is classified
+    *unchanged* and skipped forever. So an entry written for a file whose
+    chunks never made it into the index makes that file permanently invisible
+    to search — no error, no retry, and `count()` stays healthy because the
+    other files are fine. (Real incident 2026-07-03 on the `framework` source:
+    202 such files, unnoticed for 25 days.)
+
+    This compares the two, via plain sqlite — never a Chroma client, which
+    would contend with a running `lynx serve` for the store lock.
+
+    It also catches the mirror-image damage one layer down: chunks that ARE in
+    the metadata but whose vector never reached the HNSW segment (an insert
+    interrupted between the two). Those are what make every search die with
+    "Error querying knn" / "Error finding id" while count() reports a full,
+    healthy index — the metadata hands out ids the vector index cannot resolve.
+
+    Returns None when there is no store, else a dict::
+
+        cached_files       entries in file_hashes.json
+        indexed_files      distinct file_path values present in the index
+        phantom_files      cached as indexed, absent from the index, and not
+                           recorded as legitimately chunk-less (`chunks: 0`)
+        empty_files        cached with chunks == 0 — expected to be absent
+        unvectorized       chunks in the metadata with no vector (0 = clean)
+        unvectorized_files the files those chunks belong to
+        drifted            True when either kind of damage is present
+    """
+    import sqlite3
+
+    storage_dir = Path(storage_dir)
+    sqlite_path = storage_dir / "chroma.sqlite3"
+    hashes_path = storage_dir / "file_hashes.json"
+    if not sqlite_path.exists():
+        return None
+
+    def norm(p):
+        return os.path.normcase(os.path.normpath(str(p)))
+
+    indexed = set()
+    unvectorized_files: set = set()
+    unvectorized = 0
+    db = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    try:
+        rows = db.execute(
+            "SELECT DISTINCT string_value FROM embedding_metadata"
+            " WHERE key = 'file_path' AND string_value IS NOT NULL"
+        )
+        indexed = {norm(r[0]) for r in rows}
+        vector_ids = _vector_segment_ids(storage_dir)
+        if vector_ids is not None:
+            orphan_ids = [eid for (eid,) in
+                          db.execute("SELECT embedding_id FROM embeddings")
+                          if eid not in vector_ids]
+            # Not every chunk missing from the HNSW is damage. Chroma persists
+            # the vector segment on a threshold, so the tail of a fresh build
+            # legitimately sits in the queue waiting to be applied — it lands on
+            # the next open. Damage is when the rows are NOT in the queue any
+            # more: then the vectors are gone and only a re-index brings them
+            # back. Without this distinction the check would cry wolf after
+            # every single build, which is the fastest way to be ignored.
+            recoverable = _recoverable_from_queue(db)
+            unvectorized = max(0, len(orphan_ids) - recoverable)
+            if unvectorized:
+                unvectorized_files = _files_of_embeddings(db, orphan_ids)
+    except sqlite3.Error:
+        # An unreadable metadata table is a different failure (corruption);
+        # `check_index` is the tool for that. Don't guess about coverage.
+        return None
+    finally:
+        db.close()
+
+    entries = {}
+    if hashes_path.exists():
+        try:
+            data = json.loads(hashes_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                entries = _hash_cache_files(data)
+        except (OSError, ValueError):
+            entries = {}
+
+    phantom, empty = [], []
+    for path, meta in entries.items():
+        if norm(path) in indexed:
+            continue
+        # `chunks: 0` means the file legitimately produced nothing. Entries
+        # written before that field existed carry None and are treated as
+        # "expected present" — which is what surfaces the historical damage.
+        if isinstance(meta, dict) and meta.get("chunks") == 0:
+            empty.append(path)
+        else:
+            phantom.append(path)
+
+    return {
+        "cached_files": len(entries),
+        "indexed_files": len(indexed),
+        "phantom_files": sorted(phantom),
+        "empty_files": sorted(empty),
+        "unvectorized": unvectorized,
+        "unvectorized_files": sorted(unvectorized_files),
+        "drifted": bool(phantom) or bool(unvectorized),
+    }
+
+
+def _vector_segment_ids(storage_dir: Path):
+    """The chunk ids the persisted HNSW segment actually knows, or None when
+    that can't be read (no segment yet, or a Chroma build that stores its
+    mapping elsewhere — then we simply make no claim rather than a wrong one).
+
+    Read from the segment's own ``index_metadata.pickle`` rather than through a
+    client: opening the store is exactly what deadlocks against a live serve.
+    """
+    import pickle
+
+    try:
+        for child in Path(storage_dir).iterdir():
+            meta = child / "index_metadata.pickle"
+            if child.is_dir() and meta.is_file():
+                with open(meta, "rb") as fh:
+                    data = pickle.load(fh)
+                mapping = data.get("id_to_label") if isinstance(data, dict) else None
+                if isinstance(mapping, dict):
+                    return set(mapping)
+    except Exception:
+        return None
+    return None
+
+
+def _recoverable_from_queue(db) -> int:
+    """How many not-yet-vectorized rows the WAL can still deliver on its own:
+    queue rows above the lowest segment watermark. They need no repair — the
+    next open applies them."""
+    import sqlite3
+
+    try:
+        floor = db.execute("SELECT min(seq_id) FROM max_seq_id").fetchone()[0]
+        if floor is None:
+            return 0
+        return db.execute(
+            "SELECT count(*) FROM embeddings_queue WHERE seq_id > ? AND id != ?",
+            (floor, SEQ_ANCHOR_ID)).fetchone()[0] or 0
+    except sqlite3.Error:
+        return 0
+
+
+def _files_of_embeddings(db, embedding_ids) -> set:
+    """file_path values of the given chunk ids. Chunked to stay under sqlite's
+    variable limit — a broken batch can easily be thousands of ids."""
+    import sqlite3
+
+    files = set()
+    batch_size = 500
+    for start in range(0, len(embedding_ids), batch_size):
+        batch = embedding_ids[start:start + batch_size]
+        placeholders = ",".join("?" * len(batch))
+        try:
+            rows = db.execute(
+                "SELECT DISTINCT em.string_value FROM embedding_metadata em"
+                " JOIN embeddings e ON e.id = em.id"
+                " WHERE em.key = 'file_path' AND em.string_value IS NOT NULL"
+                f" AND e.embedding_id IN ({placeholders})",
+                batch,
+            )
+            files.update(r[0] for r in rows)
+        except sqlite3.Error:
+            continue
+    return files
+
+
+def heal_coverage(storage_dir) -> dict:
+    """Drop the phantom entries from the SHA cache so the next build / watcher
+    pass re-indexes exactly those files — no full rebuild, same surgical shape
+    as `heal_wal`.
+
+    Refuses while any process holds the store: a live `lynx serve` keeps the
+    cache in memory and would write it straight back over our edit.
+    """
+    storage_dir = Path(storage_dir)
+    usage = _store_usage(storage_dir)
+    if usage in ("other", "self"):
+        holder = ("another running Lynx process (usually `lynx serve`)"
+                  if usage == "other" else "this very process")
+        raise RuntimeError(
+            f"the store is currently open in {holder} — stop it and retry; "
+            f"the in-memory cache would overwrite the repair"
+        )
+
+    report = inspect_coverage(storage_dir)
+    if not report:
+        raise FileNotFoundError(f"no readable store at {storage_dir}")
+    # Both damages heal the same way: forget the file, and the next pass
+    # re-indexes it — which for the unvectorized ones also deletes the
+    # dangling chunks first (`_delete_file_chunks` runs before the insert).
+    targets = list(report["phantom_files"]) + list(report["unvectorized_files"])
+    dropped = _drop_from_file_hashes(storage_dir, targets)
+    return {
+        "phantom": len(report["phantom_files"]),
+        "unvectorized": report["unvectorized"],
+        "unvectorized_files": len(report["unvectorized_files"]),
+        "reindex_files": dropped,
+        "indexed_files": report["indexed_files"],
+    }
+
+
+def _hash_cache_files(data: dict) -> dict:
+    """The per-file mapping inside a loaded ``file_hashes.json``.
+
+    The on-disk shape is ``{"schema_version": N, "config_snapshot": {...},
+    "files": {abs_path: {...}}}``; a legacy cache was the flat mapping itself.
+    Returning the right sub-dict (by identity, so callers can mutate it) is
+    what makes the healers actually touch the entries — iterating the top level
+    of the current schema only ever sees the three envelope keys, so a heal
+    reported success while dropping nothing."""
+    files = data.get("files")
+    return files if isinstance(files, dict) else data
 
 
 def _drop_from_file_hashes(storage_dir: Path, files) -> list:
@@ -480,9 +836,12 @@ def _drop_from_file_hashes(storage_dir: Path, files) -> list:
         data = json.loads(hashes_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    dropped = [k for k in data if norm(k) in wanted]
+    if not isinstance(data, dict):
+        return []
+    entries = _hash_cache_files(data)
+    dropped = [k for k in entries if norm(k) in wanted]
     for k in dropped:
-        del data[k]
+        del entries[k]
     if dropped:
         hashes_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return dropped

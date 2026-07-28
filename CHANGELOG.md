@@ -2,7 +2,66 @@
 
 ## Unreleased
 
+### Fixed
+- **A segment stranded on purged rows is now moved forward, not left waiting.**
+  A segment consumes the WAL from its own watermark; once the rows it still
+  needs are purged they are gone, so it never advances — and every later write
+  waits on it. Measured in that state: 5 chunks/minute, vector index frozen,
+  process at zero CPU. `heal_wal` now fast-forwards lagging segments (empty
+  queue only) and the chunks whose vectors were lost are re-queued by
+  `--heal-coverage` rather than silently accepted as missing.
+- **A healed WAL no longer turns the store into a write-only void.** `heal_wal`
+  purged `embeddings_queue` and left the segments' `max_seq_id` untouched. But
+  `embeddings_queue.seq_id` is an INTEGER PRIMARY KEY with **no AUTOINCREMENT**:
+  an emptied queue restarts numbering at 1, so segments parked at (say) 64111
+  discard every new row as already-applied. The store then accepts writes and
+  stores none — no exception, `count()` unchanged, index frozen forever while
+  every log line reports success. The heal now realigns the watermarks (only
+  with an empty queue: with rows pending, lowering them would replay and
+  duplicate), `inspect_wal` reports the state as `discarding_writes`, and the
+  doctor fails on it. Found in the field: an index stuck at 2026-07-03 for 25
+  days, with a live watcher logging successful re-indexes into nothing.
+- **A failed insert no longer marks a file as indexed — forever.** During a
+  delta build, the SHA cache was written for every file in the batch, including
+  those whose `insert_nodes` had raised (logged, then treated as done) or that
+  produced no chunks. Since `_partition_files` trusts that cache to classify a
+  file *unchanged*, those files were skipped on every later pass: permanently
+  absent from the index, never retried, with a perfectly healthy `count()` and
+  no error anywhere. Now only files whose chunks actually landed are recorded
+  (with a new `chunks` count), and a failed one has its entry dropped so the
+  next pass retries it. Found in the field: 202 files of a 1944-file source,
+  invisible to search for 25 days.
+- **Writes are now proven, not assumed.** An insert can fail without raising
+  (see the watermark bug above), so recording the SHA on a call that "didn't
+  throw" was enough to retire a file from every future pass. Both the batch
+  build and the watcher path now compare the collection count before and after
+  and refuse to update the cache unless it grew by exactly the number of chunks
+  sent — a mismatch logs what happened and leaves the files queued.
+- **`_drop_from_file_hashes` reached nothing.** It iterated the top level of
+  `file_hashes.json`, which under the current schema holds only
+  `schema_version` / `config_snapshot` / `files` — so every heal built on it
+  (including `doctor --heal-wal`) reported success while dropping zero
+  entries. It now edits the `files` mapping, legacy flat caches included.
+- **The integrity probe never exercised search.** It opened the collection and
+  called `count()` + `get()`, both of which read sqlite and stay green while
+  the vector segment is out of step with the metadata — exactly the state where
+  every query dies with `Error querying knn` / `Error finding id`. The probe now
+  runs a KNN query too, so a search-dead index is reported as corrupt instead of
+  healthy.
+
 ### Added
+- **Coverage drift detection and a surgical heal** (`integrity.inspect_coverage`
+  / `heal_coverage`, surfaced as `doctor --heal-coverage SOURCE`). Read-only
+  plain-sqlite audit — never a Chroma client, which would contend with a live
+  `serve` — that catches the two silent ways an index stops matching reality:
+  files the SHA cache claims are indexed but that hold no chunks, and chunks
+  whose vector never reached the HNSW segment. Both heal the same way: forget
+  just those files so the next pass re-indexes them, no full rebuild. The
+  per-source doctor check now fails on either, naming the `Error querying knn`
+  symptom so the diagnosis doesn't have to be re-derived. Chunks the WAL can
+  still deliver on its own (the tail of a fresh build, waiting on Chroma's
+  persistence threshold) are explicitly NOT counted as damage — otherwise the
+  check would fire after every build and be trained away.
 - **A Restart button in the LynxManager sidebar.** Always-available action that
   drops the cached manager so every source is reloaded — indexes re-opened,
   watchers restarted, integrity re-probed (the same `/api/manager/reload` the
