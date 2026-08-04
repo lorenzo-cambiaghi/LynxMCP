@@ -587,11 +587,17 @@ diff search, multiple sources, reranker) is built on the same surface
   Refuses to start when the SQLite write lock is held by another
   process — guards against the classic "I left `lynx serve` running
   and the build corrupted the DB" footgun.
-- **Playground** — tabbed forms for the tools the MCP server exposes:
-  hybrid search, `find_definition` / `find_usages` / `find_tests_for` /
-  `find_similar`, the `graph_query` operations (callers / callees / overview
-  / …), and `search_diff`. Faster than spinning up a client to validate that
-  a query works.
+- **Playground** — tabbed forms for **every** tool the MCP server exposes:
+  `search` and `deep_search`; `find_definition` / `find_usages` /
+  `find_tests_for` / `find_similar`; the composed `describe_symbol`,
+  `impact`, `module_summary` and `repo_overview`; all ten `graph_query`
+  operations behind one operation selector; and `search_diff`. Faster than
+  spinning up a client to validate that a query works.
+
+  The composed tools and the graph operations show their output **verbatim**,
+  in the same text your AI client receives — the point of a playground is to
+  see what the agent will see, so tuning a source means reading the real
+  answer rather than a prettier rendering of it.
 - **Config** — JSON editor with backup-then-overwrite save and the
   exact same validation the CLI uses (validates to a tempfile before
   touching the real config).

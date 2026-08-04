@@ -85,6 +85,30 @@
     </div>
   </form>
   <div id="search-results" class="mt-4"></div>
+
+  <!-- deep_search: the escalation the agent reaches for when search is weak -->
+  <form hx-post="/api/playground/deep_search"
+        hx-include="#pg-source"
+        hx-target="#deep-results"
+        class="mt-6 p-4 bg-white border border-slate-200 rounded space-y-2">
+    <div class="font-semibold text-slate-800 text-sm">deep_search</div>
+    <div class="text-xs text-slate-500">
+      One phrasing per line — 2-4 genuinely different angles, not paraphrases.
+      Each is tried in order until one returns strong results.
+    </div>
+    <textarea name="queries" rows="3" required
+              placeholder="player health system&#10;damage and healing logic&#10;HP component lifecycle"
+              class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono"></textarea>
+    <div class="flex gap-2 items-end">
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Top K</label>
+        <input type="number" name="top_k" value="5" min="1" max="50"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+    </div>
+    <div id="deep-results" class="mt-2"></div>
+  </form>
 </section>
 
 <!-- ===== Code-aware tab ===== -->
@@ -170,6 +194,94 @@
       <div id="find-similar-results" class="mt-2"></div>
     </form>
 
+    <!-- describe_symbol -->
+    <form hx-post="/api/playground/describe_symbol"
+          hx-include="#pg-source"
+          hx-target="#describe-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">describe_symbol</div>
+      <div class="text-xs text-slate-500">Definition + callers + callees + tests, in one call.</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end flex-wrap">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Callers</label>
+          <input type="number" name="callers_limit" value="10" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Callees</label>
+          <input type="number" name="callees_limit" value="10" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Tests</label>
+          <input type="number" name="tests_limit" value="5" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="describe-results" class="mt-2"></div>
+    </form>
+
+    <!-- impact -->
+    <form hx-post="/api/playground/impact"
+          hx-include="#pg-source"
+          hx-target="#impact-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">impact</div>
+      <div class="text-xs text-slate-500">Blast radius: transitive callers + the tests to re-run.</div>
+      <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Max depth</label>
+          <input type="number" name="max_depth" value="3" min="1" max="6"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Tests</label>
+          <input type="number" name="tests_limit" value="10" min="1" max="50"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="impact-results" class="mt-2"></div>
+    </form>
+
+    <!-- module_summary -->
+    <form hx-post="/api/playground/module_summary"
+          hx-include="#pg-source"
+          hx-target="#module-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">module_summary</div>
+      <div class="text-xs text-slate-500">A file as a unit: what it defines, imports, and who depends on it.</div>
+      <input name="file" required placeholder="file path (or a symbol inside it)"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <div class="flex gap-2 items-end">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">Limit</label>
+          <input type="number" name="limit" value="40" min="1" max="200"
+                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      </div>
+      <div id="module-results" class="mt-2"></div>
+    </form>
+
+    <!-- repo_overview -->
+    <form hx-post="/api/playground/repo_overview"
+          hx-include="#pg-source"
+          hx-target="#repo-results"
+          class="p-4 bg-white border border-slate-200 rounded space-y-2">
+      <div class="font-semibold text-slate-800 text-sm">repo_overview</div>
+      <div class="text-xs text-slate-500">
+        Orientation map: languages, frameworks, entry points. No graph needed.
+      </div>
+      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      <div id="repo-results" class="mt-2"></div>
+    </form>
+
   </div>
 </section>
 
@@ -181,69 +293,81 @@
     <code class="bg-amber-100 px-1 rounded">graph.enabled = true</code> in config.
   </div>
 
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <!-- graph_query: one form, all ten operations. Three hand-wired panels
+       used to cover callers, callees and the overview — there was no way
+       to ask for subclasses, imports, a shortest path or the bridges. -->
+  <form hx-post="/api/playground/graph_query"
+        hx-include="#pg-source"
+        hx-target="#graph-results"
+        class="p-4 bg-white border border-slate-200 rounded space-y-3">
+    <div class="font-semibold text-slate-800 text-sm">graph_query</div>
 
-    <!-- architectural_overview -->
-    <form hx-post="/api/playground/architectural_overview"
-          hx-include="#pg-source"
-          hx-target="#arch-results"
-          class="p-4 bg-white border border-slate-200 rounded space-y-2 lg:col-span-2">
-      <div class="font-semibold text-slate-800 text-sm">architectural_overview</div>
-      <div class="flex gap-3 items-end">
-        <div>
-          <label class="block text-xs text-slate-600 mb-1">Top N god nodes</label>
-          <input type="number" name="top_n_gods" value="10" min="1" max="50"
-                 class="w-24 px-3 py-1.5 border border-slate-300 rounded text-sm">
-        </div>
-        <div>
-          <label class="block text-xs text-slate-600 mb-1">Min community size</label>
-          <input type="number" name="min_community_size" value="3" min="2" max="20"
-                 class="w-24 px-3 py-1.5 border border-slate-300 rounded text-sm">
-        </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+    <div class="flex gap-3 items-end flex-wrap">
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Operation</label>
+        <select name="operation" id="pg-graph-op"
+                class="px-3 py-2 border border-slate-300 rounded text-sm">
+          <option value="callers">callers — who calls this?</option>
+          <option value="callees">callees — what does it call?</option>
+          <option value="subclasses">subclasses — who inherits from it?</option>
+          <option value="superclasses">superclasses — what does it extend?</option>
+          <option value="imports">imports — a file's import edges</option>
+          <option value="neighbors">neighbors — everything around it</option>
+          <option value="shortest_path">shortest_path — how does A reach B?</option>
+          <option value="overview">overview — hubs and communities</option>
+          <option value="surprising_connections">surprising_connections — bridge edges</option>
+          <option value="status">status — node/edge counts, freshness</option>
+        </select>
       </div>
-      <div id="arch-results" class="mt-2"></div>
-    </form>
-
-    <!-- get_callers -->
-    <form hx-post="/api/playground/get_callers"
-          hx-include="#pg-source"
-          hx-target="#callers-results"
-          class="p-4 bg-white border border-slate-200 rounded space-y-2">
-      <div class="font-semibold text-slate-800 text-sm">get_callers</div>
-      <input name="symbol" required placeholder="symbol name"
-             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
-      <div class="flex gap-2 items-end">
-        <div>
-          <label class="block text-xs text-slate-600 mb-1">Limit</label>
-          <input type="number" name="limit" value="50" min="1" max="200"
-                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
-        </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      <div class="flex-1 min-w-[12rem]" data-graph-field="symbol">
+        <label class="block text-xs text-slate-600 mb-1">Symbol</label>
+        <input name="symbol" placeholder="identifier (fuzzy, case-insensitive)"
+               class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
       </div>
-      <div id="callers-results" class="mt-2"></div>
-    </form>
+      <button type="submit"
+              class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+    </div>
 
-    <!-- get_callees -->
-    <form hx-post="/api/playground/get_callees"
-          hx-include="#pg-source"
-          hx-target="#callees-results"
-          class="p-4 bg-white border border-slate-200 rounded space-y-2">
-      <div class="font-semibold text-slate-800 text-sm">get_callees</div>
-      <input name="symbol" required placeholder="symbol name"
-             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
-      <div class="flex gap-2 items-end">
-        <div>
-          <label class="block text-xs text-slate-600 mb-1">Limit</label>
-          <input type="number" name="limit" value="50" min="1" max="200"
-                 class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
-        </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+    <div class="flex gap-3 items-end flex-wrap">
+      <div data-graph-field="target" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Target</label>
+        <input name="target" placeholder="destination symbol"
+               class="px-3 py-2 border border-slate-300 rounded text-sm">
       </div>
-      <div id="callees-results" class="mt-2"></div>
-    </form>
+      <div data-graph-field="relation" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Relation</label>
+        <input name="relation" placeholder="calls, imports, inherits…"
+               class="px-3 py-2 border border-slate-300 rounded text-sm">
+      </div>
+      <div data-graph-field="depth" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Depth</label>
+        <input type="number" name="depth" value="1" min="1" max="6"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <div data-graph-field="max_hops" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Max hops</label>
+        <input type="number" name="max_hops" value="8" min="1" max="20"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <div data-graph-field="top_n" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Top N</label>
+        <input type="number" name="top_n" value="10" min="1" max="50"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <div data-graph-field="min_community_size" class="hidden">
+        <label class="block text-xs text-slate-600 mb-1">Min community</label>
+        <input type="number" name="min_community_size" value="3" min="2" max="20"
+               class="w-24 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+      <div data-graph-field="limit">
+        <label class="block text-xs text-slate-600 mb-1">Limit</label>
+        <input type="number" name="limit" value="50" min="1" max="200"
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+      </div>
+    </div>
 
-  </div>
+    <div id="graph-results" class="mt-2"></div>
+  </form>
 </section>
 
 <!-- ===== Diff tab ===== -->
@@ -309,6 +433,44 @@
   }
   sel.addEventListener('change', refreshHint);
   refreshHint();
+
+  // ----- graph_query: show only the fields the chosen operation uses -----
+  // Ten operations behind one form means most inputs are irrelevant most of
+  // the time; leaving them all visible is how a form with a selector turns
+  // into a wall of boxes nobody reads.
+  const GRAPH_FIELDS = {
+    callers:                {symbol: 1, limit: 1},
+    callees:                {symbol: 1, limit: 1},
+    subclasses:             {symbol: 1, limit: 1},
+    superclasses:           {symbol: 1, limit: 1},
+    imports:                {symbol: 1, limit: 1},
+    neighbors:              {symbol: 1, limit: 1, relation: 1, depth: 1},
+    shortest_path:          {symbol: 1, target: 1, max_hops: 1},
+    overview:               {top_n: 1, min_community_size: 1},
+    surprising_connections: {top_n: 1},
+    status:                 {},
+  };
+  const opSel = document.getElementById('pg-graph-op');
+  if (opSel) {
+    const fields = document.querySelectorAll('[data-graph-field]');
+    function refreshGraphFields() {
+      const wanted = GRAPH_FIELDS[opSel.value] || {};
+      fields.forEach(el => {
+        const on = !!wanted[el.dataset.graphField];
+        el.classList.toggle('hidden', !on);
+        // A hidden `symbol` must not still be required, or the browser
+        // refuses to submit a `status` query with an empty box it isn't
+        // showing.
+        el.querySelectorAll('input').forEach(i => { i.required = false; });
+      });
+      const sym = document.querySelector('[data-graph-field="symbol"] input');
+      if (sym) sym.required = !!wanted.symbol;
+      const tgt = document.querySelector('[data-graph-field="target"] input');
+      if (tgt) tgt.required = !!wanted.target;
+    }
+    opSel.addEventListener('change', refreshGraphFields);
+    refreshGraphFields();
+  }
 </script>
 
 {% endif %}

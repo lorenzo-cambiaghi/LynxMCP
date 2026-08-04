@@ -17,6 +17,13 @@ from pydantic import BaseModel
 
 from .app import _dispose_manager, _get_manager
 from ...outline import doc_of, signature_for
+from ..._format import (
+    _format_deep_response,
+    _format_describe_symbol,
+    _format_impact,
+    _format_module_summary,
+    _format_repo_overview,
+)
 
 
 class BatchSearchRequest(BaseModel):
@@ -638,38 +645,28 @@ def _render_hits(items, *, show_score: bool = True) -> str:
     return "".join(parts)
 
 
-def _render_simple_list(items, *, item_key: str | None = None) -> str:
-    """Render a flat list (callers/callees) — items can be str OR dict."""
-    if not items:
-        return ('<div class="p-3 bg-slate-50 border border-slate-200 rounded '
-                'text-sm text-slate-500">No results.</div>')
-    parts = [f'<div class="text-xs text-slate-500 mb-2">{len(items)} item(s)</div>',
-             '<ul class="space-y-1">']
-    for it in items:
-        if isinstance(it, dict):
-            label = (it.get(item_key) if item_key else None) \
-                or it.get("symbol") or it.get("name") or it.get("id") \
-                or str(it)
-            extra_bits = []
-            if it.get("file_path"):
-                line = it.get("start_line") or it.get("line") or ""
-                loc = f"{it['file_path']}" + (f":{line}" if line else "")
-                extra_bits.append(loc)
-            if it.get("kind"):
-                extra_bits.append(it["kind"])
-            extra = (f' <span class="text-xs text-slate-500 font-mono">'
-                     f'{_html_escape(" · ".join(extra_bits))}</span>'
-                     if extra_bits else '')
-        else:
-            label = it
-            extra = ""
-        parts.append(
-            f'<li class="p-2 bg-white border border-slate-200 rounded text-sm">'
-            f'<span class="font-mono">{_html_escape(label)}</span>{extra}'
-            f'</li>'
-        )
-    parts.append('</ul>')
-    return "".join(parts)
+def _render_tool_text(text: str) -> str:
+    """Show a tool's own text output verbatim.
+
+    Used for the tools whose answer is prose an agent reads — the composed
+    ones (describe_symbol, impact, module_summary, repo_overview),
+    deep_search, and every graph operation. Rendering them through the
+    shared `_format_*` functions means the playground shows exactly what
+    the agent receives, which is the point of a playground; a nicer
+    UI-only view would display something no agent ever sees and would be a
+    second rendering to keep in step.
+    """
+    return (
+        '<pre class="p-3 bg-slate-50 border border-slate-200 rounded text-xs '
+        'font-mono whitespace-pre-wrap overflow-x-auto max-h-[32rem]">'
+        f'{_html_escape(text)}</pre>'
+    )
+
+
+# `_render_simple_list` and `_render_arch_overview` lived here to serve the
+# three hand-wired graph panels. Consolidating those into one `graph_query`
+# form left them without a caller: the graph now renders through the shared
+# `_format_edge_lines` / overview text, the same output the agent gets.
 
 
 def _register_playground_routes(app) -> None:
@@ -825,8 +822,11 @@ def _register_playground_routes(app) -> None:
             return _err(str(e), status=400)
         except Exception as e:
             return _err(f"{type(e).__name__}: {e}", status=500)
-        # search_diff returns a dict — extract `results` + show meta info.
-        results = payload.get("results", []) if isinstance(payload, dict) else []
+        # search_diff returns a dict whose hits live under `hits`. This read
+        # `results`, a key the backend has never produced, so the panel
+        # rendered an empty list on every run — including the runs that
+        # found something.
+        results = payload.get("hits", []) if isinstance(payload, dict) else []
         meta_bits = []
         if isinstance(payload, dict):
             for k in ("base", "head", "modified_files"):
@@ -838,21 +838,69 @@ def _register_playground_routes(app) -> None:
         header = (f'<div class="text-xs text-slate-600 mb-2">'
                   f'{_html_escape(" · ".join(meta_bits))}</div>'
                   if meta_bits else '')
+        # `note` is how the backend explains an empty answer ("no files
+        # added/modified vs 'main'"); dropping it left the user staring at
+        # a blank panel.
+        if isinstance(payload, dict) and payload.get("note"):
+            header += (f'<div class="text-xs text-slate-500 mb-2">'
+                       f'{_html_escape(payload["note"])}</div>')
         return HTMLResponse(header + _render_hits(results))
 
-    @app.post("/api/playground/architectural_overview")
-    def pg_arch_overview(
+    # ------------------------------------------------------------------
+    # The tools whose answer IS a piece of prose the agent reads.
+    #
+    # These render the shared `_format_*` text in a <pre> rather than a
+    # bespoke HTML view. The playground exists to show what your agent
+    # gets when it calls a tool; a prettier UI-only rendering would show
+    # something no agent ever sees, and would be a second thing to keep
+    # correct. Hit lists keep their HTML rendering above — those are
+    # scanned, not read.
+    # ------------------------------------------------------------------
+
+    def _tool_text(fn, *a, **kw):
+        """Run a manager call and render its shared text, or an error."""
+        try:
+            return HTMLResponse(_render_tool_text(fn(*a, **kw)))
+        except KeyError as e:
+            return _err(f"unknown source: {e}", status=404)
+        except ValueError as e:
+            return _err(str(e), status=400)
+        except Exception as e:
+            return _err(f"{type(e).__name__}: {e}", status=500)
+
+    @app.post("/api/playground/graph_query")
+    def pg_graph_query(
         source: str = Form(...),
-        top_n_gods: int = Form(10),
+        operation: str = Form("callers"),
+        symbol: str = Form(""),
+        target: str = Form(""),
+        relation: str = Form(""),
+        depth: int = Form(1),
+        limit: int = Form(50),
+        max_hops: int = Form(8),
+        top_n: int = Form(10),
         min_community_size: int = Form(3),
     ):
+        """All ten graph operations behind one form.
+
+        Replaces three hand-wired panels (get_callers, get_callees,
+        architectural_overview) that between them covered less than a
+        third of the operation set — the UI had no way to ask for
+        subclasses, imports, a shortest path or the bridge edges. Same
+        consolidation the MCP tool and `lynx graph query` already made,
+        calling the same dispatcher.
+        """
         mgr, err = _mgr_or_err()
         if err: return err
+        from ...graph.dispatch import query_graph
         try:
-            payload = mgr.architectural_overview(
-                source,
-                top_n_gods=int(top_n_gods),
-                min_community_size=int(min_community_size),
+            res = query_graph(
+                mgr, source, operation,
+                symbol=symbol.strip() or None,
+                target=target.strip() or None,
+                relation_filter=relation.strip() or None,
+                depth=int(depth), limit=int(limit), max_hops=int(max_hops),
+                top_n=int(top_n), min_community_size=int(min_community_size),
             )
         except KeyError as e:
             return _err(f"unknown source: {e}", status=404)
@@ -860,112 +908,97 @@ def _register_playground_routes(app) -> None:
             return _err(str(e), status=400)
         except Exception as e:
             return _err(f"{type(e).__name__}: {e}", status=500)
-        return HTMLResponse(_render_arch_overview(payload))
+        if not res.ok:
+            # A usage problem (missing symbol, unknown operation) — the
+            # dispatcher already phrased it for a reader.
+            return _err(res.text.removeprefix("Error: "), status=400)
+        return HTMLResponse(_render_tool_text(res.text))
 
-    @app.post("/api/playground/get_callers")
-    def pg_get_callers(
+    @app.post("/api/playground/describe_symbol")
+    def pg_describe_symbol(
         source: str = Form(...),
         symbol: str = Form(...),
-        limit: int = Form(50),
+        callers_limit: int = Form(10),
+        callees_limit: int = Form(10),
+        tests_limit: int = Form(5),
     ):
         mgr, err = _mgr_or_err()
         if err: return err
         if not symbol.strip():
             return _err("symbol is empty")
-        try:
-            items = mgr.get_callers(source, symbol.strip(), limit=int(limit))
-        except KeyError as e:
-            return _err(f"unknown source: {e}", status=404)
-        except ValueError as e:
-            return _err(str(e), status=400)
-        except Exception as e:
-            return _err(f"{type(e).__name__}: {e}", status=500)
-        return HTMLResponse(_render_simple_list(items))
+        sym = symbol.strip()
+        return _tool_text(
+            lambda: _format_describe_symbol(sym, mgr.describe_symbol(
+                source, sym, callers_limit=int(callers_limit),
+                callees_limit=int(callees_limit), tests_limit=int(tests_limit),
+            )),
+        )
 
-    @app.post("/api/playground/get_callees")
-    def pg_get_callees(
+    @app.post("/api/playground/impact")
+    def pg_impact(
         source: str = Form(...),
         symbol: str = Form(...),
-        limit: int = Form(50),
+        max_depth: int = Form(3),
+        tests_limit: int = Form(10),
     ):
         mgr, err = _mgr_or_err()
         if err: return err
         if not symbol.strip():
             return _err("symbol is empty")
-        try:
-            items = mgr.get_callees(source, symbol.strip(), limit=int(limit))
-        except KeyError as e:
-            return _err(f"unknown source: {e}", status=404)
-        except ValueError as e:
-            return _err(str(e), status=400)
-        except Exception as e:
-            return _err(f"{type(e).__name__}: {e}", status=500)
-        return HTMLResponse(_render_simple_list(items))
+        sym = symbol.strip()
+        return _tool_text(
+            lambda: _format_impact(sym, mgr.impact_of(
+                source, sym, max_depth=int(max_depth),
+                tests_limit=int(tests_limit),
+            )),
+        )
 
+    @app.post("/api/playground/module_summary")
+    def pg_module_summary(
+        source: str = Form(...),
+        file: str = Form(...),
+        limit: int = Form(40),
+    ):
+        mgr, err = _mgr_or_err()
+        if err: return err
+        if not file.strip():
+            return _err("file is empty")
+        target = file.strip()
+        return _tool_text(
+            lambda: _format_module_summary(
+                target, mgr.module_summary(source, target, limit=int(limit)),
+            ),
+        )
 
-def _render_arch_overview(payload) -> str:
-    """Render the architectural_overview dict — god nodes + communities."""
-    if not isinstance(payload, dict):
-        return ('<div class="p-3 bg-slate-50 border border-slate-200 rounded '
-                'text-sm text-slate-500">No data.</div>')
+    @app.post("/api/playground/repo_overview")
+    def pg_repo_overview(source: str = Form(...)):
+        mgr, err = _mgr_or_err()
+        if err: return err
+        return _tool_text(
+            lambda: _format_repo_overview(mgr.repo_overview(source)),
+        )
 
-    parts = []
-    gods = payload.get("god_nodes") or payload.get("gods") or []
-    communities = payload.get("communities") or []
+    @app.post("/api/playground/deep_search")
+    def pg_deep_search(
+        source: str = Form(...),
+        queries: str = Form(...),
+        top_k: int = Form(5),
+    ):
+        """Escalation search. The textarea takes one phrasing per line —
+        the tool wants 2-4 genuinely different angles, and a line each is
+        the clearest way to type them."""
+        mgr, err = _mgr_or_err()
+        if err: return err
+        variants = [q.strip() for q in queries.splitlines() if q.strip()]
+        if not variants:
+            return _err("enter at least one query, one per line")
+        return _tool_text(
+            lambda: _format_deep_response(
+                mgr.deep_search(source, queries=variants, top_k=int(top_k)),
+                variants, f"source {source!r}", "",
+            ),
+        )
 
-    if gods:
-        parts.append('<div class="mb-4">')
-        parts.append('<div class="font-semibold text-slate-800 text-sm mb-2">God nodes</div>')
-        parts.append('<ul class="space-y-1">')
-        for g in gods:
-            if isinstance(g, dict):
-                label = g.get("symbol") or g.get("name") or g.get("id") or "?"
-                detail_bits = []
-                for k in ("in_degree", "out_degree", "degree", "centrality"):
-                    if g.get(k) is not None:
-                        detail_bits.append(f"{k}={g[k]}")
-                detail = f' <span class="text-xs text-slate-500">{" · ".join(detail_bits)}</span>' if detail_bits else ''
-            else:
-                label, detail = str(g), ""
-            parts.append(
-                f'<li class="p-2 bg-white border border-slate-200 rounded text-sm">'
-                f'<span class="font-mono">{_html_escape(label)}</span>{detail}'
-                f'</li>'
-            )
-        parts.append('</ul></div>')
-
-    if communities:
-        parts.append('<div>')
-        parts.append(f'<div class="font-semibold text-slate-800 text-sm mb-2">'
-                     f'Communities ({len(communities)})</div>')
-        parts.append('<div class="space-y-2">')
-        for i, c in enumerate(communities, start=1):
-            if isinstance(c, dict):
-                members = c.get("members") or c.get("nodes") or []
-                label = c.get("label") or c.get("name") or f"Community {i}"
-                size = len(members) if isinstance(members, (list, tuple)) else c.get("size", "?")
-                preview = ", ".join(_html_escape(str(m)) for m in members[:8])
-                if len(members) > 8:
-                    preview += f", … (+{len(members) - 8} more)"
-                parts.append(
-                    f'<div class="p-2 bg-white border border-slate-200 rounded text-sm">'
-                    f'  <div class="font-medium text-slate-700">{_html_escape(label)} '
-                    f'    <span class="text-xs text-slate-500">({size} members)</span>'
-                    f'  </div>'
-                    f'  <div class="font-mono text-xs text-slate-600 mt-1">{preview}</div>'
-                    f'</div>'
-                )
-            else:
-                parts.append(
-                    f'<div class="p-2 bg-white border border-slate-200 rounded text-sm">'
-                    f'{_html_escape(str(c))}</div>'
-                )
-        parts.append('</div></div>')
-
-    if not parts:
-        return ('<div class="p-3 bg-slate-50 border border-slate-200 rounded '
-                'text-sm text-slate-500">Graph layer returned empty result.</div>')
-    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------

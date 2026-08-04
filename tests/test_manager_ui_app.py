@@ -24,7 +24,7 @@ Scenarios:
  15. POST /api/playground/search → 200 with rendered hits (stubbed)
  16. POST /api/playground/search with empty query → 400
  17. POST /api/playground/find_definition → 200 (bm25 fallback)
- 18. POST /api/playground/get_callers (no graph) → 400 with clear msg
+ 18. POST /api/playground/graph_query (no graph) → 400 with clear msg
  19. GET /sources → index page renders
  20. GET /sources/<name> → detail page renders with status + build form
  21. GET /sources/UNKNOWN → 404
@@ -391,19 +391,22 @@ def main() -> int:
         print(f"[test] OK [17/27] /api/playground/find_definition: bm25 fallback rendered")
 
         # ============================================================
-        # 18. POST /api/playground/get_callers — graph disabled → 400
+        # 18. POST /api/playground/graph_query — graph disabled → 400
+        # (was get_callers, one of three hand-wired panels now folded
+        # into the single graph_query form)
         # ============================================================
         r = client.post(
-            "/api/playground/get_callers",
-            data={"source": "demo", "symbol": "f", "limit": "10"},
+            "/api/playground/graph_query",
+            data={"source": "demo", "operation": "callers",
+                  "symbol": "f", "limit": "10"},
         )
         if r.status_code != 400:
-            print(f"[test] FAIL [18/27]: get_callers without graph should be 400, got {r.status_code}")
+            print(f"[test] FAIL [18/27]: graph_query without graph should be 400, got {r.status_code}")
             return 18
         if "graph" not in r.text.lower():
             print(f"[test] FAIL [18/27]: error message should mention graph: {r.text[:200]}")
             return 18
-        print(f"[test] OK [18/27] /api/playground/get_callers: 400 (graph layer not enabled)")
+        print(f"[test] OK [18/27] /api/playground/graph_query: 400 (graph layer not enabled)")
 
         # ============================================================
         # 19. GET /sources — index page lists configured sources

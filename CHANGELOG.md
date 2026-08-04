@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- **The web UI's playground covers the whole tool surface too.** It had drifted
+  to nine tools of seventeen, with a Graph tab wired to three of the ten graph
+  operations — no way to ask the UI for subclasses, imports, a shortest path or
+  the bridge edges. Those three hand-written panels are now one `graph_query`
+  form with an operation selector (the same consolidation the MCP tool and the
+  CLI already made, calling the same dispatcher), and `deep_search`,
+  `describe_symbol`, `impact`, `module_summary` and `repo_overview` gained
+  panels of their own. The composed tools render their `_format_*` text
+  verbatim: a playground exists to show what your agent receives, and a
+  prettier UI-only view would display something no agent ever sees.
 - **Every MCP tool now has a CLI command.** Ten of the seventeen were
   agent-only: `deep_search`, the four `find_*`, `describe_symbol`, `impact`,
   `repo_overview`, `module_summary`, `search_diff`. Anyone without an MCP
@@ -56,6 +66,14 @@
   was parsing the old text.
 
 ### Fixed
+- **The playground's `search_diff` panel never showed a result.** It read
+  `payload["results"]`; the backend returns its hits under `hits`, a key
+  mismatch that rendered "No results." on every run, including the runs that
+  found something. The panel also dropped the backend's `note`, which is how
+  an empty answer explains itself ("No files added/modified vs 'main'"),
+  leaving the user staring at a blank box. Nothing caught either, because the
+  only test touching the playground lives in a file excluded from collection —
+  there is now a pytest-collected one.
 - **Two front-ends could silently drop each other's config edits.** Both
   read-modify-write the whole file, so `lynx source add` in a terminal while
   the web UI was open was enough for one write to lose the other. The
