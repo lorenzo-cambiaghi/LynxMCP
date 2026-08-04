@@ -464,6 +464,21 @@ def test_remove_with_broken_sibling_costs_nothing(tmp_path, code_dir, capsys):
     assert "different source" in err
 
 
+def test_add_with_broken_sibling_gets_the_same_guidance(tmp_path, code_dir, capsys):
+    """`remove` explained that the rejection may be about another source;
+    `add` failed the same way and said only "Schema validation failed"."""
+    cfg = _config_with_broken_sibling(tmp_path, code_dir)
+
+    rc = cli_main(["source", "add", "gamma", "--config", str(cfg), "--type",
+                   "codebase", "--path", str(code_dir), "--ext", ".py"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Nothing was changed" in err
+    assert "different source" in err
+    assert "gamma" not in _sources(cfg)
+
+
 def test_removing_the_broken_sibling_itself_works(tmp_path, code_dir):
     """The escape hatch: config-minus-beta validates, so beta is removable —
     and afterwards alpha is too."""
@@ -635,6 +650,19 @@ def test_add_json_output(tmp_path, code_dir, capsys):
     assert set(out["block"]["supported_extensions"]) == {".py", ".md"}
 
 
+def test_add_json_reports_the_block_that_was_written(tmp_path, code_dir, capsys):
+    """The payload used to echo the input block, so a script reading
+    `.block.ignored_path_fragments` was told there were none while the file
+    on disk had the full default list."""
+    cfg = _write_config(tmp_path)
+    cli_main(["source", "add", "demo", "--config", str(cfg), "--type",
+              "codebase", "--path", str(code_dir), "--ext", ".py", "--json"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["block"] == _sources(cfg)["demo"]
+    assert "/node_modules/" in out["block"]["ignored_path_fragments"]
+
+
 def test_add_json_output_on_failure(tmp_path, capsys):
     cfg = _write_config(tmp_path)
     rc = cli_main(["source", "add", "demo", "--config", str(cfg),
@@ -730,6 +758,121 @@ def test_failed_build_is_reported_in_the_exit_code(tmp_path, code_dir, monkeypat
                    str(_write_config(tmp_path)), "--type", "codebase",
                    "--path", str(code_dir), "--ext", ".py", "--build"])
     assert rc == 1
+
+
+def test_failed_build_json_says_why(tmp_path, code_dir, monkeypatch, capsys):
+    """`{"ok": false}` with no `error` was the last mute failure in the
+    family — and the one where the distinction matters most, since the
+    source WAS added and only the indexing failed."""
+    import lynx.cli as cli
+    monkeypatch.setattr(cli, "_cmd_build", lambda a: 1)
+
+    rc = cli_main(["source", "add", "demo", "--config",
+                   str(_write_config(tmp_path)), "--type", "codebase",
+                   "--path", str(code_dir), "--ext", ".py", "--build",
+                   "--json"])
+
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False and out["added"] is True and out["built"] is False
+    assert "lynx build --source demo" in out["error"]
+
+
+# ----------------------------------------------------------------------
+# Two writers, one config.
+#
+# Both front-ends read-modify-write the whole file. `lynx source add` in a
+# terminal while the web UI is open on the sources page was enough for one
+# write to drop the other, since each rewrites from the snapshot it read.
+# ----------------------------------------------------------------------
+
+
+def test_concurrent_adds_do_not_lose_each_other(tmp_path, code_dir):
+    """Ten threads adding ten sources to one config: all ten must survive."""
+    import threading
+
+    cfg = _write_config(tmp_path)
+    names = [f"src{i}" for i in range(10)]
+    errors = []
+
+    def _add(name):
+        try:
+            from lynx.manager.sources import add_source
+            res = add_source(cfg, name, {
+                "type": "codebase", "path": str(code_dir),
+                "supported_extensions": [".py"],
+            })
+            if not res.ok:
+                errors.append(res.message)
+        except Exception as e:  # pragma: no cover - only on a real failure
+            errors.append(repr(e))
+
+    threads = [threading.Thread(target=_add, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert sorted(_sources(cfg)) == sorted(names)
+
+
+def test_lock_is_released_even_when_the_write_fails(tmp_path, code_dir):
+    """A failed mutation must not leave a lockfile behind — the next
+    command would then wait out the full stale timeout for nothing."""
+    from lynx.manager.sources import add_source
+
+    cfg = _write_config(tmp_path)
+    lock = cfg.with_name(cfg.name + ".lock")
+
+    assert add_source(cfg, "9bad", {"type": "codebase"}).ok is False
+    assert not lock.exists()
+
+    assert add_source(cfg, "good", {
+        "type": "codebase", "path": str(code_dir),
+        "supported_extensions": [".py"],
+    }).ok is True
+    assert not lock.exists()
+
+
+def test_a_stale_lock_is_broken_rather_than_waited_out(tmp_path, code_dir,
+                                                       monkeypatch):
+    """A lock left by a killed process must not brick config edits."""
+    import lynx.manager.sources as sources_mod
+
+    cfg = _write_config(tmp_path)
+    lock = cfg.with_name(cfg.name + ".lock")
+    lock.write_text("99999", encoding="utf-8")  # owner long gone
+    monkeypatch.setattr(sources_mod, "_LOCK_STALE_SECONDS", 0.0)
+
+    res = sources_mod.add_source(cfg, "demo", {
+        "type": "codebase", "path": str(code_dir),
+        "supported_extensions": [".py"],
+    })
+
+    assert res.ok is True
+    assert not lock.exists()
+
+
+def test_a_held_lock_does_not_block_forever(tmp_path, code_dir, monkeypatch):
+    """Proceeding unlocked beats refusing to work: a stuck lock that is not
+    yet stale must not make the command hang until the user kills it."""
+    import lynx.manager.sources as sources_mod
+
+    cfg = _write_config(tmp_path)
+    lock = cfg.with_name(cfg.name + ".lock")
+    lock.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr(sources_mod, "_LOCK_STALE_SECONDS", 10_000.0)
+    monkeypatch.setattr(sources_mod, "_LOCK_TIMEOUT_SECONDS", 0.2)
+
+    res = sources_mod.add_source(cfg, "demo", {
+        "type": "codebase", "path": str(code_dir),
+        "supported_extensions": [".py"],
+    })
+
+    assert res.ok is True
+    assert "demo" in _sources(cfg)
+    lock.unlink()  # still someone else's; we never took it
 
 
 def test_build_is_not_run_when_not_asked(tmp_path, code_dir, monkeypatch):

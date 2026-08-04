@@ -211,13 +211,36 @@ def test_seed_exists_reaches_the_real_graph(graph_manager):
     assert _seed_exists(graph_manager, "demo", "helper") is not None
 
 
-def test_seed_exists_accepts_file_nodes(graph_manager):
-    """`imports` takes a file path, so the check must count file nodes too —
-    otherwise a valid `--op imports --symbol main.py` would be told the
-    graph has never heard of it."""
+def test_seed_exists_counts_file_nodes_only_for_imports(graph_manager):
+    """`get_imports` falls back to file nodes; every other operation goes
+    through `find_symbols`, which skips them. The check has to mirror that.
+
+    Counting files for everything looked like the safe default — it can
+    only stay quiet, never wrongly claim absence — but it silenced the hint
+    exactly where it earns its keep: on `main`, `config`, `utils`, the
+    names that collide with filenames and get mistyped.
+    """
     from lynx.graph.dispatch import _seed_exists
 
-    assert _seed_exists(graph_manager, "demo", "main.py") is True
+    # `imports` accepts a file path.
+    assert _seed_exists(graph_manager, "demo", "main.py", allow_files=True) is True
+    # `callers` does not: there is no *symbol* called main.py.
+    assert _seed_exists(graph_manager, "demo", "main.py", allow_files=False) is False
+
+
+def test_symbol_colliding_with_a_filename_is_reported_missing(graph_manager):
+    """The regression this behaviour exists for: the codebase has `main.py`
+    but no function `main`, and `--op callers --symbol main` used to report
+    a match and print a bare `(no results)`."""
+    from lynx.graph.dispatch import query_graph
+
+    res = query_graph(graph_manager, "demo", "callers", symbol="main")
+    assert res.matched is False
+    assert "nothing in this graph is called 'main'" in res.text
+
+    # ...while the operation that really does take a file path still works.
+    res = query_graph(graph_manager, "demo", "imports", symbol="main.py")
+    assert res.matched is not False
 
 
 def test_unknown_symbol_hint_appears_on_the_real_graph(graph_manager):

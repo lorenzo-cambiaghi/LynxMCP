@@ -151,6 +151,7 @@ from ._format import (
     _format_module_summary,
     _format_repo_overview,
     _format_similar_results,
+    _format_search_diff,
 )
 
 
@@ -930,30 +931,7 @@ def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
                 out = manager.search_diff(src, query, base=base, top_k=top_k)
             except Exception as e:
                 return f"Error: {e}"
-            lines = [
-                f"search_diff in {src!r} vs base {out.get('base')!r}:",
-                f"  Modified files ({len(out.get('modified_files', []))}): "
-                + ", ".join(out.get("modified_files", [])[:20])
-                + ("..." if len(out.get("modified_files", [])) > 20 else ""),
-            ]
-            if out.get("note"):
-                lines.append(f"  Note: {out['note']}")
-                return "\n".join(lines)
-            hits = out.get("hits", [])
-            if not hits:
-                lines.append("  No matching chunks in the modified files.")
-                return "\n".join(lines)
-            lines.append(f"  Hits ({len(hits)}):")
-            for h in hits:
-                fp = h.get("file_path") or h.get("file", "?")
-                sl, el = h.get("start_line") or 0, h.get("end_line") or 0
-                loc = f"{fp}:L{sl}" if sl == el else f"{fp}:L{sl}-{el}"
-                score = h.get("score")
-                score_str = f"  score={score:.4f}" if isinstance(score, (int, float)) else ""
-                sym = h.get("symbol_name") or ""
-                sym_part = f"  {sym}" if sym and not sym.startswith("<") else ""
-                lines.append(f"    • {loc}{sym_part}{score_str}")
-            return "\n".join(lines)
+            return _format_search_diff(src, out)
 
 
 def run_server(config_path=None):

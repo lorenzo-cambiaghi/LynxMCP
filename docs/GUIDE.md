@@ -134,6 +134,11 @@ layer enabled for the source.
 | `export_graph(target, mode?)` *(graph)* | Render a **shareable, offline** graph view as a single self-contained file — a symbol's blast radius (`mode=symbol`) or a file hub (`mode=module`). Writes to `reports_path` (default `<storage>/reports`). Also available as a CLI: `lynx graph export --symbol … \| --module …`. |
 | `search_diff(query, base?)` | Search only files changed vs a base branch — built for code review. (needs `git_integration`) |
 
+Every one of these is also a command: replace the underscores with hyphens
+(`find_definition` → `lynx find-definition ApplyDamage`) and you get the
+same answer, rendered by the same code. See
+[Command-line interface](#command-line-interface).
+
 `module_summary` and `export_graph` produce nothing useful without the call
 graph, so — like `graph_query` — they are registered only when the graph layer
 is on. `export_graph` is the one tool here that *writes* (a report file); the
@@ -1230,6 +1235,11 @@ few it doesn't. Useful for debugging the index, scripting a headless or
 CI install, or just querying the codebase without opening an AI
 assistant.
 
+Every MCP tool has a CLI command with the same name (underscores become
+hyphens), so the [tool table](#the-mcp-tools-you-get) doubles as the CLI
+reference and the two surfaces render identically — what you read in the
+terminal is what the model reads.
+
 ```text
 lynx [--version] [-h] COMMAND ...
 
@@ -1237,6 +1247,16 @@ lynx [--version] [-h] COMMAND ...
   build          Force a full rebuild of a source's index (search + graph)
   reset          Wipe a source's index and rebuild it from scratch
   search         Run an ad-hoc search query (no MCP client needed)
+  deep-search    Multi-query escalation when `search` came back weak
+  find-definition  Where is a symbol defined?
+  find-usages      Where is it referenced?
+  find-tests-for   Which tests exercise it?
+  find-similar     What else looks like this snippet?
+  describe-symbol  Definition + called by + calls + tests, in one call
+  impact           Blast radius: transitive callers + tests to re-run
+  repo-overview    Languages, frameworks, entry points
+  module-summary   What a file contains and how it connects
+  search-diff      Search only what you changed vs a base branch
   status         Show RAG status: git state, last update, config drift
   list-sources   Enumerate configured sources
   source         Add / remove sources without the web UI
@@ -1293,10 +1313,56 @@ into other commands.
 lynx search "how damage is dispatched" --top-k 3
 lynx search "IDamageable" --mode dense --ext .cs
 lynx search "auth" --glob "**/middleware/**" -k 5
+
+# Scope to a subset of sources by repeating --source, or 'ALL' for every one.
+lynx search "retry policy" -s api -s docs
+lynx search "retry policy" --source ALL
+
+# Signatures only — cheap triage for a broad query or a large --top-k.
+lynx search "everything touching auth" -k 40 --outline
 ```
 
 Supported flags: `--top-k / -k`, `--mode {hybrid,dense,sparse}`, `--ext`
-(repeatable, e.g. `--ext .py --ext .pyi`), `--glob`, `--path-contains`.
+(repeatable, e.g. `--ext .py --ext .pyi`), `--glob`, `--path-contains`,
+`--outline`, `--json`, and a repeatable `--source`.
+
+### Navigating the code: the `find-*` family and friends
+
+Each of these is the same operation, with the same rendering, as the MCP
+tool of the same name — useful when you want an answer without opening an
+assistant, and the reason a script can now do everything an agent can.
+All take `--source` (optional when only one codebase source qualifies) and
+`--json`.
+
+```bash
+lynx find-definition ApplyDamage            # where is it defined?
+lynx find-usages ApplyDamage --limit 20     # where is it referenced?
+lynx find-tests-for ApplyDamage             # what covers it?
+lynx find-similar --file snippet.cs -k 5    # what else looks like this?
+
+lynx describe-symbol ApplyDamage            # definition + callers + calls + tests
+lynx impact ApplyDamage --max-depth 4       # blast radius + tests to re-run
+lynx repo-overview                          # languages, frameworks, entry points
+lynx module-summary PlayerController.cs     # symbols, imports, dependents
+
+# Only the files you changed vs the base branch.
+lynx search-diff "the same discount formula" --base main
+
+# When `search` came back weak: 2-4 genuinely different phrasings.
+lynx deep-search "player health system" "damage and healing logic" "HP lifecycle"
+```
+
+`find-similar` takes the snippet as an argument or, for anything
+multi-line, from `--file` — quoting indented code on a shell command line
+is not worth the fight.
+
+With `--json` each emits one object carrying `ok`, `operation`, `source`
+and the raw structure behind the text:
+
+```bash
+lynx impact ApplyDamage --json | jq -r '.callers[].label'
+lynx find-definition ApplyDamage --json | jq -r '.results[0].file'
+```
 
 ### `status`
 

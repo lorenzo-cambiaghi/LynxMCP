@@ -155,6 +155,37 @@ def _build_filter_suffix(file_glob, extensions, path_contains):
 # ----------------------------------------------------------------------
 
 
+def _format_search_diff(source: str, out: dict) -> str:
+    """Render a `search_diff` response: base branch, the modified files, and
+    the hits inside them. Lived inline in the MCP tool until `lynx
+    search-diff` needed the same text."""
+    modified = out.get("modified_files", [])
+    lines = [
+        f"search_diff in {source!r} vs base {out.get('base')!r}:",
+        f"  Modified files ({len(modified)}): "
+        + ", ".join(modified[:20])
+        + ("..." if len(modified) > 20 else ""),
+    ]
+    if out.get("note"):
+        lines.append(f"  Note: {out['note']}")
+        return "\n".join(lines)
+    hits = out.get("hits", [])
+    if not hits:
+        lines.append("  No matching chunks in the modified files.")
+        return "\n".join(lines)
+    lines.append(f"  Hits ({len(hits)}):")
+    for h in hits:
+        fp = h.get("file_path") or h.get("file", "?")
+        sl, el = h.get("start_line") or 0, h.get("end_line") or 0
+        loc = f"{fp}:L{sl}" if sl == el else f"{fp}:L{sl}-{el}"
+        score = h.get("score")
+        score_str = f"  score={score:.4f}" if isinstance(score, (int, float)) else ""
+        sym = h.get("symbol_name") or ""
+        sym_part = f"  {sym}" if sym and not sym.startswith("<") else ""
+        lines.append(f"    • {loc}{sym_part}{score_str}")
+    return "\n".join(lines)
+
+
 def _format_node_brief(n: dict) -> str:
     """One-line summary of a graph node for tool text output."""
     label = n.get("label", "?")

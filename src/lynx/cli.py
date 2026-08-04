@@ -53,6 +53,161 @@ _GRAPH_OPERATIONS = (
 _SOURCE_TYPES = ("codebase", "webdoc", "pdf")
 
 
+def _add_query_parsers(sub) -> None:
+    """Register the retrieval / navigation subcommands.
+
+    Names map 1:1 onto the MCP tools (underscores become hyphens) so the
+    tool table in the docs doubles as the CLI reference — nobody should
+    have to translate `find_definition` into some other spelling. The
+    implementations live in `query_cli.py`; only the argument surface is
+    here, next to every other subcommand.
+    """
+    def _common(p, *, source_help: str, with_json: bool = True):
+        p.add_argument("--config", "-c", metavar="PATH")
+        p.add_argument("--source", "-s", metavar="NAME", help=source_help)
+        if with_json:
+            p.add_argument(
+                "--json", action="store_true", dest="as_json",
+                help="Emit the raw result as JSON instead of text.",
+            )
+        return p
+
+    _CODE_SRC = ("Codebase source to use. Optional when only one is "
+                 "configured.")
+
+    sp_deep = sub.add_parser(
+        "deep-search",
+        help="Multi-query escalation search: tries each phrasing until one "
+             "returns strong results. Use when `search` came back weak.",
+    )
+    sp_deep.add_argument(
+        "queries", nargs="+", metavar="QUERY",
+        help="2-4 genuinely different phrasings (different angles, not "
+             "paraphrases), tried in order.",
+    )
+    sp_deep.add_argument("--config", "-c", metavar="PATH")
+    sp_deep.add_argument(
+        "--source", "-s", metavar="NAME", action="append",
+        help="Source to query. Repeat to fuse a subset. Omitted: every source.",
+    )
+    sp_deep.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the raw result as JSON instead of text.",
+    )
+    sp_deep.add_argument("--top-k", "-k", type=int, default=None)
+    sp_deep.add_argument(
+        "--mode", choices=["hybrid", "dense", "sparse"], default=None,
+        help="Retrieval mode override (single-source only).",
+    )
+    sp_deep.add_argument("--ext", action="append", metavar="EXT")
+    sp_deep.add_argument("--glob", metavar="PATTERN")
+    sp_deep.add_argument("--path-contains", metavar="SUBSTRING")
+    sp_deep.add_argument(
+        "--min-score", type=float, default=None,
+        help="Override the score a variant must beat to count as strong.",
+    )
+    sp_deep.add_argument(
+        "--min-results", type=int, default=None,
+        help="Override how many results a variant needs to count as strong.",
+    )
+    sp_deep.add_argument(
+        "--return-all-variants", action="store_true",
+        help="Include per-variant diagnostics (single-source only).",
+    )
+
+    sp_def = sub.add_parser(
+        "find-definition",
+        help="Where is a symbol defined? AST-precise with the graph layer, "
+             "BM25 fallback otherwise.",
+    )
+    sp_def.add_argument("symbol", help="Identifier to locate.")
+    _common(sp_def, source_help=_CODE_SRC)
+    sp_def.add_argument("--limit", type=int, default=10)
+
+    sp_use = sub.add_parser(
+        "find-usages", help="Where is a symbol referenced?",
+    )
+    sp_use.add_argument("symbol", help="Identifier to look for.")
+    _common(sp_use, source_help=_CODE_SRC)
+    sp_use.add_argument("--limit", type=int, default=50)
+
+    sp_tests = sub.add_parser(
+        "find-tests-for", help="Which tests exercise a symbol?",
+    )
+    sp_tests.add_argument("symbol", help="Identifier under test.")
+    _common(sp_tests, source_help=_CODE_SRC)
+    sp_tests.add_argument("--limit", type=int, default=20)
+    sp_tests.add_argument(
+        "--test-path-pattern", metavar="SUBSTRING",
+        help="Restrict to test files whose path contains this (e.g. `/spec/`).",
+    )
+
+    sp_sim = sub.add_parser(
+        "find-similar",
+        help="Find code that resembles a snippet — duplicates, parallel "
+             "implementations, the other place that needs the same fix.",
+    )
+    sp_sim.add_argument(
+        "snippet", nargs="?",
+        help="Code to match. Omit and use --file for anything multi-line.",
+    )
+    _common(sp_sim, source_help=_CODE_SRC)
+    sp_sim.add_argument(
+        "--file", "-f", metavar="PATH",
+        help="Read the snippet from a file instead of the command line.",
+    )
+    sp_sim.add_argument("--top-k", "-k", type=int, default=10)
+
+    sp_desc = sub.add_parser(
+        "describe-symbol",
+        help="One-shot context: definition + called by + calls + tests.",
+    )
+    sp_desc.add_argument("symbol", help="Identifier to describe.")
+    _common(sp_desc, source_help=_CODE_SRC)
+    sp_desc.add_argument("--callers-limit", type=int, default=10)
+    sp_desc.add_argument("--callees-limit", type=int, default=10)
+    sp_desc.add_argument("--tests-limit", type=int, default=5)
+
+    sp_imp = sub.add_parser(
+        "impact",
+        help="Blast radius: everything that transitively reaches a symbol, "
+             "plus the tests to re-run.",
+    )
+    sp_imp.add_argument("symbol", help="Identifier whose impact to compute.")
+    _common(sp_imp, source_help=_CODE_SRC)
+    sp_imp.add_argument("--max-depth", type=int, default=3,
+                        help="Call-graph hops to walk outward (1-6).")
+    sp_imp.add_argument("--tests-limit", type=int, default=10)
+
+    sp_ovw = sub.add_parser(
+        "repo-overview",
+        help="Orientation map: languages, frameworks, entry points.",
+    )
+    _common(sp_ovw, source_help=_CODE_SRC)
+
+    sp_mod = sub.add_parser(
+        "module-summary",
+        help="What a file contains and how it connects: symbols, imports, "
+             "dependents.",
+    )
+    sp_mod.add_argument("file", metavar="FILE",
+                        help="File path (or a symbol inside it).")
+    _common(sp_mod, source_help=_CODE_SRC)
+    sp_mod.add_argument("--limit", type=int, default=40)
+
+    sp_diff = sub.add_parser(
+        "search-diff",
+        help="Search only the files you changed vs a base branch.",
+    )
+    sp_diff.add_argument("query", help="Natural-language search query.")
+    _common(sp_diff, source_help="Git-enabled codebase source.")
+    sp_diff.add_argument(
+        "--base", metavar="REF",
+        help="Base branch. Default: auto-detected main / master / develop.",
+    )
+    sp_diff.add_argument("--top-k", "-k", type=int, default=8)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lynx",
@@ -100,9 +255,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_search.add_argument("query", help="Natural-language search query")
     sp_search.add_argument("--config", "-c", metavar="PATH")
     sp_search.add_argument(
-        "--source", "-s", metavar="NAME",
+        "--source", "-s", metavar="NAME", action="append",
         help="Source to query. Optional when only one source is configured. "
-             "Use 'ALL' to fuse results across every source via RRF.",
+             "Repeat to fuse a subset (-s api -s docs); use 'ALL' for every "
+             "source.",
     )
     sp_search.add_argument("--top-k", "-k", type=int, default=None)
     sp_search.add_argument(
@@ -113,6 +269,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_search.add_argument("--ext", action="append", metavar="EXT")
     sp_search.add_argument("--glob", metavar="PATTERN")
     sp_search.add_argument("--path-contains", metavar="SUBSTRING")
+    sp_search.add_argument(
+        "--outline", action="store_true",
+        help="Return signatures + first doc line instead of full bodies — "
+             "cheap triage for a broad query or a large --top-k.",
+    )
+    sp_search.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the raw hits as JSON instead of text (for scripts).",
+    )
+
+    _add_query_parsers(sub)
 
     sp_status = sub.add_parser("status", help="Show RAG status per source")
     sp_status.add_argument("--config", "-c", metavar="PATH")
@@ -770,22 +937,44 @@ def _cmd_reset(args) -> int:
 
 
 def _cmd_search(args) -> int:
-    config, manager = _build_manager(getattr(args, "config", None))
-    source_name = _resolve_source(args, config, allow_all=True)
+    as_json = getattr(args, "as_json", False)
+    with _muted_stdout(as_json):
+        config, manager = _build_manager(getattr(args, "config", None))
     top_k = args.top_k if args.top_k is not None else config.search.default_top_k
+    filters = dict(file_glob=args.glob, extensions=args.ext,
+                   path_contains=args.path_contains)
+
+    # A repeated --source fuses just those sources, the request-time way to
+    # scope a query to a subset. One name, 'ALL', and omitting it keep
+    # behaving exactly as before.
+    requested = list(args.source or [])
+    if len(requested) > 1:
+        unknown = [n for n in requested if n not in config.sources]
+        if unknown:
+            msg = (f"unknown source(s) {unknown}. "
+                   f"Available: {list(config.sources)}")
+            if as_json:
+                _emit_json({"ok": False, "operation": "search",
+                            "source": None, "error": msg})
+            else:
+                print(f"[cli] {msg}", file=sys.stderr)
+            return 2
+        with _muted_stdout(as_json):
+            results = manager.search_all(args.query, top_k=top_k,
+                                         only=requested, **filters)
+        return _render_search(args, results, f"sources {requested}",
+                              requested, as_json)
+
+    args.source = requested[0] if requested else None
+    source_name = _resolve_source(args, config, allow_all=True)
 
     if source_name == "ALL":
-        results = manager.search_all(
-            args.query,
-            top_k=top_k,
-            file_glob=args.glob,
-            extensions=args.ext,
-            path_contains=args.path_contains,
-        )
-        label = "all sources"
-    else:
-        # --mode applies only to single-source search (cross-source uses RRF
-        # over per-source default modes).
+        with _muted_stdout(as_json):
+            results = manager.search_all(args.query, top_k=top_k, **filters)
+        return _render_search(args, results, "all sources", None, as_json)
+    # --mode applies only to single-source search (cross-source uses RRF
+    # over per-source default modes).
+    with _muted_stdout(as_json):
         if args.mode is not None:
             # Temporarily override the backend's mode for this one call.
             backend = manager.get(source_name)
@@ -793,34 +982,39 @@ def _cmd_search(args) -> int:
             try:
                 if hasattr(backend, "rag"):
                     backend.rag.search_mode = args.mode
-                results = manager.search(
-                    source_name, args.query, top_k=top_k,
-                    file_glob=args.glob, extensions=args.ext, path_contains=args.path_contains,
-                )
+                results = manager.search(source_name, args.query,
+                                         top_k=top_k, **filters)
             finally:
                 if hasattr(backend, "rag") and saved is not None:
                     backend.rag.search_mode = saved
         else:
-            results = manager.search(
-                source_name, args.query, top_k=top_k,
-                file_glob=args.glob, extensions=args.ext, path_contains=args.path_contains,
-            )
-        label = f"source {source_name!r}"
+            results = manager.search(source_name, args.query,
+                                     top_k=top_k, **filters)
+    return _render_search(args, results, f"source {source_name!r}",
+                          source_name, as_json)
 
-    if not results:
-        print(f"No results for {args.query!r} in {label}.")
+
+def _render_search(args, results, label, source, as_json) -> int:
+    """Render search hits.
+
+    Text goes through the same `_format_*` renderers the `search` MCP tool
+    uses: the CLI used to carry its own thinner rendering (file, score, six
+    raw lines), which meant the terminal showed strictly less than the
+    model got — no symbol names, no line ranges to cite. One renderer, one
+    thing to fix.
+    """
+    if as_json:
+        _emit_json({"ok": True, "operation": "search", "source": source,
+                    "query": args.query, "count": len(results),
+                    "results": results})
         return 0
-    print(f"Found {len(results)} result(s) for {args.query!r} in {label}:\n")
-    for i, r in enumerate(results, 1):
-        score = r.get("score", 0.0)
-        src_tag = f" [{r['source']}]" if "source" in r else ""
-        print(f"--- {i}. {r.get('file', 'unknown')}{src_tag}  (score {score:.3f}) ---")
-        if r.get("file_path"):
-            print(f"    path: {r['file_path']}")
-        snippet = (r.get("content") or "").strip().splitlines()[:6]
-        for line in snippet:
-            print(f"    {line}")
-        print()
+    from ._format import (
+        _build_filter_suffix, _format_outline_results, _format_search_results,
+    )
+    suffix = _build_filter_suffix(args.glob, args.ext, args.path_contains)
+    fmt = (_format_outline_results if getattr(args, "outline", False)
+           else _format_search_results)
+    print(fmt(args.query, results, label, suffix))
     return 0
 
 
@@ -1151,11 +1345,23 @@ def _cmd_source_add(args, config_path: Path) -> int:
     if as_json:
         payload = {
             "ok": build_rc == 0, "added": True, "name": name,
-            "config": str(config_path), "block": block,
+            "config": str(config_path),
+            # What landed in the file, defaults included — reporting the
+            # input instead would tell a script the source has no ignores
+            # while config.json says otherwise.
+            "block": res.written_block if res.written_block is not None else block,
             "defaults_applied": res.defaults_applied,
         }
         if built is not None:
             payload["built"] = built
+            if not built:
+                # An `ok: false` with no `error` was the one mute failure
+                # left in the family.
+                payload["error"] = (
+                    f"source {name!r} was added, but indexing it failed "
+                    f"(exit {build_rc}); see stderr, then retry with "
+                    f"`lynx build --source {name}`"
+                )
         _emit_json(payload)
     elif not args.build:
         print(f"  next:   lynx build --source {name}")
@@ -1395,6 +1601,18 @@ def _cmd_manager(args) -> int:
     return manager_cli.dispatch(sub, args)
 
 
+def _cmd_query(args) -> int:
+    """Route the retrieval / navigation subcommands.
+
+    Lazy-imported so `lynx serve` and the config-only commands never pay
+    for the formatting layer, and injected with the two CLI helpers rather
+    than letting `query_cli` import this module back.
+    """
+    from . import query_cli
+    return query_cli.dispatch(args.command, args, _build_manager,
+                              _muted_stdout)
+
+
 _DISPATCH = {
     "serve": _cmd_serve,
     "build": _cmd_build,
@@ -1407,6 +1625,17 @@ _DISPATCH = {
     "manager": _cmd_manager,
     "migrate-config": _cmd_migrate_config,
 }
+
+# The retrieval / navigation commands all route through one handler; their
+# names are listed in `query_cli.COMMANDS`, but importing that module here
+# would cost every invocation the formatting layer. Kept in sync by
+# test_query_cli.py, which asserts the two lists match.
+_QUERY_COMMANDS = (
+    "deep-search", "find-definition", "find-usages", "find-tests-for",
+    "find-similar", "describe-symbol", "impact", "repo-overview",
+    "module-summary", "search-diff",
+)
+_DISPATCH.update({name: _cmd_query for name in _QUERY_COMMANDS})
 
 
 def main(argv: Optional[List[str]] = None) -> int:

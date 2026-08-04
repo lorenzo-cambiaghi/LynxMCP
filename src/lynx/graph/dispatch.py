@@ -65,19 +65,29 @@ class GraphQueryResult(NamedTuple):
     matched: Optional[bool] = None
 
 
-def _seed_exists(manager, source: str, symbol: str) -> Optional[bool]:
-    """Does the graph know anything called `symbol`?
+# Only `imports` accepts a file path as its seed: `get_imports` tries
+# `find_symbols` and then falls back to matching `kind="file"` nodes. Every
+# other operation resolves through `find_symbols` alone, which skips file
+# and external nodes entirely.
+_FILE_SEEDED_OPS = frozenset({"imports"})
+
+
+def _seed_exists(manager, source: str, symbol: str,
+                 allow_files: bool = False) -> Optional[bool]:
+    """Does the graph know anything the operation could have started from?
 
     Only consulted when an operation came back empty, to tell "this symbol
     has no callers" apart from "this symbol isn't in the graph" — by far
     the most common reason for a confusing empty answer.
 
-    Deliberately broader than any single operation's own seed resolution
-    (symbol nodes AND file nodes): the operations disagree on what they
-    accept — `imports` takes a file path, the rest take symbols — and
-    re-implementing each rule here would drift. Erring towards True means
-    the worst case is staying quiet, never wrongly telling someone their
-    symbol doesn't exist.
+    `allow_files` mirrors the operation's OWN seed resolution. Counting
+    file nodes for every operation seemed like the safe choice (never
+    wrongly claim absence) but it silenced the hint exactly where names
+    collide with filenames: `--op callers --symbol main` reported a match
+    because `main.py` exists, on a graph with no function called `main` —
+    and `main`, `config`, `utils`, `index` are precisely the names people
+    mistype. Matching the real rule keeps the answer honest in both
+    directions.
 
     Returns None when the graph can't be reached, in which case the caller
     says nothing rather than guessing.
@@ -88,7 +98,7 @@ def _seed_exists(manager, source: str, symbol: str) -> Optional[bool]:
         if find_symbols(graph, symbol):
             return True
         needle = (symbol or "").lower()
-        if not needle:
+        if not needle or not allow_files:
             return False
         for _nid, data in graph.nodes(data=True):
             if data.get("kind") != "file":
@@ -130,7 +140,8 @@ def _edges_result(manager, source, op, symbol, edges, header) -> GraphQueryResul
         # leaving a null a JSON consumer has to special-case.
         matched = True
     else:
-        matched = _seed_exists(manager, source, symbol)
+        matched = _seed_exists(manager, source, symbol,
+                               allow_files=op in _FILE_SEEDED_OPS)
         if matched is False:
             text += _no_seed_hint(symbol)
     return GraphQueryResult(

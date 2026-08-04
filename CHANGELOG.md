@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- **Every MCP tool now has a CLI command.** Ten of the seventeen were
+  agent-only: `deep_search`, the four `find_*`, `describe_symbol`, `impact`,
+  `repo_overview`, `module_summary`, `search_diff`. Anyone without an MCP
+  client — and every script — was locked out of most of what Lynx does. The
+  names map 1:1 (`find_definition` → `lynx find-definition`), so the tool
+  table doubles as the CLI reference, and each command calls the same
+  `manager` method and the same renderer as the tool: the terminal shows
+  byte-for-byte what the model receives. `--json` on all of them emits the
+  raw structure instead.
+- **`lynx search` gained the last three things the tool had and it didn't**:
+  `--outline` (signatures only, for triaging a broad query), a repeatable
+  `--source` to fuse a subset at request time, and `--json`.
 - **`lynx source add` / `lynx source remove` — sources without a browser.**
   Adding a source was a web-UI-only operation: `lynx manager init` wrote a
   config with `sources: {}` and told you to open LynxManager, so a headless
@@ -36,7 +48,36 @@
   the JSON. Reported only when the check is possible, so a half-built graph
   can never produce a wrong "that doesn't exist".
 
+### Changed
+- **`lynx search` renders through the same formatter as the `search` tool.**
+  It used to carry its own thinner version — file, score, six raw lines — so
+  the terminal showed strictly less than the model got: no symbol names, no
+  line ranges to cite. One renderer now, and `--json` covers anything that
+  was parsing the old text.
+
 ### Fixed
+- **Two front-ends could silently drop each other's config edits.** Both
+  read-modify-write the whole file, so `lynx source add` in a terminal while
+  the web UI was open was enough for one write to lose the other. The
+  mutations now hold an exclusive lockfile; a lock left behind by a killed
+  process is broken once it is stale, and failing to acquire proceeds
+  unlocked rather than refusing to work.
+- **An empty graph answer no longer claims a symbol exists because a file
+  shares its name.** The seed check counted file nodes for every operation —
+  meant as the cautious choice, since it can only stay quiet — but it
+  silenced the hint exactly where it earns its keep: `--op callers --symbol
+  main` reported a match on a graph with no function called `main`, because
+  `main.py` exists. It now mirrors each operation's own resolution, and only
+  `imports` accepts a file path.
+- **`lynx source add` explains a validation failure the way `remove` does.**
+  The loader validates the whole file, so the rejection is often about a
+  sibling source; `remove` said so and `add` printed a bare "Schema
+  validation failed".
+- **`source add --json` reports the block that was written**, defaults
+  included, instead of echoing the input — a script reading
+  `.block.ignored_path_fragments` was told there were none while the file on
+  disk had the full list. A failed `--build` now also carries an `error`
+  field: it was the last `ok: false` with nothing explaining it.
 - **A purge that couldn't happen was reported as if it had.** `remove
   --purge` (and `DELETE /api/sources/{name}?purge=true`) dropped the config
   entry first and deleted the index second. On Windows a running `lynx serve`

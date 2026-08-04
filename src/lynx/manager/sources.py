@@ -17,11 +17,14 @@ as `<config>.bak`.
 """
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -60,6 +63,82 @@ class CrudResult(NamedTuple):
     purged_path: Optional[str] = None
     purge_error: Optional[str] = None
     defaults_applied: bool = False
+    # The block as actually written, defaults included. `--json` callers get
+    # this rather than what they passed in: reporting the input would tell a
+    # script the source has no ignores when the file on disk says otherwise.
+    written_block: Optional[dict] = None
+
+
+# How long to wait for a competing writer before giving up, and how old a
+# lock has to be before we assume its owner died. The critical section is a
+# read, a dict edit, a `load_config` on a tempfile and an `os.replace` —
+# well under a second even on a cold disk, so a lock older than this is
+# not a slow writer, it's a corpse.
+_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_STALE_SECONDS = 60.0
+
+
+@contextlib.contextmanager
+def config_lock(config_path, timeout: float = _LOCK_TIMEOUT_SECONDS):
+    """Serialize read-modify-write of config.json across processes.
+
+    Both front-ends mutate the same file, and neither reads it under a
+    lock: `lynx source add` from a terminal while the web UI is open on the
+    sources page is enough for one write to silently drop the other, since
+    each rewrites the whole file from the snapshot it read.
+
+    An exclusive `O_CREAT|O_EXCL` sidecar file is the portable primitive —
+    `fcntl.flock` doesn't exist on Windows and `msvcrt.locking` doesn't
+    exist elsewhere. A lock left behind by a killed process is broken once
+    it is older than `_LOCK_STALE_SECONDS`; the alternative (waiting
+    forever on a dead owner) fails a working install for good.
+
+    Failing to acquire is NOT fatal: the caller proceeds unlocked rather
+    than refusing to work, because a config edit blocked by a stuck lock
+    would be worse than the race it prevents.
+    """
+    lock_path = Path(config_path).with_name(Path(config_path).name + ".lock")
+    fd = None
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0.0  # vanished between the two calls: retry immediately
+            if age > _LOCK_STALE_SECONDS:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                break  # proceed unlocked — see the docstring
+            time.sleep(0.05)
+        except OSError as e:
+            if e.errno == errno.EACCES:
+                break  # read-only dir or a permissions quirk: don't block work
+            raise
+    try:
+        if fd is not None:
+            try:
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            except OSError:
+                pass
+        yield fd is not None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
 
 
 def apply_codebase_defaults(block: dict) -> dict:
@@ -184,42 +263,52 @@ def add_source(config_path, name: str, block: dict) -> CrudResult:
     if not isinstance(block, dict) or not block.get("type"):
         return CrudResult(False, "`block` must be an object with a `type` field.", 400)
 
-    try:
-        cfg = load_config_dict(config_path)
-    except Exception as e:
-        return CrudResult(False, f"Couldn't read existing config: {e}", 500)
+    with config_lock(config_path):
+        try:
+            cfg = load_config_dict(config_path)
+        except Exception as e:
+            return CrudResult(False, f"Couldn't read existing config: {e}", 500)
 
-    sources = cfg.get("sources")
-    if sources is None:
-        sources = {}
-    elif not isinstance(sources, dict):
-        return CrudResult(
-            False,
-            f"'sources' in {config_path} is a {type(sources).__name__}, not an "
-            f"object — fix it by hand before adding sources.",
-            422,
-        )
-    if name in sources:
-        return CrudResult(False, f"A source named {name!r} already exists.", 409)
+        sources = cfg.get("sources")
+        if sources is None:
+            sources = {}
+        elif not isinstance(sources, dict):
+            return CrudResult(
+                False,
+                f"'sources' in {config_path} is a {type(sources).__name__}, not an "
+                f"object — fix it by hand before adding sources.",
+                422,
+            )
+        if name in sources:
+            return CrudResult(False, f"A source named {name!r} already exists.", 409)
 
-    # Note the injection so the caller can report it rather than perform it
-    # silently: someone who handed over an explicit block (the CLI's
-    # --block, the UI's form) should be told the source will skip paths it
-    # never mentioned. `apply_codebase_defaults` mutates in place, so the
-    # "before" state has to be captured first.
-    block = dict(block)
-    had_ignores = bool(block.get("ignored_path_fragments"))
-    filled = apply_codebase_defaults(block)
-    defaults_applied = not had_ignores and bool(filled.get("ignored_path_fragments"))
+        # Note the injection so the caller can report it rather than perform
+        # it silently: someone who handed over an explicit block (the CLI's
+        # --block, the UI's form) should be told the source will skip paths
+        # it never mentioned. `apply_codebase_defaults` mutates in place, so
+        # the "before" state has to be captured first.
+        block = dict(block)
+        had_ignores = bool(block.get("ignored_path_fragments"))
+        filled = apply_codebase_defaults(block)
+        defaults_applied = not had_ignores and bool(filled.get("ignored_path_fragments"))
 
-    sources[name] = filled
-    cfg["sources"] = sources
+        sources[name] = filled
+        cfg["sources"] = sources
 
-    err = validate_and_write_config(cfg, config_path)
-    if err is not None:
-        return CrudResult(False, err, 422)
+        err = validate_and_write_config(cfg, config_path)
+        if err is not None:
+            # Same guidance `remove_source` gives: the loader validates the
+            # whole file, so the rejection may well be about a source this
+            # command never touched.
+            return CrudResult(
+                False,
+                err + " Nothing was changed. If the [config] error names a "
+                      "different source, fix or remove that one first — the "
+                      "loader validates the whole file.",
+                422,
+            )
     return CrudResult(True, f"Source {name!r} added.", 200,
-                      defaults_applied=defaults_applied)
+                      defaults_applied=defaults_applied, written_block=filled)
 
 
 def remove_source(config_path, name: str, purge: bool = False) -> CrudResult:
@@ -245,58 +334,59 @@ def remove_source(config_path, name: str, purge: bool = False) -> CrudResult:
     — is a disk-level error; its message says the index is gone and how to
     rebuild it.
     """
-    try:
-        cfg = load_config_dict(config_path)
-    except Exception as e:
-        return CrudResult(False, f"Couldn't read existing config: {e}", 500)
+    with config_lock(config_path):
+        try:
+            cfg = load_config_dict(config_path)
+        except Exception as e:
+            return CrudResult(False, f"Couldn't read existing config: {e}", 500)
 
-    sources = cfg.get("sources")
-    if not isinstance(sources, dict) or name not in sources:
-        return CrudResult(False, f"Source {name!r} not found in config.", 404)
+        sources = cfg.get("sources")
+        if not isinstance(sources, dict) or name not in sources:
+            return CrudResult(False, f"Source {name!r} not found in config.", 404)
 
-    del sources[name]
-    cfg["sources"] = sources
+        del sources[name]
+        cfg["sources"] = sources
 
-    err = validate_config_dict(cfg)
-    if err is not None:
-        return CrudResult(
-            False,
-            err + " Nothing was changed. If the [config] error names a "
-                  "different source, fix or remove that one first — the "
-                  "loader validates the whole file.",
-            422,
-        )
+        err = validate_config_dict(cfg)
+        if err is not None:
+            return CrudResult(
+                False,
+                err + " Nothing was changed. If the [config] error names a "
+                      "different source, fix or remove that one first — the "
+                      "loader validates the whole file.",
+                422,
+            )
 
-    purged_path = None
-    if purge:
-        # `storage_path` is resolved relative to the config file, same as
-        # the loader does — not the CWD, which differs between the UI
-        # (launch dir) and the CLI (wherever the user happens to be).
-        root = Path(cfg.get("storage_path", "./rag_storage"))
-        if not root.is_absolute():
-            root = Path(config_path).resolve().parent / root
-        src_storage = root / name
-        if src_storage.exists():
-            try:
-                shutil.rmtree(src_storage)
-            except OSError as e:
-                return CrudResult(
-                    False,
-                    f"Couldn't delete the index at {src_storage}: {e}. "
-                    f"Source {name!r} was left in the config — stop whatever "
-                    f"is holding the index open (a running `lynx serve`, the "
-                    f"web UI, an open file browser) and run the same command "
-                    f"again.",
-                    409, purge_error=str(e),
-                )
-            purged_path = str(src_storage)
+        purged_path = None
+        if purge:
+            # `storage_path` is resolved relative to the config file, same as
+            # the loader does — not the CWD, which differs between the UI
+            # (launch dir) and the CLI (wherever the user happens to be).
+            root = Path(cfg.get("storage_path", "./rag_storage"))
+            if not root.is_absolute():
+                root = Path(config_path).resolve().parent / root
+            src_storage = root / name
+            if src_storage.exists():
+                try:
+                    shutil.rmtree(src_storage)
+                except OSError as e:
+                    return CrudResult(
+                        False,
+                        f"Couldn't delete the index at {src_storage}: {e}. "
+                        f"Source {name!r} was left in the config — stop whatever "
+                        f"is holding the index open (a running `lynx serve`, the "
+                        f"web UI, an open file browser) and run the same command "
+                        f"again.",
+                        409, purge_error=str(e),
+                    )
+                purged_path = str(src_storage)
 
-    err = write_config(cfg, config_path)
-    if err is not None:
-        if purged_path:
-            err += (f" NOTE: the index at {purged_path} was already deleted; "
-                    f"`lynx build --source {name}` rebuilds it.")
-        return CrudResult(False, err, 422, purged_path=purged_path)
+        err = write_config(cfg, config_path)
+        if err is not None:
+            if purged_path:
+                err += (f" NOTE: the index at {purged_path} was already deleted; "
+                        f"`lynx build --source {name}` rebuilds it.")
+            return CrudResult(False, err, 422, purged_path=purged_path)
 
     return CrudResult(True, f"Source {name!r} removed.", 200,
                       purged_path=purged_path)

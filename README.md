@@ -81,6 +81,8 @@ lynx build
 
 `lynx manager init` also offers to open the web UI, where the same source can be added through a guided form with a folder picker. Everything below works either way.
 
+Every tool your AI gets is also a command, with the same name and the same output — `lynx find-definition ApplyDamage`, `lynx impact ApplyDamage`, `lynx graph query --op callers --symbol ApplyDamage`. Add `--json` to any of them for scripts.
+
 Then register Lynx in your MCP client (Claude Code shown; see the [full guide](docs/GUIDE.md) for Cursor, Antigravity, and generic stdio clients — or let `lynx manager ui` generate the snippet for you):
 
 ```json
