@@ -68,6 +68,13 @@
   can never produce a wrong "that doesn't exist".
 
 ### Changed
+- **The two biggest modules were split along their seams.** `cli.py` went
+  1657 → 1010 lines (the argparse declarations are now `cli_parser.py`,
+  which executes nothing), and `manager/ui/routes.py` 1566 → 1036: the HTML
+  fragments moved to `ui/render.py` (pure functions over data) and the
+  per-tool panels to `ui/playground.py` — the surface that grows every time
+  a tool is added, and the reason routes.py kept swelling. Every name is
+  re-exported from its old home, so callers and tests are untouched.
 - **Three UI endpoints were removed**, folded into the single `graph_query`
   form: `POST /api/playground/get_callers`, `.../get_callees` and
   `.../architectural_overview` now return 404. They are internal to the web

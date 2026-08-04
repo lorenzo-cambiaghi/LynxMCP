@@ -2581,8 +2581,14 @@ lynx/
 │   └── lynx/
 │       ├── __init__.py        Package version
 │       ├── __main__.py        Enables `python -m lynx`
-│       ├── cli.py             argparse-based CLI dispatcher (incl. source, graph,
-│       │                      manager, migrate-config)
+│       ├── cli.py             CLI command handlers (build, search, source,
+│       │                      graph, manager, migrate-config)
+│       ├── cli_parser.py      The argument surface — argparse construction only,
+│       │                      no execution. Built on EVERY invocation, so it
+│       │                      stays free of heavy imports
+│       ├── query_cli.py       Retrieval / navigation commands (find-definition,
+│       │                      impact, deep-search, …) — same manager calls and
+│       │                      same renderers as the matching MCP tools
 │       ├── server.py          FastMCP server, fixed tool set (source-arg tools;
 │       │                      graph_query + find_* registered only when applicable)
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF

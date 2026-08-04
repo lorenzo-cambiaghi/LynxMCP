@@ -281,3 +281,106 @@ def test_json_payload_shape_on_the_real_graph(graph_manager):
     err = query_graph(graph_manager, "demo", "callers")
     assert err.ok is False
     assert err.data["operation"] == "callers" and err.data["source"] == "demo"
+
+
+# ----------------------------------------------------------------------
+# The web UI's playground, against the REAL manager.
+#
+# `test_playground.py` drives every panel, but through a fake shaped like
+# the manager — which is the failure mode this file exists to catch: a
+# hand-built stub keeps passing after the real API moves under it. The
+# panels claim to render exactly what the MCP tool returns, so the honest
+# assertion is to run both against the same real graph and compare.
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def playground_client(graph_manager, tmp_path_factory):
+    from fastapi.testclient import TestClient
+
+    from lynx.manager.ui.app import create_app
+
+    tmp = tmp_path_factory.mktemp("pg-real")
+    cfg = tmp / "config.json"
+    cfg.write_text(json.dumps({
+        "config_version": 2,
+        "storage_path": str(tmp / "storage"),
+        "sources": {},
+    }), encoding="utf-8")
+    app = create_app(cfg)
+    app.state.manager = graph_manager
+    return TestClient(app)
+
+
+def _unescape(html: str) -> str:
+    return (html.replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&quot;", '"')
+                .replace("&#x27;", "'").replace("&#39;", "'"))
+
+
+@pytest.mark.parametrize("operation,symbol", [
+    ("callers", "helper"),
+    ("callees", "go"),
+    ("subclasses", "Base"),
+    ("superclasses", "Derived"),
+    ("status", ""),
+])
+def test_playground_graph_panel_matches_the_tool(playground_client,
+                                                 graph_manager,
+                                                 operation, symbol):
+    """Byte-for-byte, on a real graph: the panel is the tool's own text."""
+    from lynx.graph.dispatch import query_graph
+
+    r = playground_client.post("/api/playground/graph_query", data={
+        "source": "demo", "operation": operation, "symbol": symbol,
+    })
+
+    assert r.status_code == 200, r.text
+    expected = query_graph(graph_manager, "demo", operation,
+                           symbol=symbol or None).text
+    rendered = _unescape(r.text)
+    for line in expected.splitlines():
+        assert line.strip() in rendered, f"{operation}: missing {line.strip()!r}"
+
+
+def test_playground_describe_symbol_matches_the_tool(playground_client,
+                                                     graph_manager):
+    from lynx._format import _format_describe_symbol
+
+    r = playground_client.post("/api/playground/describe_symbol",
+                               data={"source": "demo", "symbol": "helper"})
+
+    assert r.status_code == 200
+    expected = _format_describe_symbol(
+        "helper", graph_manager.describe_symbol("demo", "helper"))
+    rendered = _unescape(r.text)
+    assert "CALLED BY" in expected          # guard the fixture itself
+    for line in expected.splitlines():
+        assert line.strip() in rendered
+
+
+def test_playground_find_definition_hits_the_real_graph(playground_client):
+    r = playground_client.post("/api/playground/find_definition",
+                               data={"source": "demo", "symbol": "helper",
+                                     "limit": "5"})
+
+    assert r.status_code == 200
+    assert "util.py" in r.text
+
+
+def test_playground_export_writes_a_real_view(playground_client, graph_manager):
+    """The whole chain on real objects: render a blast radius, write it,
+    serve it back through the download endpoint."""
+    r = playground_client.post("/api/playground/export_graph",
+                               data={"source": "demo", "target": "helper",
+                                     "mode": "symbol", "depth": "2"})
+
+    assert r.status_code == 200, r.text
+    import re
+    m = re.search(r'href="(/api/reports/[^"]+)"', r.text)
+    assert m, r.text
+
+    got = playground_client.get(m.group(1))
+    assert got.status_code == 200
+    assert "helper" in got.text
+    assert got.text.lstrip().lower().startswith("<!doctype html")
