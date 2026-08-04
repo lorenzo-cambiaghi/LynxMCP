@@ -169,6 +169,41 @@ def _get_manager(app):
         return None
 
 
+def _dispose_manager(app) -> None:
+    """Drop the cached SourceManager AND release its ChromaDB file handles.
+
+    `app.state.manager = None` alone is not enough: chromadb caches the
+    client system per storage path (SharedSystemClient), so the SQLite and
+    HNSW segment files stay open with zero references from our side.
+    Measured on Windows: with a manager constructed, `rmtree` on a source's
+    storage fails with WinError 32 on `data_level0.bin` even after dropping
+    the reference and a gc pass; clearing the system cache is what actually
+    closes the handles. Without this, the UI's own DELETE ?purge=true would
+    always 409 against the UI's own lock — advising the user to stop the
+    very process they're clicking in.
+
+    The next request that needs the manager rebuilds it lazily via
+    `_get_manager`, integrity probes included.
+    """
+    app.state.manager = None
+    app.state.manager_error = None
+    SharedSystemClient = None
+    for modpath in ("chromadb.api.shared_system_client", "chromadb.api.client"):
+        try:
+            mod = __import__(modpath, fromlist=["SharedSystemClient"])
+            SharedSystemClient = getattr(mod, "SharedSystemClient")
+            break
+        except (ImportError, AttributeError):
+            continue
+    if SharedSystemClient is not None:
+        try:
+            SharedSystemClient.clear_system_cache()
+        except Exception:
+            pass  # a failed cache clear degrades to the pre-fix 409, not a crash
+    import gc
+    gc.collect()
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------

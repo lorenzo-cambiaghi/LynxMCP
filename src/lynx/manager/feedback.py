@@ -125,7 +125,8 @@ def _storage_path_from_config(config_path: Path) -> Path:
     source (e.g. each codebase path must exist), and reading a local log
     shouldn't fail just because one source folder has since moved.
     """
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    # utf-8-sig, same as the loader: a BOM-prefixed config is still a config.
+    raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
     sp = raw.get("storage_path", "./rag_storage")
     p = Path(sp)
     if not p.is_absolute():

@@ -123,7 +123,10 @@ def register(app) -> None:
             )
         else:
             try:
-                content = Path(config_path).read_text(encoding="utf-8")
+                # utf-8-sig: a BOM read as plain utf-8 reaches the editor
+                # textarea as a stray leading character the user then saves
+                # back, making the config permanently unloadable.
+                content = Path(config_path).read_text(encoding="utf-8-sig")
             except OSError as e:
                 content = f"# Error reading config: {e}"
         return app.state.templates.TemplateResponse(

@@ -15,7 +15,7 @@ from fastapi import Query, Request
 
 from pydantic import BaseModel
 
-from .app import _get_manager
+from .app import _dispose_manager, _get_manager
 from ...outline import doc_of, signature_for
 
 
@@ -373,7 +373,10 @@ def register(app) -> None:
         p = Path(app.state.config_path)
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"config not found at {p}")
-        return {"path": str(p), "content": p.read_text(encoding="utf-8")}
+        # utf-8-sig so a BOM-prefixed config (common when edited on Windows)
+        # doesn't reach the editor textarea as a stray leading character that
+        # the user then saves back, permanently.
+        return {"path": str(p), "content": p.read_text(encoding="utf-8-sig")}
 
     @app.put("/api/config")
     async def api_config_save(request: Request):
@@ -1129,9 +1132,11 @@ def _register_build_routes(app) -> None:
         re-runs the integrity probes. The 'index not verified' card uses this to
         re-check after the user has cleared whatever was holding the index (a
         concurrent build or a second Lynx process). Cheap here — the rebuild
-        cost is paid on the page load that follows the redirect."""
-        app.state.manager = None
-        app.state.manager_error = None
+        cost is paid on the page load that follows the redirect. Goes through
+        _dispose_manager so the reload also RELEASES our ChromaDB handles,
+        not just the Python reference — a reload that keeps the old locks
+        alive defeats its own purpose."""
+        _dispose_manager(app)
         return HTMLResponse("", headers={"HX-Redirect": "/"})
 
     @app.get("/api/jobs/{job_id}")
@@ -1161,27 +1166,19 @@ def _register_build_routes(app) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Source-name shape mirrors the validator used by the v2 config loader.
-# Letter followed by letters / digits / underscore, max 40 chars.
-_SOURCE_NAME_RE = __import__("re").compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
-
-# Path fragments a new codebase source ignores by default: VCS, virtualenvs,
-# dependency dirs, and build outputs. Build/dist/vendored dirs in particular
-# mirror source files, so indexing them produces duplicate-content hits. Stored
-# in forward-slash form; config load normalizes "/" to the OS separator.
-_DEFAULT_CODEBASE_IGNORES = [
-    "/.git/", "/.venv/", "/venv/", "/node_modules/", "/__pycache__/",
-    "/.idea/", "/.vscode/", "/dist/", "/build/", "/target/", "/.next/",
-]
-
-
-def _apply_codebase_defaults(block: dict) -> dict:
-    """Fill in sane defaults a new codebase source should have but the client
-    may omit. Currently: ignore VCS/deps/build dirs unless the caller set its
-    own list. Non-codebase blocks and explicit lists are left untouched."""
-    if block.get("type") == "codebase" and not block.get("ignored_path_fragments"):
-        block["ignored_path_fragments"] = list(_DEFAULT_CODEBASE_IGNORES)
-    return block
+# The config-mutation rules live in `manager/sources.py` (FastAPI-free) so
+# `lynx source add` shares them without importing this module. Re-exported
+# under their old private names: tests and any external caller that reached
+# for `routes._apply_codebase_defaults` keep resolving.
+from ..sources import (  # noqa: E402,F401 — F401: several are pure re-exports
+    SOURCE_NAME_RE as _SOURCE_NAME_RE,
+    DEFAULT_CODEBASE_IGNORES as _DEFAULT_CODEBASE_IGNORES,
+    apply_codebase_defaults as _apply_codebase_defaults,
+    load_config_dict as _load_config_dict,
+    validate_and_write_config as _validate_and_write_config,
+    add_source as _add_source,
+    remove_source as _remove_source,
+)
 
 # Roots we never list on the filesystem browser — these are kernel
 # virtual filesystems on Linux that are either huge, slow, or weird to
@@ -1251,68 +1248,6 @@ def _toast_err(html_body: str) -> str:
     )
 
 
-def _load_config_dict(config_path):
-    """Read config.json as a raw dict (no schema validation).
-
-    Used for read-modify-write of source CRUD endpoints — we don't want
-    the source-add flow to fail because some unrelated config field is
-    slightly off-schema. Schema validation runs at write-time via
-    `_validate_and_write_config`.
-    """
-    import json as _json
-    from pathlib import Path
-    return _json.loads(Path(config_path).read_text(encoding="utf-8"))
-
-
-def _validate_and_write_config(config_dict, config_path):
-    """Round-trip the dict through `load_config` for schema validation,
-    then atomically write to disk with a `.bak` backup of the previous
-    content. Returns None on success, or an error message string.
-
-    Mirrors the validation strategy of PUT /api/config: write a tempfile,
-    invoke load_config on it, surface any SystemExit/Exception as an
-    error string. Keeps validation logic in one place (the loader).
-    """
-    import json as _json
-    import tempfile
-    from pathlib import Path
-
-    content = _json.dumps(config_dict, indent=2) + "\n"
-
-    # Schema validation via tempfile + load_config.
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8",
-    ) as tf:
-        tf.write(content)
-        tmp_path = Path(tf.name)
-    try:
-        try:
-            from ...config import load_config
-            load_config(tmp_path)
-        except SystemExit as e:
-            return (f"Schema validation failed (exit {e.code}). Check the "
-                    f"terminal where you launched `lynx manager ui` for the "
-                    f"detailed error.")
-        except Exception as e:
-            return f"Validation error: {type(e).__name__}: {e}"
-    finally:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-
-    # Backup + write.
-    target = Path(config_path)
-    try:
-        if target.exists():
-            backup = target.with_suffix(target.suffix + ".bak")
-            backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
-        target.write_text(content, encoding="utf-8")
-    except OSError as e:
-        return f"Couldn't write config: {e}"
-    return None
-
-
 def _register_source_crud_routes(app) -> None:
     """POST/DELETE /api/sources/* and GET /api/fs/browse."""
     from fastapi import HTTPException, Request
@@ -1349,39 +1284,10 @@ def _register_source_crud_routes(app) -> None:
             return HTMLResponse(_toast_err(f"Invalid JSON body: {e}"), status_code=400)
 
         name = (payload.get("name") or "").strip()
-        block = payload.get("block")
-        if not name or not _SOURCE_NAME_RE.match(name):
-            return HTMLResponse(
-                _toast_err(
-                    "Source name must start with a letter and contain only "
-                    "letters, digits, and underscores (max 40 chars)."
-                ),
-                status_code=400,
-            )
-        if not isinstance(block, dict) or not block.get("type"):
-            return HTMLResponse(
-                _toast_err("`block` must be an object with a `type` field."),
-                status_code=400,
-            )
-
-        try:
-            cfg = _load_config_dict(config_path)
-        except Exception as e:
-            return HTMLResponse(
-                _toast_err(f"Couldn't read existing config: {e}"),
-                status_code=500,
-            )
-        if name in (cfg.get("sources") or {}):
-            return HTMLResponse(
-                _toast_err(f"A source named {name!r} already exists."),
-                status_code=409,
-            )
-
-        cfg.setdefault("sources", {})[name] = _apply_codebase_defaults(block)
-
-        err_msg = _validate_and_write_config(cfg, config_path)
-        if err_msg is not None:
-            return HTMLResponse(_toast_err(err_msg), status_code=422)
+        res = _add_source(config_path, name, payload.get("block"))
+        if not res.ok:
+            return HTMLResponse(_toast_err(_html_escape(res.message)),
+                                status_code=res.status)
 
         # Invalidate cached manager so the new source becomes visible.
         app.state.manager = None
@@ -1391,7 +1297,7 @@ def _register_source_crud_routes(app) -> None:
         # success. Falls back to swapping the toast if the caller isn't
         # using HTMX (vanilla fetch will see the body + header).
         return HTMLResponse(
-            _toast_ok(f"<strong>Source {name!r} added.</strong>"),
+            _toast_ok(f"<strong>{_html_escape(res.message)}</strong>"),
             status_code=200,
             headers={"HX-Redirect": f"/sources/{name}"},
         )
@@ -1403,45 +1309,28 @@ def _register_source_crud_routes(app) -> None:
         """
         config_path, err = _require_config_path()
         if err: return err
-        try:
-            cfg = _load_config_dict(config_path)
-        except Exception as e:
-            return HTMLResponse(
-                _toast_err(f"Couldn't read existing config: {e}"),
-                status_code=500,
-            )
-        sources = cfg.get("sources") or {}
-        if name not in sources:
-            return HTMLResponse(
-                _toast_err(f"Source {name!r} not found in config."),
-                status_code=404,
-            )
-
-        storage_root = cfg.get("storage_path", "./rag_storage")
-        del sources[name]
-        cfg["sources"] = sources
-
-        err_msg = _validate_and_write_config(cfg, config_path)
-        if err_msg is not None:
-            return HTMLResponse(_toast_err(err_msg), status_code=422)
+        if purge:
+            # This process holds the source's ChromaDB files open through
+            # the cached manager (and chromadb's per-path system cache), so
+            # without releasing them first the rmtree fails against OUR OWN
+            # lock and the 409 tells the user to stop... this very UI.
+            _dispose_manager(app)
+        res = _remove_source(config_path, name, purge=purge)
+        if not res.ok:
+            # A failed purge (409) changed nothing at all — the source is
+            # still listed, so the user can free the lock and click again.
+            return HTMLResponse(_toast_err(_html_escape(res.message)),
+                                status_code=res.status)
 
         app.state.manager = None
         app.state.manager_error = None
 
         purge_msg = ""
-        if purge:
-            from pathlib import Path
-            import shutil
-            src_storage = Path(storage_root) / name
-            if src_storage.exists():
-                try:
-                    shutil.rmtree(src_storage)
-                    purge_msg = f" Storage at <code>{src_storage}</code> wiped."
-                except OSError as e:
-                    purge_msg = f" (but couldn't remove storage dir: {e})"
+        if res.purged_path:
+            purge_msg = f" Storage at <code>{_html_escape(res.purged_path)}</code> wiped."
 
         return HTMLResponse(
-            _toast_ok(f"<strong>Source {name!r} removed.</strong>{purge_msg}"),
+            _toast_ok(f"<strong>{_html_escape(res.message)}</strong>{purge_msg}"),
             status_code=200,
             headers={"HX-Redirect": "/sources"},
         )

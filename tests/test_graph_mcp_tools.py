@@ -48,8 +48,14 @@ def _stub_rag():
 
 
 @pytest.fixture(scope="module")
-def graph_mcp(tmp_path_factory):
-    """A FastMCP with graph tools registered over a tiny synthetic codebase.
+def graph_manager(tmp_path_factory):
+    """A REAL SourceManager over a tiny synthetic codebase, graph built.
+
+    Real classes all the way down — SourceManager, CodebaseBackend,
+    GraphLayer — with only CodebaseRAG stubbed, so no HuggingFace model is
+    needed. This is what lets a test exercise the actual attribute chain
+    the dispatch layer reaches through, instead of a hand-shaped fake that
+    would keep passing after a rename.
 
     Codebase: util.py defines `helper` + an inheritance chain
     (Base <- Derived) used to exercise subclasses / superclasses.
@@ -91,12 +97,17 @@ def graph_mcp(tmp_path_factory):
     from lynx.source_manager import SourceManager
     mgr = SourceManager(cfg)
     mgr.get("demo").graph.rebuild(force=True)
+    return mgr
 
+
+@pytest.fixture(scope="module")
+def graph_mcp(graph_manager):
+    """FastMCP with the graph tools registered over `graph_manager`."""
     from mcp.server.fastmcp import FastMCP
     from lynx.server import _register_graph_tools
 
     mcp = FastMCP("test")
-    _register_graph_tools(mcp, mgr)
+    _register_graph_tools(mcp, graph_manager)
     return mcp
 
 
@@ -175,3 +186,75 @@ def test_subclasses_and_superclasses(graph_mcp):
     out = tool.fn(operation="superclasses", symbol="Derived")
     assert "Superclasses of 'Derived'" in out
     assert "Base" in out
+
+
+# ----------------------------------------------------------------------
+# The "unknown symbol" hint, against the REAL object graph.
+#
+# `_seed_exists` reaches through `manager.get(source).graph.graph` and
+# swallows every exception, so if any link in that chain is renamed the
+# hint silently stops appearing and nothing fails. The unit tests use a
+# fake shaped like the chain — they would keep passing against a broken
+# real API. These run on the actual SourceManager / CodebaseBackend /
+# GraphLayer, which is the only way the chain stays pinned.
+# ----------------------------------------------------------------------
+
+
+def test_seed_exists_reaches_the_real_graph(graph_manager):
+    from lynx.graph.dispatch import _seed_exists
+
+    # A function the graph knows, one it doesn't.
+    assert _seed_exists(graph_manager, "demo", "helper") is True
+    assert _seed_exists(graph_manager, "demo", "definitelyNotHere") is False
+    # None means "couldn't check" — it must not be the answer here, or the
+    # hint is dead while every test still passes.
+    assert _seed_exists(graph_manager, "demo", "helper") is not None
+
+
+def test_seed_exists_accepts_file_nodes(graph_manager):
+    """`imports` takes a file path, so the check must count file nodes too —
+    otherwise a valid `--op imports --symbol main.py` would be told the
+    graph has never heard of it."""
+    from lynx.graph.dispatch import _seed_exists
+
+    assert _seed_exists(graph_manager, "demo", "main.py") is True
+
+
+def test_unknown_symbol_hint_appears_on_the_real_graph(graph_manager):
+    from lynx.graph.dispatch import query_graph
+
+    res = query_graph(graph_manager, "demo", "callers", symbol="ghostSymbol")
+    assert res.ok is True          # a real answer about nothing
+    assert res.matched is False
+    assert "nothing in this graph is called 'ghostSymbol'" in res.text
+    assert res.data["matched"] is False
+
+
+def test_known_symbol_without_callers_gets_no_hint(graph_manager):
+    """`go` is called by nobody, but it exists — the two empty answers must
+    stay distinguishable on the real graph, not just on the fake."""
+    from lynx.graph.dispatch import query_graph
+
+    res = query_graph(graph_manager, "demo", "callers", symbol="go")
+    assert res.data["count"] == 0
+    assert res.matched is True
+    assert "nothing in this graph" not in res.text
+
+
+def test_json_payload_shape_on_the_real_graph(graph_manager):
+    """The keys `lynx graph query --json` promises, produced by real
+    objects rather than by the fake that was built to match them."""
+    from lynx.graph.dispatch import query_graph
+
+    res = query_graph(graph_manager, "demo", "callers", symbol="helper")
+    assert res.data["operation"] == "callers"
+    assert res.data["source"] == "demo"
+    assert res.data["matched"] is True
+    assert res.data["count"] >= 1
+    edge = res.data["edges"][0]
+    assert edge["source"]["label"] and edge["target"]["label"]
+    assert edge["relation"] == "calls"
+
+    err = query_graph(graph_manager, "demo", "callers")
+    assert err.ok is False
+    assert err.data["operation"] == "callers" and err.data["source"] == "demo"

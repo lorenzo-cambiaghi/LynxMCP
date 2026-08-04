@@ -617,113 +617,14 @@ def _register_graph_tools(mcp, manager):
                 predicate=lambda b: getattr(b, "graph", None) is not None,
                 kind="graph-enabled source",
             )
-            op = (operation or "").strip().lower()
-
-            symbol_ops = {
-                "callers", "callees", "subclasses", "superclasses",
-                "imports", "neighbors", "shortest_path",
-            }
-            if op in symbol_ops and not symbol:
-                return f"Error: operation {op!r} requires `symbol`."
-
-            if op == "callers":
-                edges = manager.get_callers(src, symbol, limit=limit)
-                return _format_edge_lines(edges, f"Callers of {symbol!r} in {src!r}:")
-
-            if op == "callees":
-                edges = manager.get_callees(src, symbol, limit=limit)
-                return _format_edge_lines(edges, f"Callees of {symbol!r} in {src!r}:")
-
-            if op == "subclasses":
-                edges = manager.get_subclasses(src, symbol, limit=limit)
-                return _format_edge_lines(edges, f"Subclasses of {symbol!r} in {src!r}:")
-
-            if op == "superclasses":
-                edges = manager.get_superclasses(src, symbol, limit=limit)
-                return _format_edge_lines(edges, f"Superclasses of {symbol!r} in {src!r}:")
-
-            if op == "imports":
-                edges = manager.get_imports(src, symbol, limit=limit)
-                return _format_edge_lines(edges, f"Imports from {symbol!r} in {src!r}:")
-
-            if op == "neighbors":
-                edges = manager.get_neighbors(
-                    src, symbol,
-                    relation_filter=relation_filter, depth=depth, limit=limit,
-                )
-                label = f"Neighbors of {symbol!r}"
-                if relation_filter:
-                    label += f" (relation={relation_filter!r})"
-                label += f" depth={depth} in {src!r}:"
-                return _format_edge_lines(edges, label)
-
-            if op == "shortest_path":
-                if not target:
-                    return "Error: operation 'shortest_path' requires `target`."
-                path = manager.shortest_path(src, symbol, target, max_hops=max_hops)
-                if path is None:
-                    return (
-                        f"No directed path from {symbol!r} to {target!r} "
-                        f"(within {max_hops} hops)."
-                    )
-                lines = [f"Path from {symbol!r} → {target!r} ({path['hops']} hops):"]
-                for n in path["nodes"]:
-                    lines.append(f"  • {_format_node_brief(n)}")
-                return "\n".join(lines)
-
-            if op in ("overview", "architectural_overview"):
-                ov = manager.architectural_overview(
-                    src, top_n_gods=top_n, min_community_size=min_community_size,
-                )
-                lines = [f"=== Architectural overview of {src!r} ==="]
-                st = ov.get("status", {})
-                lines.append(f"Graph: {st.get('nodes', '?')} nodes, {st.get('edges', '?')} edges, "
-                             f"{st.get('files_indexed', '?')} files, last_update={st.get('last_update')}")
-                lines.append("\n--- God nodes (most-connected) ---")
-                for g in ov["god_nodes"]:
-                    lines.append(f"  • {g['label']:40}  degree={g['degree']}  "
-                                 f"(in={g['in_degree']}, out={g['out_degree']})  "
-                                 f"{g.get('file', '')}")
-                lines.append(f"\n--- Communities ({len(ov['communities'])}) ---")
-                for c in ov["communities"][:10]:
-                    sample = ", ".join(c["members_sample"][:5])
-                    more = "" if c["size"] <= 5 else f", +{c['size'] - 5} more"
-                    lines.append(f"  [{c['id']}] {c['name']!r}  size={c['size']}  "
-                                 f"langs={c['by_language']}  members: {sample}{more}")
-                return "\n".join(lines)
-
-            if op == "surprising_connections":
-                surprises = manager.surprising_connections(src, top_n=top_n)
-                if not surprises:
-                    return f"No surprising connections detected in {src!r}."
-                lines = [f"Top {len(surprises)} bridge edges in {src!r} (by betweenness):"]
-                for s in surprises:
-                    lines.append(
-                        f"  • {s['source_label']!r} --{s['relation']}--> {s['target_label']!r}  "
-                        f"betweenness={s['betweenness']}"
-                    )
-                return "\n".join(lines)
-
-            if op == "status":
-                st = manager.graph_status(src)
-                lines = [f"=== Graph status for {src!r} ==="]
-                lines.append(f"Schema version:    {st['schema_version']}")
-                lines.append(f"Nodes:             {st['nodes']}")
-                lines.append(f"Edges:             {st['edges']}")
-                lines.append(f"Files indexed:     {st['files_indexed']}")
-                lines.append(f"Raw calls pending: {st['raw_calls_pending']}")
-                lines.append(f"Raw inherits pending: {st.get('raw_inherits_pending', 0)}")
-                lines.append(f"Last update:       {st['last_update']}")
-                lines.append(f"Last full rebuild: {st['last_full_rebuild']}")
-                lines.append(f"By language: {st['by_language']}")
-                lines.append(f"By kind:     {st['by_kind']}")
-                lines.append(f"By relation: {st['by_relation']}")
-                return "\n".join(lines)
-
-            return (
-                f"Error: unknown operation {operation!r}. Valid operations: "
-                f"callers, callees, subclasses, superclasses, imports, neighbors, "
-                f"shortest_path, overview, surprising_connections, status."
+            # Rendering lives in graph/dispatch.py so `lynx graph query`
+            # returns exactly what the model sees here.
+            from .graph.dispatch import run_graph_query
+            return run_graph_query(
+                manager, src, operation,
+                symbol=symbol, target=target, relation_filter=relation_filter,
+                depth=depth, limit=limit, max_hops=max_hops, top_n=top_n,
+                min_community_size=min_community_size,
             )
         except Exception as e:
             return f"Error: {e}"

@@ -2,7 +2,81 @@
 
 ## Unreleased
 
+### Added
+- **`lynx source add` / `lynx source remove` — sources without a browser.**
+  Adding a source was a web-UI-only operation: `lynx manager init` wrote a
+  config with `sources: {}` and told you to open LynxManager, so a headless
+  server or a CI job had no option but hand-written JSON. The two commands
+  write through the same validate-then-write path as `POST/DELETE
+  /api/sources` (extracted to `manager/sources.py`, which no longer imports
+  FastAPI), so both front-ends accept and reject exactly the same configs and
+  both leave the file untouched — plus a `.bak` — when validation fails.
+  Typed flags per source type, `--block` for anything they don't cover, folder
+  extension auto-detection when `--ext` is omitted, `--build` to index
+  immediately, `--purge` to reclaim the index on removal, and `--json` output
+  for scripts.
+- **`lynx graph query` — the knowledge graph from a terminal.** The graph was
+  asymmetric: agents got all ten `graph_query` operations over MCP, humans got
+  `build`, `status`, and `export` with no way to actually ask anything. All ten
+  are now on the CLI (`--op callers|callees|subclasses|superclasses|imports|
+  neighbors|shortest_path|overview|surprising_connections|status`). The
+  rendering moved to `graph/dispatch.py` and both front-ends call it, so the
+  terminal shows byte-for-byte what the model receives. `--json` emits the raw
+  edges/path/counters instead, for scripts: once the arguments parse, exactly
+  one object on stdout in every case — success, usage error, or unexpected
+  runtime failure (the CLI wraps the dispatch in the same try/except the MCP
+  tool always had) — each carrying `ok`, `operation` and `source` (`null`
+  when resolving the source was itself the failure). A caller never has to
+  tell "no output" apart from "output saying no".
+- **An empty graph answer now says which kind of empty it is.** "No callers"
+  and "no such symbol" printed the same `(no results)`, and the tool
+  description could only suggest running `status` to guess which. When an
+  operation comes back empty the graph is asked whether it knows the name at
+  all, and says so — in the text the model reads and as `"matched": false` in
+  the JSON. Reported only when the check is possible, so a half-built graph
+  can never produce a wrong "that doesn't exist".
+
 ### Fixed
+- **A purge that couldn't happen was reported as if it had.** `remove
+  --purge` (and `DELETE /api/sources/{name}?purge=true`) dropped the config
+  entry first and deleted the index second. On Windows a running `lynx serve`
+  holds the ChromaDB file open, so `rmtree` raised WinError 32 with the entry
+  already gone: exit code 0, "removed", index still on disk — and no way to
+  retry the purge, since the source was no longer in the config to remove.
+  The order is now validate → purge → write, each step gated on the previous:
+  a locked index aborts with nothing changed (same command works once the
+  lock is released), and a config rejected by validation can no longer cost
+  the index either — the loader validates the whole file, so a broken
+  *sibling* source (a moved folder) used to be enough to delete the index
+  and then refuse the write, stranding the operation halfway.
+- **The web UI could not purge a source it had ever loaded.** The UI process
+  itself holds the source's ChromaDB files open — chromadb caches the client
+  system per storage path, so even dropping every Python reference leaves
+  `data_level0.bin` locked (measured: WinError 32 on rmtree from the same
+  process). `DELETE ?purge=true` therefore failed against the UI's own lock,
+  with a message advising the user to stop whatever holds the index — i.e.
+  the page they were clicking in. The route (and `/api/manager/reload`) now
+  disposes the manager AND clears chromadb's system cache before deleting;
+  the manager rebuilds lazily on the next request.
+- **`DELETE /api/sources/{name}?purge=true` deleted the wrong directory when
+  the UI wasn't launched from the config's folder.** A relative `storage_path`
+  was resolved against the process CWD, while the loader resolves it against
+  the config file's directory. The purge then found nothing to remove and
+  reported success, leaving the index on disk. Now resolved the same way the
+  loader does.
+- **A config.json saved with a UTF-8 BOM no longer fails to load.** Read as
+  plain utf-8 the BOM survives into the string and `json.loads` rejects it
+  with "Unexpected UTF-8 BOM ... line 1 column 1" — a file that looks correct
+  in any editor, refusing to load. PowerShell's `Out-File -Encoding utf8`
+  writes one by default, so on Windows this was one hand-edit away. The
+  loader, the UI's config editor, and the source CRUD now decode utf-8-sig
+  (identical to utf-8 when there is no BOM).
+- **config.json is now written atomically.** A plain `write_text` that died
+  midway — full disk, killed process — left a truncated config that nothing
+  could load, with the `.bak` written moments earlier as the only copy. The
+  content now goes to a sibling tempfile and is moved into place with
+  `os.replace`, and the backup is a byte copy so a BOM or unusual encoding
+  survives a rollback.
 - **A segment stranded on purged rows is now moved forward, not left waiting.**
   A segment consumes the WAL from its own watermark; once the rows it still
   needs are purged they are gone, so it never advances — and every later write

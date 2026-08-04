@@ -3,9 +3,13 @@
 Subcommands:
   serve           - run the MCP server (default if no command is given)
   build           - force a full rebuild of a source's index
+  reset           - wipe a source's index and rebuild it from scratch
   search          - run an ad-hoc search query against a source
   status          - show git state, last update time, config drift per source
   list-sources    - enumerate configured sources
+  source          - add / remove a source in config.json (no web UI needed)
+  graph           - build, query, inspect, or export the knowledge graph
+  manager         - setup wizard, doctor, extras installer, web UI
   migrate-config  - convert a v1 config.json to the v2 schema
 
 The package version is available via `--version` at the top level.
@@ -22,12 +26,31 @@ that source; when there are multiple, it's required.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
+
+# Graph operations `lynx graph query --op` accepts. Duplicated from
+# `lynx.graph.dispatch.OPERATIONS` on purpose: the parser is built on EVERY
+# invocation (including `lynx serve`), and importing the graph package to
+# read one tuple costs 340ms warm (1.6s cold) measured with -X importtime,
+# against 84ms for all of lynx.cli. The bulk is networkx, pulled in by
+# graph/builder.py; tree-sitter, via graph/extractor.py, is the rest. Drift
+# is caught by test_cli_graph_query.py, which asserts the two lists match.
+_GRAPH_OPERATIONS = (
+    "callers", "callees", "subclasses", "superclasses", "imports",
+    "neighbors", "shortest_path", "overview", "surprising_connections",
+    "status",
+)
+
+# Source types `lynx source add --type` accepts, mirroring the v2 config
+# schema's per-type validators in config.py.
+_SOURCE_TYPES = ("codebase", "webdoc", "pdf")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -103,8 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_graph = sub.add_parser(
         "graph",
-        help="Manage the per-source knowledge graph layer (opt-in via "
-             "`graph: { enabled: true }` in the source config).",
+        help="Build, query, inspect, or export the per-source knowledge "
+             "graph layer (opt-in via `graph: { enabled: true }` in the "
+             "source config).",
     )
     graph_sub = sp_graph.add_subparsers(dest="graph_command", metavar="GRAPH_COMMAND")
 
@@ -132,6 +156,63 @@ def _build_parser() -> argparse.ArgumentParser:
              "the graph layer enabled.",
     )
 
+    sp_graph_query = graph_sub.add_parser(
+        "query",
+        help="Ask the graph a question (callers, callees, subclasses, "
+             "shortest_path, overview, ...) — the CLI face of the "
+             "`graph_query` MCP tool.",
+    )
+    sp_graph_query.add_argument("--config", "-c", metavar="PATH")
+    sp_graph_query.add_argument(
+        "--source", "-s", metavar="NAME",
+        help="Source to query. Optional when only one has the graph layer.",
+    )
+    sp_graph_query.add_argument(
+        "--op", "--operation", dest="op", metavar="OP", required=True,
+        choices=list(_GRAPH_OPERATIONS),
+        help="Operation to run: " + " | ".join(_GRAPH_OPERATIONS) + ".",
+    )
+    sp_graph_query.add_argument(
+        "--symbol", metavar="NAME",
+        help="Symbol the operation acts on (required for callers, callees, "
+             "subclasses, superclasses, imports, neighbors, shortest_path). "
+             "Matching is fuzzy: case-insensitive substring.",
+    )
+    sp_graph_query.add_argument(
+        "--target", metavar="NAME",
+        help="Destination symbol for --op shortest_path.",
+    )
+    sp_graph_query.add_argument(
+        "--relation", metavar="REL", dest="relation_filter",
+        help="For --op neighbors: keep only this edge relation "
+             "(calls | imports | imports_from | contains | inherits).",
+    )
+    sp_graph_query.add_argument(
+        "--depth", type=int, default=1,
+        help="For --op neighbors: hops to traverse (default 1).",
+    )
+    sp_graph_query.add_argument(
+        "--limit", type=int, default=50,
+        help="Maximum edges/results to return (default 50).",
+    )
+    sp_graph_query.add_argument(
+        "--max-hops", type=int, default=8,
+        help="For --op shortest_path: longest path to search (default 8).",
+    )
+    sp_graph_query.add_argument(
+        "--top-n", type=int, default=10,
+        help="For --op overview / surprising_connections (default 10).",
+    )
+    sp_graph_query.add_argument(
+        "--min-community-size", type=int, default=3,
+        help="For --op overview: smallest cluster to report (default 3).",
+    )
+    sp_graph_query.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the raw result (edges, path, counts) as JSON instead of "
+             "the text an AI client would receive.",
+    )
+
     sp_graph_export = graph_sub.add_parser(
         "export",
         help="Write a self-contained graph view (single offline .html) for a "
@@ -151,6 +232,137 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_graph_export.add_argument(
         "--out", "-o", metavar="PATH",
         help="Output file. Default: <reports_path or storage/reports>/<name>.html",
+    )
+
+    # --------------------------------------------------------------
+    # `lynx source <cmd>` — add/remove sources without the web UI.
+    # Writes config.json through the same validator the UI uses, so a
+    # headless or scripted install never needs a browser.
+    # --------------------------------------------------------------
+    sp_source = sub.add_parser(
+        "source",
+        help="Add or remove a source in config.json (the CLI equivalent of "
+             "the web UI's guided form).",
+    )
+    source_sub = sp_source.add_subparsers(dest="source_command", metavar="SOURCE_COMMAND")
+
+    sp_src_add = source_sub.add_parser(
+        "add",
+        help="Add a source. The config is validated before it is written; "
+             "on failure the existing file is left untouched.",
+    )
+    sp_src_add.add_argument("name", help="Name for the new source (letters, digits, underscore).")
+    sp_src_add.add_argument("--config", "-c", metavar="PATH")
+    sp_src_add.add_argument(
+        "--type", "-t", choices=list(_SOURCE_TYPES), dest="source_type",
+        help="Source type. Required unless --block is used.",
+    )
+    sp_src_add.add_argument(
+        "--block", metavar="JSON", dest="block_json",
+        help="Raw JSON source block, bypassing the per-type flags below. "
+             "Escape hatch for fields the flags don't cover. Codebase blocks "
+             "still receive the default ignore list unless they set "
+             "`ignored_path_fragments` themselves.",
+    )
+    sp_src_add.add_argument(
+        "--build", action="store_true",
+        help="Index the source immediately after adding it "
+             "(equivalent to a following `lynx build --source NAME`).",
+    )
+    sp_src_add.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Report the outcome as JSON instead of text (for scripts).",
+    )
+
+    g_code = sp_src_add.add_argument_group("codebase options")
+    g_code.add_argument("--path", metavar="DIR", help="Directory to index (codebase, pdf).")
+    g_code.add_argument(
+        "--ext", action="append", metavar="EXT",
+        help="File extension to index, repeatable (e.g. --ext .cs --ext .py). "
+             "Omitted: the folder is scanned and its top extensions are used.",
+    )
+    g_code.add_argument(
+        "--ignore", action="append", metavar="FRAGMENT",
+        help="Path fragment to skip, repeatable (e.g. --ignore /Library/). "
+             "Omitted: the standard VCS/deps/build ignore list is applied.",
+    )
+    g_code.add_argument(
+        "--graph", action="store_true", help="Enable the knowledge graph layer.",
+    )
+    g_code.add_argument(
+        "--no-watcher", action="store_true",
+        help="Don't watch the folder for changes (watcher is on by default "
+             "for codebase sources, off for pdf).",
+    )
+    g_code.add_argument(
+        "--watcher-debounce", type=float, metavar="SECONDS",
+        help="Seconds to coalesce rapid edits before re-indexing.",
+    )
+    g_code.add_argument(
+        "--no-git", action="store_true",
+        help="Disable git integration (commit-based staleness detection).",
+    )
+
+    g_web = sp_src_add.add_argument_group("webdoc options")
+    g_web.add_argument("--url", metavar="URL", help="Crawl starting point (webdoc).")
+    g_web.add_argument("--max-depth", type=int, metavar="N", help="Crawl depth (default 3).")
+    g_web.add_argument("--max-pages", type=int, metavar="N", help="Page cap (default 500).")
+    g_web.add_argument(
+        "--request-delay", type=float, metavar="SECONDS",
+        help="Politeness delay between requests (default 0.5).",
+    )
+    g_web.add_argument(
+        "--include-url", action="append", metavar="PATTERN",
+        help="Only crawl URLs matching this pattern, repeatable.",
+    )
+    g_web.add_argument(
+        "--exclude-url", action="append", metavar="PATTERN",
+        help="Skip URLs matching this pattern, repeatable.",
+    )
+    g_web.add_argument(
+        "--render-js", action="store_true",
+        help="Render pages with headless Chromium (needs the `webdoc-js` extra).",
+    )
+    g_web.add_argument(
+        "--allow-cross-origin", action="store_true",
+        help="Follow links off the starting host (default: same origin only).",
+    )
+
+    g_pdf = sp_src_add.add_argument_group("pdf options")
+    g_pdf.add_argument(
+        "--no-recursive", action="store_true",
+        help="Only read PDFs directly in --path, not in sub-folders.",
+    )
+    g_pdf.add_argument(
+        "--file-glob", metavar="PATTERN", help="PDF match pattern (default `**/*.pdf`).",
+    )
+    g_pdf.add_argument(
+        "--extractor", choices=["auto", "pypdf", "pymupdf"],
+        help="PDF text extraction backend (default auto).",
+    )
+    g_pdf.add_argument(
+        "--watcher", action="store_true",
+        help="Watch the folder for new/changed PDFs (off by default: "
+             "re-extraction costs 10-30s per file).",
+    )
+
+    sp_src_rm = source_sub.add_parser(
+        "remove",
+        help="Remove a source from config.json. The index on disk is kept "
+             "unless --purge is given.",
+    )
+    sp_src_rm.add_argument("name", help="Source to remove.")
+    sp_src_rm.add_argument("--config", "-c", metavar="PATH")
+    sp_src_rm.add_argument(
+        "--purge", action="store_true",
+        help="Also delete the source's index directory under storage_path.",
+    )
+    sp_src_rm.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the confirmation prompt.",
+    )
+    sp_src_rm.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Report the outcome as JSON instead of text (for scripts).",
     )
 
     # --------------------------------------------------------------
@@ -335,7 +547,10 @@ def _cmd_migrate_config(args) -> int:
         return 1
 
     try:
-        raw = json.loads(in_path.read_text(encoding="utf-8"))
+        # utf-8-sig: a v1 config hand-edited on Windows may carry a BOM, and
+        # failing the migration on it would be a dead end — v1 is exactly the
+        # config the user can no longer load any other way.
+        raw = json.loads(in_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         print(f"[migrate] invalid JSON in {in_path}: {e}", file=sys.stderr)
         return 1
@@ -670,55 +885,427 @@ def _cmd_list_sources(args) -> int:
     return 0
 
 
-def _resolve_graph_source(manager, args) -> str:
-    """Return the source name to operate on for `lynx graph ...`.
+# ----------------------------------------------------------------------
+# Subcommand: source add / source remove
+# ----------------------------------------------------------------------
 
-    If --source is provided, validate it has the graph layer enabled.
-    Otherwise default to the single source with graph enabled; error out
-    when there are zero or more than one such sources.
+
+def _normalize_extensions(raw) -> List[str]:
+    """Accept `.cs`, `cs`, or `.CS` and store the lower-case dotted form the
+    loader compares against. Order is preserved, duplicates dropped."""
+    out: List[str] = []
+    for ext in raw or []:
+        ext = ext.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext not in out:
+            out.append(ext)
+    return out
+
+
+def _resolve_source_dir(raw: str):
+    """Resolve and check a --path argument. Returns `(path, error_message)`.
+
+    Checking here rather than leaving it to the loader is worth the
+    duplication: the loader's failure arrives via the tempfile validation
+    pass, so the user would see a generic "schema validation failed" where
+    the real problem is a typo in a directory name.
+    """
+    path = Path(raw).expanduser()
+    try:
+        path = path.resolve()
+    except OSError as e:
+        return None, f"couldn't resolve --path {raw!r}: {e}"
+    if not path.is_dir():
+        return None, f"--path is not an existing directory: {path}"
+    return path, None
+
+
+def _source_block_from_args(args, quiet: bool = False):
+    """Turn `lynx source add` flags into a config.json source block.
+
+    Returns `(block, error_message)`. Only keys the user actually set are
+    emitted — everything else is left to the loader's defaults. That keeps
+    config.json readable and means a future change of default still
+    reaches sources added today.
+
+    Errors are returned rather than printed so the caller can render them
+    as text or as JSON; `quiet` suppresses the purely informational
+    extension-detection line, which --json callers get in the block.
+    """
+    if args.block_json is not None:
+        try:
+            block = json.loads(args.block_json)
+        except json.JSONDecodeError as e:
+            return None, f"--block is not valid JSON: {e}"
+        if not isinstance(block, dict):
+            return None, (f"--block must be a JSON object describing one "
+                          f"source, got {type(block).__name__}")
+        return block, None
+
+    stype = args.source_type
+    if stype is None:
+        return None, ("`lynx source add` needs --type "
+                      f"({'|'.join(_SOURCE_TYPES)}) or --block JSON")
+
+    path = None
+    if stype in ("codebase", "pdf"):
+        if not args.path:
+            return None, f"--path DIR is required for --type {stype}"
+        path, err = _resolve_source_dir(args.path)
+        if err:
+            return None, err
+
+    if stype == "codebase":
+        extensions = _normalize_extensions(args.ext)
+        if not extensions:
+            # Same folder scan the web UI runs when you pick a directory.
+            from .manager.ui.detect import detect_extensions
+            extensions = detect_extensions(path, top_n=10)
+            if not extensions:
+                return None, (f"found no indexable files under {path}; pass "
+                              f"--ext explicitly (e.g. --ext .py --ext .md).")
+            if not quiet:
+                print(f"[cli] detected extensions: {' '.join(extensions)}")
+        block = {
+            "type": "codebase",
+            "path": str(path),
+            "supported_extensions": extensions,
+        }
+        if args.ignore:
+            block["ignored_path_fragments"] = list(args.ignore)
+        watcher = {}
+        if args.no_watcher:
+            watcher["enabled"] = False
+        if args.watcher_debounce is not None:
+            watcher["debounce_seconds"] = args.watcher_debounce
+        if watcher:
+            block["watcher"] = watcher
+        if args.no_git:
+            block["git_integration"] = {"enabled": False}
+        if args.graph:
+            block["graph"] = {"enabled": True}
+        return block, None
+
+    if stype == "webdoc":
+        if not args.url:
+            return None, "--url is required for --type webdoc"
+        block = {"type": "webdoc", "url": args.url}
+        if args.max_depth is not None:
+            block["max_depth"] = args.max_depth
+        if args.max_pages is not None:
+            block["max_pages"] = args.max_pages
+        if args.request_delay is not None:
+            block["request_delay_seconds"] = args.request_delay
+        if args.include_url:
+            block["include_url_patterns"] = list(args.include_url)
+        if args.exclude_url:
+            block["exclude_url_patterns"] = list(args.exclude_url)
+        if args.render_js:
+            block["render_js"] = True
+        if args.allow_cross_origin:
+            block["same_origin_only"] = False
+        return block, None
+
+    # pdf
+    block = {"type": "pdf", "path": str(path)}
+    if args.no_recursive:
+        block["recursive"] = False
+    if args.file_glob:
+        block["file_glob"] = args.file_glob
+    if args.extractor:
+        block["extractor"] = {"backend": args.extractor}
+    if args.watcher:
+        block["watcher"] = {"enabled": True}
+    if args.watcher_debounce is not None:
+        block.setdefault("watcher", {})["debounce_seconds"] = args.watcher_debounce
+    return block, None
+
+
+def _cmd_source(args) -> int:
+    """Dispatch `lynx source add|remove`.
+
+    Mutates config.json only — no index is touched (except `remove --purge`,
+    and `add --build`). The write goes through the same validate-then-write
+    helper as the web UI, so a rejected config leaves the file untouched.
+    """
+    sub = getattr(args, "source_command", None)
+    if sub not in ("add", "remove"):
+        print(
+            "error: `lynx source` requires a sub-command (add|remove). "
+            "Run `lynx source --help` for details.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from .config import resolve_config_path
+    config_path = resolve_config_path(getattr(args, "config", None))
+    if not config_path.is_file():
+        print(
+            f"[cli] config file not found at {config_path}. Run "
+            f"`lynx manager init` to create one, or pass --config PATH.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if sub == "add":
+        return _cmd_source_add(args, config_path)
+    return _cmd_source_remove(args, config_path)
+
+
+def _emit_json(payload) -> None:
+    """Write one JSON object to stdout. Human-facing lines go to stderr in
+    --json mode so the stream stays parseable by `jq` and friends."""
+    print(json.dumps(payload, indent=2, default=str))
+
+
+@contextlib.contextmanager
+def _muted_stdout(enabled: bool = True):
+    """Send everything written to fd 1 to fd 2 for the duration.
+
+    Building a SourceManager imports llama_index, which prints "LLM is
+    explicitly disabled. Using MockLLM." straight to stdout, and an index
+    build logs its progress there too. Harmless in text mode, fatal for
+    `--json | jq`: the JSON object stops being the only thing on stdout.
+    `server.py` performs the same dance around the MCP stdio channel, for
+    the same reason — the library writes below Python's logging, so
+    redirecting the file descriptor is the only thing that catches it.
+    """
+    if not enabled:
+        yield
+        return
+    sys.stdout.flush()
+    saved = os.dup(1)
+    try:
+        os.dup2(2, 1)
+        yield
+    finally:
+        # Flush before restoring, or output buffered while muted lands on
+        # the real stdout afterwards — right in the middle of the JSON.
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os.dup2(saved, 1)
+        os.close(saved)
+
+
+def _cmd_source_add(args, config_path: Path) -> int:
+    from .manager.sources import (
+        add_source, load_config_dict, SOURCE_NAME_RE, SOURCE_NAME_HELP,
+    )
+    as_json = getattr(args, "as_json", False)
+
+    def _fail(msg: str, code: int = 1) -> int:
+        if as_json:
+            _emit_json({"ok": False, "error": msg})
+        else:
+            print(f"[cli] {msg}", file=sys.stderr)
+        return code
+
+    # Check the name up front. `add_source` checks it again — it is the
+    # contract both front-ends rely on — but building the block first would
+    # mean a rejected name is reported only after a full folder walk.
+    name = (args.name or "").strip()
+    if not SOURCE_NAME_RE.match(name):
+        return _fail(SOURCE_NAME_HELP)
+    try:
+        existing = load_config_dict(config_path).get("sources") or {}
+    except Exception as e:
+        return _fail(f"couldn't read {config_path}: {e}")
+    if name in existing:
+        return _fail(f"a source named {name!r} already exists in {config_path}.")
+
+    block, err = _source_block_from_args(args, quiet=as_json)
+    if err:
+        return _fail(err, code=2)
+
+    res = add_source(config_path, name, block)
+    if not res.ok:
+        return _fail(res.message)
+
+    if not as_json:
+        print(res.message)
+        print(f"  config: {config_path}")
+        if res.defaults_applied:
+            print("  ignores: applied the default VCS/deps/build ignore list "
+                  "(set ignored_path_fragments to override)")
+
+    build_rc = 0
+    built = None
+    if args.build:
+        # `name`, not `args.name`: add_source stored the stripped form, and
+        # a build for a name that isn't in the config fails with "unknown
+        # source" on the line right after reporting success.
+        build_args = argparse.Namespace(
+            config=getattr(args, "config", None), source=name,
+        )
+        # The build logs progress to stdout; in --json mode that would sit
+        # in front of the object we're about to print.
+        with _muted_stdout(as_json):
+            build_rc = _cmd_build(build_args)
+        built = build_rc == 0
+
+    if as_json:
+        payload = {
+            "ok": build_rc == 0, "added": True, "name": name,
+            "config": str(config_path), "block": block,
+            "defaults_applied": res.defaults_applied,
+        }
+        if built is not None:
+            payload["built"] = built
+        _emit_json(payload)
+    elif not args.build:
+        print(f"  next:   lynx build --source {name}")
+    return build_rc
+
+
+def _cmd_source_remove(args, config_path: Path) -> int:
+    as_json = getattr(args, "as_json", False)
+    name = (args.name or "").strip()
+
+    if not args.yes and sys.stdin.isatty():
+        what = f"remove source {name!r} from {config_path}"
+        if args.purge:
+            what += " AND delete its index from disk"
+        answer = input(f"This will {what}. Continue? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    from .manager.sources import remove_source
+    res = remove_source(config_path, name, purge=args.purge)
+
+    if as_json:
+        _emit_json({
+            "ok": res.ok,
+            "name": name,
+            "config": str(config_path),
+            "purged_path": res.purged_path,
+            **({} if res.ok else {"error": res.message}),
+        })
+        return 0 if res.ok else 1
+
+    if not res.ok:
+        # Includes the failed-purge case, where nothing was changed at all.
+        print(f"[cli] {res.message}", file=sys.stderr)
+        return 1
+
+    print(res.message)
+    if res.purged_path:
+        print(f"  index wiped: {res.purged_path}")
+    elif args.purge:
+        print("  (no index directory on disk to remove)")
+    else:
+        print("  its index is still on disk — re-add the source to reuse it, "
+              "or re-run with --purge to reclaim the space.")
+    return 0
+
+
+def _resolve_graph_source(manager, args):
+    """Pick the source to operate on for `lynx graph ...`.
+
+    Returns `(name, error_message)`. If --source is provided, validate it
+    has the graph layer enabled; otherwise default to the single source
+    with graph enabled, and report zero or more than one as an error.
+
+    The error is returned rather than printed-and-exited so `graph query
+    --json` can render it as an object like every other failure of that
+    command. A helper that calls `sys.exit` leaves its caller no say in
+    how the failure is reported — which is how the JSON mode came to emit
+    an empty stdout with a non-zero exit and nothing to parse.
     """
     candidates = [
         n for n, b in manager.backends.items()
         if getattr(b, "graph", None) is not None
     ]
     if not candidates:
-        print(
-            "error: no source has the graph layer enabled. "
-            "Add `graph: { enabled: true }` to a codebase source's config.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        return None, ("no source has the graph layer enabled. Add "
+                      "`graph: { enabled: true }` to a codebase source's config.")
     if args.source:
         if args.source not in manager.backends:
-            print(f"error: unknown source {args.source!r}. Available: {list(manager.backends)}",
-                  file=sys.stderr)
-            sys.exit(2)
+            return None, (f"unknown source {args.source!r}. "
+                          f"Available: {list(manager.backends)}")
         if args.source not in candidates:
-            print(f"error: source {args.source!r} has no graph layer enabled.",
-                  file=sys.stderr)
-            sys.exit(2)
-        return args.source
+            return None, f"source {args.source!r} has no graph layer enabled."
+        return args.source, None
     if len(candidates) == 1:
-        return candidates[0]
-    print(
-        f"error: multiple sources have the graph layer enabled ({candidates}); "
-        f"specify --source NAME",
-        file=sys.stderr,
-    )
-    sys.exit(2)
+        return candidates[0], None
+    return None, (f"multiple sources have the graph layer enabled "
+                  f"({candidates}); specify --source NAME")
 
 
 def _cmd_graph(args) -> int:
     sub = getattr(args, "graph_command", None)
-    if sub not in ("build", "status", "export"):
-        print("error: `lynx graph` requires a sub-command (build|status|export). "
+    if sub not in ("build", "status", "export", "query"):
+        print("error: `lynx graph` requires a sub-command "
+              "(build|status|export|query). "
               "Run `lynx graph --help` for details.", file=sys.stderr)
         return 2
-    config, manager = _build_manager(getattr(args, "config", None))
+
+    # Loading the manager pulls in llama_index, which greets stdout on
+    # import. Mute it while there's a JSON object to keep clean.
+    as_json = getattr(args, "as_json", False)
+    with _muted_stdout(as_json):
+        config, manager = _build_manager(getattr(args, "config", None))
+
+    if sub == "query":
+        # Rendering is shared with the `graph_query` MCP tool, so without
+        # --json the terminal shows exactly what an agent would receive.
+        from .graph.dispatch import query_graph
+        source, err = _resolve_graph_source(manager, args)
+        if err:
+            # Same shape and keys as every other --json failure of this
+            # command: a script must never have to tell "no object" apart
+            # from "an object saying no". `source` is null here because
+            # resolving it IS the failure.
+            if as_json:
+                _emit_json({"ok": False, "operation": args.op, "source": None,
+                            "error": err})
+            else:
+                print(f"error: {err}", file=sys.stderr)
+            return 2
+        try:
+            with _muted_stdout(as_json):
+                res = query_graph(
+                    manager, source, args.op,
+                    symbol=args.symbol,
+                    target=args.target,
+                    relation_filter=args.relation_filter,
+                    depth=args.depth,
+                    limit=args.limit,
+                    max_hops=args.max_hops,
+                    top_n=args.top_n,
+                    min_community_size=args.min_community_size,
+                )
+        except Exception as e:
+            # The MCP tool wraps this same dispatch in a try/except; without
+            # this one, the CLI's --json contract (exactly one object on
+            # stdout, always) died on the first unexpected error — empty
+            # stdout, a traceback, nothing to parse.
+            msg = f"{type(e).__name__}: {e}"
+            if as_json:
+                _emit_json({"ok": False, "operation": args.op,
+                            "source": source, "error": msg})
+            else:
+                print(f"error: {msg}", file=sys.stderr)
+            return 1
+        if as_json:
+            _emit_json({"ok": res.ok, **res.data})
+        else:
+            print(res.text)
+        # ok=False means a usage problem (unknown op, missing --symbol).
+        # An operation that ran and found nothing is a real answer: exit 0.
+        return 0 if res.ok else 1
 
     if sub == "export":
         from pathlib import Path
-        source = _resolve_graph_source(manager, args)
+        source, err = _resolve_graph_source(manager, args)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
         if getattr(args, "symbol", None):
             mode, target = "symbol", args.symbol
         else:
@@ -738,7 +1325,10 @@ def _cmd_graph(args) -> int:
         return 0
 
     if sub == "build":
-        source = _resolve_graph_source(manager, args)
+        source, err = _resolve_graph_source(manager, args)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
         force = bool(getattr(args, "force", False))
         print(f"Rebuilding graph for source {source!r} (force={force})...")
         summary = manager.get(source).graph.rebuild(force=force)
@@ -755,7 +1345,11 @@ def _cmd_graph(args) -> int:
 
     # status
     if args.source:
-        sources = [_resolve_graph_source(manager, args)]
+        source, err = _resolve_graph_source(manager, args)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        sources = [source]
     else:
         sources = [
             n for n, b in manager.backends.items()
@@ -808,6 +1402,7 @@ _DISPATCH = {
     "status": _cmd_status,
     "reset": _cmd_reset,
     "list-sources": _cmd_list_sources,
+    "source": _cmd_source,
     "graph": _cmd_graph,
     "manager": _cmd_manager,
     "migrate-config": _cmd_migrate_config,

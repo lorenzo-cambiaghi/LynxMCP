@@ -195,7 +195,8 @@ def _run(output_path: Path, non_interactive: bool, skip_model_download: bool) ->
             return 1
     _write_config(_default_config(), output_path)
     print(success(f"Wrote {output_path}"))
-    print(dim("  (no sources yet — add them via the web UI in step 3)"))
+    print(dim("  (no sources yet — add them in step 3, via the web UI or "
+              "`lynx source add`)"))
 
     # 2. Download the embedding model into the HF cache
     if skip_model_download:
@@ -219,6 +220,8 @@ def _run(output_path: Path, non_interactive: bool, skip_model_download: bool) ->
     print(heading("Next steps"))
     print(bullet(f"`lynx manager ui --config {output_path}` — add your "
                  f"first source via the web UI"))
+    print(bullet(f"`lynx source add NAME --type codebase --path DIR "
+                 f"--config {output_path}` — same thing without a browser"))
     print(bullet(f"`lynx manager doctor --config {output_path}` — verify "
                  f"the install"))
     print()

@@ -432,7 +432,13 @@ def load_config(config_path: Path | None = None) -> Config:
         )
 
     try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        # utf-8-sig, not utf-8: PowerShell's `Out-File -Encoding utf8` and
+        # several Windows editors prepend a BOM, which plain utf-8 decodes
+        # into the string and json.loads then rejects with "Unexpected UTF-8
+        # BOM" — a config that looks perfectly fine in an editor failing to
+        # load with an error that points at column 1. Identical to utf-8 for
+        # files without a BOM.
+        raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         _config_error(f"invalid JSON in {config_path}: {e}")
 

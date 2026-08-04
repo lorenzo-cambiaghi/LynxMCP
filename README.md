@@ -71,12 +71,15 @@ Plus: `outline` triage is **2.4× fewer tokens**, and the code arrives in **1** 
 pipx install lynx-mcp
 #    or: uv tool install lynx-mcp
 
-# 2. Create a config pointing at your project
+# 2. Create a config and point it at your project
 lynx manager init
+lynx source add myproject --type codebase --path /path/to/your/repo
 
 # 3. Build the index (downloads the ~130MB embedding model on first run)
 lynx build
 ```
+
+`lynx manager init` also offers to open the web UI, where the same source can be added through a guided form with a folder picker. Everything below works either way.
 
 Then register Lynx in your MCP client (Claude Code shown; see the [full guide](docs/GUIDE.md) for Cursor, Antigravity, and generic stdio clients — or let `lynx manager ui` generate the snippet for you):
 

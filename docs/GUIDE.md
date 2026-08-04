@@ -371,8 +371,15 @@ Flags:
 - `--skip-model-download` — don't pre-fetch the embedding model. It will
   be downloaded lazily on the first `lynx serve` query instead.
 
-After init, jump into the UI and click **+ Add source** — see
-`lynx manager ui` below for the guided form.
+After init, add your first source either way: jump into the UI and click
+**+ Add source** (see `lynx manager ui` below for the guided form), or
+stay in the terminal with
+[`lynx source add`](#source) — same validation, no browser:
+
+```bash
+lynx manager init --non-interactive
+lynx source add myproject --type codebase --path /path/to/repo --build
+```
 
 ### `lynx manager doctor` — full diagnostic
 
@@ -1218,26 +1225,35 @@ A single `pip install` covers all of them.
 
 ## Command-line interface
 
-The same `lynx` command exposes seven subcommands. Useful for debugging
-the index, scripting, or just querying the codebase without opening an AI
+The same `lynx` command exposes every operation the web UI does, plus a
+few it doesn't. Useful for debugging the index, scripting a headless or
+CI install, or just querying the codebase without opening an AI
 assistant.
 
 ```text
 lynx [--version] [-h] COMMAND ...
 
-  serve         Run the MCP server (default if no command is given)
-  build         Force a full rebuild of a source's index (search + graph)
-  search        Run an ad-hoc search query (no MCP client needed)
-  status        Show RAG status: git state, last update, config drift
-  list-sources  Enumerate configured sources
-  graph         Manage the per-source knowledge graph layer
-                  graph build   Rebuild graph for a source
-                  graph status  Show node / edge counts, by language / kind
-  manager       Setup / install / diagnose / web UI (new in v0.9)
-                  manager init     Interactive config wizard
-                  manager doctor   Full diagnostic report
-                  manager install  Extras + HF model download
-                  manager ui       Local web panel (FastAPI + HTMX)
+  serve          Run the MCP server (default if no command is given)
+  build          Force a full rebuild of a source's index (search + graph)
+  reset          Wipe a source's index and rebuild it from scratch
+  search         Run an ad-hoc search query (no MCP client needed)
+  status         Show RAG status: git state, last update, config drift
+  list-sources   Enumerate configured sources
+  source         Add / remove sources without the web UI
+                   source add     Append a source block to config.json
+                   source remove  Drop one (optionally purging its index)
+  graph          Manage and query the per-source knowledge graph layer
+                   graph build    Rebuild graph for a source
+                   graph status   Show node / edge counts, by language / kind
+                   graph query    Ask the graph: callers, callees, overview, ...
+                   graph export   Write a shareable offline graph view
+  manager        Setup / install / diagnose / web UI (new in v0.9)
+                   manager init      Bootstrap config + model
+                   manager doctor    Full diagnostic report
+                   manager install   Extras + HF model download
+                   manager feedback  Summarize the local feedback log
+                   manager ui        Local web panel (FastAPI + HTMX)
+  migrate-config Convert a v1 config.json to the v2 schema
 ```
 
 > Every example in this section can be invoked equivalently as
@@ -1296,10 +1312,76 @@ Last update:  2026-05-10T13:45:27.492806
 No config drift detected.
 ```
 
+### `source`
+
+Add and remove sources without opening the web UI — the path for a
+headless box, a CI job, or anyone who'd rather not hand-write JSON. The
+config is validated *before* it is written: if the resulting file
+wouldn't load, nothing is changed and the previous content is also kept
+as `config.json.bak`.
+
+```bash
+# A codebase. With no --ext the folder is scanned and its most common
+# extensions are used (the same probe the UI's form runs).
+lynx source add myproject --type codebase --path /path/to/repo
+lynx source add myproject --type codebase --path /path/to/repo \
+    --ext .cs --ext .shader --graph
+
+# Docs site and PDF folder.
+lynx source add unitydocs --type webdoc --url https://docs.unity3d.com/ScriptReference/ \
+    --max-pages 800 --exclude-url /2019.
+lynx source add books --type pdf --path ~/Documents/papers --extractor pymupdf
+
+# Add and index in one step (otherwise: lynx build --source NAME).
+lynx source add myproject --type codebase --path /path/to/repo --build
+
+# Remove. The index on disk survives unless you ask for it to go.
+lynx source remove myproject
+lynx source remove myproject --purge --yes
+```
+
+`--purge` runs as **validate → delete index → write config**, each step
+only after the previous one succeeded. A rejected config never costs you
+the index — note that the loader validates the *whole* file, so the
+rejection may name a different source (a sibling whose folder has moved);
+fix or remove that one first. A locked index (a running `lynx serve`, the
+web UI, an open file browser — on Windows the lock is enforced, not
+advisory) aborts everything: non-zero exit, unchanged config, and the
+same command works once the lock is gone.
+
+Both sub-commands take `--json` for scripts: one object on stdout, human
+notes on stderr, exit code 0 only on success.
+
+```bash
+lynx source add myproject --type codebase --path /repo --json | jq -r .block.path
+```
+
+Codebase flags: `--path`, `--ext` (repeatable), `--ignore` (repeatable),
+`--graph`, `--no-watcher`, `--watcher-debounce`, `--no-git`.
+Webdoc flags: `--url`, `--max-depth`, `--max-pages`, `--request-delay`,
+`--include-url`, `--exclude-url`, `--render-js`, `--allow-cross-origin`.
+PDF flags: `--path`, `--no-recursive`, `--file-glob`, `--extractor`,
+`--watcher`.
+
+Anything the flags don't cover goes through `--block`, which takes a raw
+source block and validates it identically:
+
+```bash
+lynx source add myproject --block '{"type": "codebase", "path": "/repo", "supported_extensions": [".py"]}'
+```
+
+A codebase block still receives the standard VCS/deps/build ignore list
+unless it sets `ignored_path_fragments` itself — indexing `node_modules`
+is a worse surprise than an extra line of output, so the injection is
+announced rather than silent.
+
+Only keys you actually pass are written, so a source added today keeps
+inheriting the defaults — and any future change to them.
+
 ### `graph`
 
-Manage the per-source knowledge graph layer (only meaningful when the
-source has `graph: { enabled: true }` in `config.json`). Two
+Manage and query the per-source knowledge graph layer (only meaningful
+when the source has `graph: { enabled: true }` in `config.json`). Four
 sub-commands:
 
 ```bash
@@ -1330,10 +1412,63 @@ lynx graph status --source myproject
   by_relation:       {'contains': 6201, 'calls': 7488, 'inherits': 612, 'imports': 431}
 ```
 
-Day-to-day you don't need this — the file watcher keeps the graph live
-the same way it does for the search index, and `lynx build` rebuilds
-both. Use `lynx graph build --force` after a graph schema bump or when
-you suspect stale edges.
+Day-to-day you don't need `graph build` — the file watcher keeps the
+graph live the same way it does for the search index, and `lynx build`
+rebuilds both. Use `lynx graph build --force` after a graph schema bump
+or when you suspect stale edges.
+
+#### `graph query` — ask the graph from a terminal
+
+Every operation of the `graph_query` MCP tool, with the same rendering:
+what you read here is exactly what an agent receives.
+
+```bash
+# What breaks if I change this?
+lynx graph query --op callers --symbol ApplyDamage
+
+# What does it depend on?
+lynx graph query --op callees --symbol ApplyDamage --limit 20
+
+# Type hierarchy, import edges, everything within N hops.
+lynx graph query --op subclasses --symbol IDamageable
+lynx graph query --op imports --symbol PlayerController.cs
+lynx graph query --op neighbors --symbol ApplyDamage --relation calls --depth 2
+
+# How does A reach B?
+lynx graph query --op shortest_path --symbol OnCollisionEnter --target ApplyDamage
+
+# Orient yourself in an unfamiliar repo.
+lynx graph query --op overview --top-n 15
+lynx graph query --op surprising_connections
+lynx graph query --op status
+```
+
+Symbol matching is fuzzy (case-insensitive substring), so pass an
+identifier rather than a description. `--source` is optional when exactly
+one source has the graph layer.
+
+For scripts, `--json` emits the raw result — edges with file and line,
+the path node list, the status counters — instead of the text:
+
+```bash
+lynx graph query --op callers --symbol ApplyDamage --json | jq -r '.edges[].source.file'
+```
+
+Once the arguments parse (malformed flags are rejected by the parser
+itself, as in any CLI), every `--json` run prints exactly one object on
+stdout — success, empty result, usage error, or unexpected failure — and
+every object carries `ok`, `operation`, and `source` (`source` is `null`
+when resolving it was the failure). A script never has to tell "no
+output" apart from "output saying no": failures, including unexpected
+runtime errors, are `{"ok": false, "error": "..."}`, never a bare
+traceback with empty stdout.
+
+The exit code is non-zero only for a *usage* problem (unknown operation,
+an operation missing its `--symbol`, a source with no graph layer). An
+operation that ran and found nothing exits 0 — that's an answer, not a
+failure. To tell the two empty cases apart, both the text and the JSON
+say whether the symbol exists at all: `"matched": false` means nothing in
+the graph goes by that name.
 
 ---
 
@@ -2369,7 +2504,8 @@ lynx/
 │   └── lynx/
 │       ├── __init__.py        Package version
 │       ├── __main__.py        Enables `python -m lynx`
-│       ├── cli.py             argparse-based CLI dispatcher (incl. graph + migrate-config)
+│       ├── cli.py             argparse-based CLI dispatcher (incl. source, graph,
+│       │                      manager, migrate-config)
 │       ├── server.py          FastMCP server, fixed tool set (source-arg tools;
 │       │                      graph_query + find_* registered only when applicable)
 │       ├── source_manager.py  SourceManager: per-source dispatch + cross-source RRF
@@ -2398,9 +2534,12 @@ lynx/
 │           │                  atomic JSON persistence, watcher sync, bootstrap
 │           ├── analyzer.py    god_nodes, communities (greedy_modularity),
 │           │                  surprising_connections (edge_betweenness)
-│           └── query.py       get_callers, get_callees, get_subclasses,
-│                              get_superclasses, get_imports, get_neighbors,
-│                              shortest_path (fuzzy symbol matching)
+│           ├── query.py       get_callers, get_callees, get_subclasses,
+│           │                  get_superclasses, get_imports, get_neighbors,
+│           │                  shortest_path (fuzzy symbol matching)
+│           └── dispatch.py    run_graph_query(): named operation -> text.
+│                              Shared by the graph_query MCP tool and
+│                              `lynx graph query` so both render identically
 ├── tests/
 │   ├── conftest.py                 pytest path shim + per-source RAG helper
 │   ├── test_watch.py               End-to-end smoke test for the watcher
