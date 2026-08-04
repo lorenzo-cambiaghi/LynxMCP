@@ -70,6 +70,22 @@ def register(app) -> None:
             doctor_counts = {"ok": 0, "warn": 0, "error": 0}
             doctor_results = []
 
+        # Feedback reports: what agents filed when the index couldn't answer
+        # them. Read-only, local, and the one signal that tells the person
+        # tuning sources WHY the index is falling short — it had a CLI
+        # (`lynx manager feedback`) and no place in the UI at all, which is
+        # backwards for something whose only audience is the index owner.
+        feedback = {"total": 0, "recent": [], "by_source": {}}
+        if mgr is not None:
+            try:
+                from .. import feedback as fb_mod
+                records = fb_mod.load_feedback(
+                    fb_mod.feedback_path_for(mgr.config.storage_path)
+                )
+                feedback = fb_mod.summarize_feedback(records, limit=5)
+            except Exception:
+                pass  # a missing or unreadable log must not blank the page
+
         return app.state.templates.TemplateResponse(
             request, "dashboard.html",
             {
@@ -79,6 +95,7 @@ def register(app) -> None:
                 "doctor_counts": doctor_counts,
                 "doctor_worst": worst,
                 "doctor_results": [r.to_dict() for r in doctor_results],
+                "feedback": feedback,
                 "manager_error": manager_error,
                 "config_path": str(app.state.config_path) if app.state.config_path else None,
             },

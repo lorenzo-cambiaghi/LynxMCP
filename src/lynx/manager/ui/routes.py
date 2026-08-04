@@ -645,6 +645,19 @@ def _render_hits(items, *, show_score: bool = True) -> str:
     return "".join(parts)
 
 
+def _reports_dir(mgr):
+    """Where exported graph views land — the same directory the MCP tool and
+    `lynx graph export` write to, so a view is findable whichever produced it."""
+    from ...config import reports_dir
+    return reports_dir(mgr.config)
+
+
+# A generated view's filename, and nothing else. The download endpoint takes
+# a name straight from a URL, so it is matched against this rather than
+# joined and hoped for: no separators, no dots to walk up with, .html only.
+_REPORT_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.-]{1,120}\.html$")
+
+
 def _render_tool_text(text: str) -> str:
     """Show a tool's own text output verbatim.
 
@@ -868,6 +881,28 @@ def _register_playground_routes(app) -> None:
         except Exception as e:
             return _err(f"{type(e).__name__}: {e}", status=500)
 
+    @app.get("/api/reports/{name}")
+    def api_report(name: str):
+        """Serve a previously exported graph view.
+
+        The name comes from a URL, so it is validated against a strict
+        pattern AND the resolved path is checked to be inside the reports
+        directory — the pattern alone would still be trusting `Path` to
+        agree with it about what a separator is, which differs by platform.
+        """
+        from fastapi import HTTPException
+        from fastapi.responses import FileResponse
+
+        mgr, err = _mgr_or_err()
+        if err: return err
+        if not _REPORT_NAME_RE.match(name):
+            raise HTTPException(status_code=404, detail="no such report")
+        root = _reports_dir(mgr).resolve()
+        target = (root / name).resolve()
+        if target.parent != root or not target.is_file():
+            raise HTTPException(status_code=404, detail="no such report")
+        return FileResponse(target, media_type="text/html")
+
     @app.post("/api/playground/graph_query")
     def pg_graph_query(
         source: str = Form(...),
@@ -913,6 +948,58 @@ def _register_playground_routes(app) -> None:
             # dispatcher already phrased it for a reader.
             return _err(res.text.removeprefix("Error: "), status=400)
         return HTMLResponse(_render_tool_text(res.text))
+
+    @app.post("/api/playground/export_graph")
+    def pg_export_graph(
+        source: str = Form(...),
+        target: str = Form(...),
+        mode: str = Form("symbol"),
+        depth: int = Form(2),
+    ):
+        """Render a shareable graph view and hand back a download link.
+
+        The one tool that had a CLI and an MCP entry point but no UI —
+        which was the wrong way round: it produces a self-contained HTML
+        page whose whole purpose is to be opened in a browser and attached
+        to a PR. Writes to the same reports directory the other two use, so
+        a file exported here is where `lynx graph export` would have put it.
+        """
+        mgr, err = _mgr_or_err()
+        if err: return err
+        if not target.strip():
+            return _err("target is empty")
+        if mode not in ("symbol", "module"):
+            return _err(f"mode must be 'symbol' or 'module', got {mode!r}")
+        try:
+            res = mgr.export_graph(source, mode, target.strip(),
+                                   depth=int(depth))
+        except KeyError as e:
+            return _err(f"unknown source: {e}", status=404)
+        except ValueError as e:
+            return _err(str(e), status=400)
+        except Exception as e:
+            return _err(f"{type(e).__name__}: {e}", status=500)
+        if res.get("empty"):
+            return _empty(f"Nothing to export: {res.get('reason')}")
+
+        out_path = _reports_dir(mgr) / res["suggested_name"]
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(res["content"], encoding="utf-8")
+        except OSError as e:
+            return _err(f"couldn't write the view: {e}", status=500)
+
+        name = _html_escape(out_path.name)
+        return HTMLResponse(
+            '<div class="p-3 bg-green-50 border border-green-200 rounded '
+            'text-sm text-green-900">'
+            f'✓ Wrote <code class="font-mono">{_html_escape(str(out_path))}</code>'
+            '<div class="mt-2">'
+            f'<a href="/api/reports/{name}" target="_blank" '
+            'class="px-3 py-1.5 bg-indigo-600 text-white rounded '
+            'text-sm hover:bg-indigo-700 no-underline">Open the view →</a>'
+            '</div></div>'
+        )
 
     @app.post("/api/playground/describe_symbol")
     def pg_describe_symbol(

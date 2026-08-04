@@ -644,12 +644,11 @@ def _register_graph_tools(mcp, manager):
 
 
 def _report_dir(manager):
-    """Directory where graph view files are written: config `reports_path` if
-    set, else `<storage_path>/reports`."""
-    from pathlib import Path
-    cfg = manager.config
-    rp = getattr(cfg, "reports_path", None)
-    return Path(rp) if rp else Path(cfg.storage_path) / "reports"
+    """Directory where graph view files are written. The rule lives in
+    `config.reports_dir` — the UI and the CLI write there too, and a view
+    exported from one has to be findable by the others."""
+    from .config import reports_dir
+    return reports_dir(manager.config)
 
 
 def _is_codebase(backend) -> bool:

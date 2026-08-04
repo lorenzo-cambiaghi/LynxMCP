@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- **`export_graph` and the feedback log reached the web UI.** They were the
+  last two tools with a CLI and an MCP entry point but no place in the
+  browser — backwards in both cases: `export_graph` produces a self-contained
+  HTML page whose whole purpose is to be opened and attached to a PR, and the
+  feedback log's only audience is the person tuning the index. The playground
+  now exports a view and links straight to it (served by `GET
+  /api/reports/<name>`, validated against a strict filename pattern *and* a
+  resolved-parent check), and the dashboard shows the latest reports agents
+  filed when the index couldn't answer them.
 - **The web UI's playground covers the whole tool surface too.** It had drifted
   to nine tools of seventeen, with a Graph tab wired to three of the ten graph
   operations — no way to ask the UI for subclasses, imports, a shortest path or
@@ -59,6 +68,11 @@
   can never produce a wrong "that doesn't exist".
 
 ### Changed
+- **Three UI endpoints were removed**, folded into the single `graph_query`
+  form: `POST /api/playground/get_callers`, `.../get_callees` and
+  `.../architectural_overview` now return 404. They are internal to the web
+  UI — nothing outside it is expected to call them — but anything that did
+  should post to `/api/playground/graph_query` with `operation=` instead.
 - **`lynx search` renders through the same formatter as the `search` tool.**
   It used to carry its own thinner version — file, score, six raw lines — so
   the terminal showed strictly less than the model got: no symbol names, no
@@ -66,6 +80,12 @@
   was parsing the old text.
 
 ### Fixed
+- **A BOM in the feedback log silently deleted a report.** `load_feedback`
+  skips malformed lines on purpose — the log is append-only and a
+  half-written final line shouldn't break the reader — but read as plain
+  utf-8, a BOM makes line 1 unparseable, so the oldest report vanished with
+  no message. Lynx writes the file without one; opening it in a Windows
+  editor and saving is enough. Now read as utf-8-sig, like the config.
 - **The playground's `search_diff` panel never showed a result.** It read
   `payload["results"]`; the backend returns its hits under `hits`, a key
   mismatch that rendered "No results." on every run, including the runs that

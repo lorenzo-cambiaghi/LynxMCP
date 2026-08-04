@@ -199,4 +199,40 @@
   </div>
 {% endif %}
 
+{% if feedback and feedback.total %}
+  <!-- What agents reported when the index couldn't answer them. Local file,
+       never uploaded; the only signal that says WHY the index falls short. -->
+  <h2 class="mt-8 mb-3 text-lg font-semibold text-slate-800">
+    Feedback from your AI clients
+    <span class="ml-2 text-sm font-normal text-slate-500">
+      {{ feedback.total }} report{{ '' if feedback.total == 1 else 's' }}
+      {%- if feedback.last_at %}, last {{ feedback.last_at.split('T')[0] }}{% endif %}
+    </span>
+  </h2>
+  <div class="p-4 bg-white border border-slate-200 rounded">
+    <p class="text-xs text-slate-500 mb-3">
+      Filed when a client exhausted search and still couldn't find what it
+      needed — each one is a source, a filter or a chunking setting worth a
+      second look. Stored locally in
+      <code class="font-mono">rag_storage/_feedback/feedback.jsonl</code>;
+      <code class="font-mono">lynx manager feedback</code> shows the full log.
+    </p>
+    <ul class="space-y-2">
+      {% for r in feedback.recent | reverse %}
+        <li class="p-3 bg-slate-50 border border-slate-200 rounded text-sm">
+          <div class="text-slate-800">{{ r.trying_to_do }}</div>
+          {% if r.stuck %}
+            <div class="mt-1 text-xs text-slate-600">
+              <span class="text-slate-400">stuck:</span> {{ r.stuck }}
+            </div>
+          {% endif %}
+          <div class="mt-1 text-xs text-slate-400 font-mono">
+            {{ r.at }}{% if r.sources %} · {{ r.sources | join(', ') }}{% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
 {% endblock %}

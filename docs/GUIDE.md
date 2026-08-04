@@ -591,13 +591,18 @@ diff search, multiple sources, reranker) is built on the same surface
   `search` and `deep_search`; `find_definition` / `find_usages` /
   `find_tests_for` / `find_similar`; the composed `describe_symbol`,
   `impact`, `module_summary` and `repo_overview`; all ten `graph_query`
-  operations behind one operation selector; and `search_diff`. Faster than
+  operations behind one operation selector; `export_graph`, which writes a
+  shareable view and links straight to it; and `search_diff`. Faster than
   spinning up a client to validate that a query works.
 
   The composed tools and the graph operations show their output **verbatim**,
   in the same text your AI client receives — the point of a playground is to
   see what the agent will see, so tuning a source means reading the real
   answer rather than a prettier rendering of it.
+- **Feedback** (dashboard card) — the reports your AI clients filed when
+  they exhausted search and still couldn't find what they needed. Each one
+  names a source, a filter or a chunking setting worth a second look. Local
+  file, never uploaded; `lynx manager feedback` prints the full log.
 - **Config** — JSON editor with backup-then-overwrite save and the
   exact same validation the CLI uses (validates to a tempfile before
   touching the real config).

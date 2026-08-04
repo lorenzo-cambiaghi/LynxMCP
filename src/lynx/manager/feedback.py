@@ -31,11 +31,18 @@ def load_feedback(path: Path) -> list:
     """Parse the JSONL feedback log into a list of record dicts.
 
     Missing file → []. Malformed lines are skipped (the log is append-only and
-    a half-written final line shouldn't break the reader)."""
+    a half-written final line shouldn't break the reader).
+
+    Read as utf-8-sig because skipping malformed lines silently turns a BOM
+    into data loss: Lynx writes this file without one, but a user who opens
+    it in a Windows editor and saves gets a BOM on line 1, and the reader
+    would drop that record — and only that record — with no message. Same
+    reason the config loader stopped using plain utf-8.
+    """
     if not path.is_file():
         return []
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue

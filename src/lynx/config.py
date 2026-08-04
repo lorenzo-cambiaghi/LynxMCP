@@ -416,6 +416,18 @@ def resolve_config_path(explicit: "Path | str | None" = None) -> Path:
     return _default_config_path()
 
 
+def reports_dir(config: "Config") -> Path:
+    """Where `export_graph` writes its self-contained graph views.
+
+    `reports_path` when the config sets one, `<storage_path>/reports`
+    otherwise. Single source of truth because three entry points now write
+    there — the MCP tool, `lynx graph export`, and the web UI — and a view
+    exported from one has to be findable by the others.
+    """
+    rp = getattr(config, "reports_path", None)
+    return Path(rp) if rp else Path(config.storage_path) / "reports"
+
+
 def load_config(config_path: Path | None = None) -> Config:
     """Load and validate the JSON config file.
 
