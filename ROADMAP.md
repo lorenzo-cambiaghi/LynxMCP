@@ -40,16 +40,16 @@ quality, we're considering **blessing and documenting a step-up preset**
 
 ## On the radar (additive, lower-risk)
 
-### Coral community source — submitted & approved, awaiting merge
-Lynx is submitted as an official source in Coral's
-[`sources/community/`](https://github.com/withcoral/coral/tree/main/sources/community)
-directory (PR [#1297](https://github.com/withcoral/coral/pull/1297)). The manifest
-([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml)) is
-reviewed and **approved**; the local-service question (the directory's CI
-`test_queries` can't reach `127.0.0.1`) was resolved with a live-validation
-section. The only thing left is the Coral maintainers merging it (community
-sources are merged by the team). Once merged, Coral users can add Lynx without
-leaving the directory.
+### Coral community source — merged; the graph functions are next
+Lynx is an official community source in Coral's
+[`sources/community/`](https://github.com/withcoral/coral/tree/main/sources/community/lynx)
+directory (PR [#1297](https://github.com/withcoral/coral/pull/1297), merged
+June 2026): `coral source add --file sources/community/lynx/manifest.yaml`
+gives Coral users `lynx.search` without leaving the registry. The manifest
+kept in this repo ([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml))
+goes further — six graph functions (`lynx.callers`, `callees`, `subclasses`,
+`superclasses`, `imports`, `neighbors`) over `/api/v1/graph` — and a
+follow-up PR bringing them to the registry is staged, not yet opened.
 
 ### More language parsers
 Lynx ships tree-sitter grammars for 18+ languages today (Python, TypeScript,

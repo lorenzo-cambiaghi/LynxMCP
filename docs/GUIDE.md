@@ -394,13 +394,36 @@ lynx source add myproject --type codebase --path /path/to/repo --build
 lynx manager doctor
 ```
 
-Runs six checks in parallel and prints a colour-coded report: Python
-version, HuggingFace cache (per declared model), config file validity,
-per-source state (path exists, ChromaDB collection healthy, drift
+Runs seven checks in parallel and prints a colour-coded report: Python
+version, HuggingFace cache (per declared model), HuggingFace endpoint
+(mirror / offline mode), config file validity, per-source state (path exists, ChromaDB collection healthy, drift
 status, watcher path still there), optional extras (which are installed
 vs available), and free disk space at the storage path. Exit code is
 `0` (all green), `1` (warnings), or `2` (errors) so you can wire it
 into CI / pre-deploy scripts.
+
+Two flags repair an index **in place**, without a full rebuild. Both
+refuse to run while any Lynx process holds the store, so stop `serve`
+and the web UI first:
+
+```bash
+# A process killed mid-write (Ctrl-C during indexing, a killed serve) left
+# ChromaDB's write-ahead log wedged: every open hangs and the integrity
+# probe times out at each start. Purges the stuck writes and queues the
+# affected files for re-indexing — nothing is silently lost.
+lynx manager doctor --heal-wal <source>
+
+# The SHA cache lists files as indexed but the index holds no chunks for
+# them, or chunks whose vector never reached the HNSW segment (a failed
+# insert used to be recorded as success, so those files were skipped on
+# every later pass and invisible to search). Forgets just those files so
+# the next build / watcher pass re-indexes them.
+lynx manager doctor --heal-coverage <source>
+```
+
+The per-source check reports both conditions — "index WAL is wedged" and
+coverage drift — together with the flag that fixes them, so you never have
+to diagnose them yourself.
 
 ### `lynx manager install` — extras + model download
 

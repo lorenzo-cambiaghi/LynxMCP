@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 — 2026-09-02
 
 ### Added
 - **`export_graph` and the feedback log reached the web UI.** They were the
@@ -66,6 +66,52 @@
   all, and says so — in the text the model reads and as `"matched": false` in
   the JSON. Reported only when the check is possible, so a half-built graph
   can never produce a wrong "that doesn't exist".
+- **Coverage drift detection and a surgical heal** (`integrity.inspect_coverage`
+  / `heal_coverage`, surfaced as `doctor --heal-coverage SOURCE`). Read-only
+  plain-sqlite audit — never a Chroma client, which would contend with a live
+  `serve` — that catches the two silent ways an index stops matching reality:
+  files the SHA cache claims are indexed but that hold no chunks, and chunks
+  whose vector never reached the HNSW segment. Both heal the same way: forget
+  just those files so the next pass re-indexes them, no full rebuild. The
+  per-source doctor check now fails on either, naming the `Error querying knn`
+  symptom so the diagnosis doesn't have to be re-derived. Chunks the WAL can
+  still deliver on its own (the tail of a fresh build, waiting on Chroma's
+  persistence threshold) are explicitly NOT counted as damage — otherwise the
+  check would fire after every build and be trained away.
+- **A Restart button in the LynxManager sidebar.** Always-available action that
+  drops the cached manager so every source is reloaded — indexes re-opened,
+  watchers restarted, integrity re-probed (the same `/api/manager/reload` the
+  "index not verified" / "in use" cards already used, now surfaced globally).
+  Handy right after a `doctor --heal-wal` or a manual fix, without hunting for a
+  problem card. Confirms first; nothing is lost.
+- **Scope a search to a subset of sources, per request.** `search` and
+  `deep_search` already took ONE `source` (or omitted it for all). Now `source`
+  also accepts a LIST of names — the rankings are fused (RRF) across just those
+  sources, each hit still tagged with its origin. So a query can be contextualized
+  to certain data sources at request time (`source=["skelforge"]` or
+  `["skelforge", "framework"]`) with no server restart and no config change; omit
+  for all, one name for a single source. `SourceManager.search_all` /
+  `deep_search_all` gained an `only=` filter that backs it.
+- **Coral: the code graph is now queryable as six functions.** On top of the
+  merged `lynx.search` source, `lynx.callers` / `callees` / `subclasses` /
+  `superclasses` / `imports` / `neighbors(symbol => '...')` expose the
+  GET /api/v1/graph endpoint with a shared flat-edge column set
+  (`from_*` → `to_*` with relation + call site), so a search hit's symbol can
+  be pivoted to its structural blast radius and JOINed with live data.
+  Canonical spec in `integrations/coral/manifest.yaml`; a mirror restyled
+  to Coral's house conventions is staged for the community PR.
+- **`lynx manager doctor` detects a wedged index WAL — and `--heal-wal` fixes
+  it without a rebuild.** A process killed mid-write (Ctrl-C during watcher
+  indexing, a killed serve) can leave pending rows in chroma's
+  `embeddings_queue` with a segment behind the queue tail; chromadb (observed
+  on 1.5.9) then deadlocks forever on every open, which surfaced as integrity
+  probe timeouts at every start. The per-source doctor check now reads the
+  fingerprint via plain read-only sqlite (never a Chroma client — that's what
+  hangs) and reports "index WAL is wedged" with the remedy. `lynx manager
+  doctor --heal-wal SOURCE` purges the stuck writes and stale write locks,
+  drops the affected files from the SHA cache so the next build / watcher
+  pass re-indexes them (nothing silently lost), and proves the result with
+  the out-of-process probe. Refuses while any Lynx process holds the store.
 
 ### Changed
 - **The two biggest modules were split along their seams.** `cli.py` went
@@ -208,60 +254,6 @@
   every query dies with `Error querying knn` / `Error finding id`. The probe now
   runs a KNN query too, so a search-dead index is reported as corrupt instead of
   healthy.
-
-### Added
-- **Coverage drift detection and a surgical heal** (`integrity.inspect_coverage`
-  / `heal_coverage`, surfaced as `doctor --heal-coverage SOURCE`). Read-only
-  plain-sqlite audit — never a Chroma client, which would contend with a live
-  `serve` — that catches the two silent ways an index stops matching reality:
-  files the SHA cache claims are indexed but that hold no chunks, and chunks
-  whose vector never reached the HNSW segment. Both heal the same way: forget
-  just those files so the next pass re-indexes them, no full rebuild. The
-  per-source doctor check now fails on either, naming the `Error querying knn`
-  symptom so the diagnosis doesn't have to be re-derived. Chunks the WAL can
-  still deliver on its own (the tail of a fresh build, waiting on Chroma's
-  persistence threshold) are explicitly NOT counted as damage — otherwise the
-  check would fire after every build and be trained away.
-- **A Restart button in the LynxManager sidebar.** Always-available action that
-  drops the cached manager so every source is reloaded — indexes re-opened,
-  watchers restarted, integrity re-probed (the same `/api/manager/reload` the
-  "index not verified" / "in use" cards already used, now surfaced globally).
-  Handy right after a `doctor --heal-wal` or a manual fix, without hunting for a
-  problem card. Confirms first; nothing is lost.
-- **Scope a search to a subset of sources, per request.** `search` and
-  `deep_search` already took ONE `source` (or omitted it for all). Now `source`
-  also accepts a LIST of names — the rankings are fused (RRF) across just those
-  sources, each hit still tagged with its origin. So a query can be contextualized
-  to certain data sources at request time (`source=["skelforge"]` or
-  `["skelforge", "framework"]`) with no server restart and no config change; omit
-  for all, one name for a single source. `SourceManager.search_all` /
-  `deep_search_all` gained an `only=` filter that backs it.
-
-## 1.7.6 — 2026-07-04
-
-### Added
-- **Coral: the code graph is now queryable as six functions.** On top of the
-  merged `lynx.search` source, `lynx.callers` / `callees` / `subclasses` /
-  `superclasses` / `imports` / `neighbors(symbol => '...')` expose the
-  GET /api/v1/graph endpoint with a shared flat-edge column set
-  (`from_*` → `to_*` with relation + call site), so a search hit's symbol can
-  be pivoted to its structural blast radius and JOINed with live data.
-  Canonical spec in `integrations/coral/manifest.yaml`; a mirror restyled
-  to Coral's house conventions is staged for the community PR.
-- **`lynx manager doctor` detects a wedged index WAL — and `--heal-wal` fixes
-  it without a rebuild.** A process killed mid-write (Ctrl-C during watcher
-  indexing, a killed serve) can leave pending rows in chroma's
-  `embeddings_queue` with a segment behind the queue tail; chromadb (observed
-  on 1.5.9) then deadlocks forever on every open, which surfaced as integrity
-  probe timeouts at every start. The per-source doctor check now reads the
-  fingerprint via plain read-only sqlite (never a Chroma client — that's what
-  hangs) and reports "index WAL is wedged" with the remedy. `lynx manager
-  doctor --heal-wal SOURCE` purges the stuck writes and stale write locks,
-  drops the affected files from the SHA cache so the next build / watcher
-  pass re-indexes them (nothing silently lost), and proves the result with
-  the out-of-process probe. Refuses while any Lynx process holds the store.
-
-### Fixed
 - **A timed-out integrity probe is no longer branded a corrupt index.** A
   slow/large index, an AV-scanned disk, or another process holding the store
   made the probe time out, and Lynx reported `corrupt` — telling the user to

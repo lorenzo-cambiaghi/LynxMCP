@@ -264,7 +264,7 @@ Rule of thumb for an agent: **triage with `outline`, then pull the one body you 
 
 [Coral](https://github.com/withcoral/coral) turns your live tools — GitHub, Sentry, Jira, Linear — into one local SQL interface. Plug in Lynx ([source spec](integrations/coral/manifest.yaml)) and **your codebase becomes a queryable source too**: ask in plain language, get ranked code locations back, and **correlate them with the tools your team already lives in** — without a byte leaving your machine.
 
-> You register Lynx as a Coral source yourself today — `coral source add --file integrations/coral/manifest.yaml` (full steps in [docs/CORAL.md](docs/CORAL.md)). A community-source PR to ship it in Coral's registry is approved and awaiting merge.
+> Lynx is listed in Coral's [community sources](https://github.com/withcoral/coral/tree/main/sources/community/lynx) (PR #1297, merged June 2026). The manifest in this repo goes further — six graph functions on top of `lynx.search` — so register that one: `coral source add --file integrations/coral/manifest.yaml` (full steps in [docs/CORAL.md](docs/CORAL.md)).
 
 What that unlocks:
 
