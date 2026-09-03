@@ -43,7 +43,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "mcp",
+    # Pinned below 2: the SDK renamed FastMCP to MCPServer and changed the
+    # decorator APIs there, so `mcp.server.fastmcp` no longer exists and
+    # `lynx serve` cannot import. Unbounded, a fresh install resolved 2.x and
+    # shipped a server that could not start, while an older resolved 1.x kept
+    # working locally. Lift this together with the port to MCPServer.
+    "mcp<2",
     # llama-index-core, NOT the `llama-index` meta-package: the meta-package
     # drags in the OpenAI bundle (openai, llama-index-llms-openai, ...) we
     # never import — dead weight, and an alarming sight in the install log
