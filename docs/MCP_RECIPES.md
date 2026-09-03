@@ -1,20 +1,20 @@
 # Lynx MCP recipes
 
 Lynx is an MCP server, so an agent (Claude Code/Desktop, Cursor, Windsurf, VS
-Code, …) can use Lynx's code tools **alongside other MCP servers** — GitHub,
-Jira/Linear, Sentry, Slack, Postgres — and do the join in its own reasoning. No
+Code, …) can use Lynx's code tools alongside other MCP servers (GitHub,
+Jira/Linear, Sentry, Slack, Postgres) and do the join in its own reasoning. No
 SQL, no glue code: you describe the goal, the agent chains the tools.
 
-This is the highest-leverage way to analyse **code in relation to other data**:
+This is the shortest path to analysing code in relation to other data:
 Lynx answers "where/what/who in the code", the companion server brings the
-tickets / PRs / errors / owners, and the agent connects them.
+tickets, PRs, errors and owners, and the agent connects them.
 
 ## Lynx's tools (the code side)
 
 | Tool | Answers |
 |---|---|
 | `search` | "where is the code that *does* X" (semantic + lexical hybrid). Omit `source` to search everything. |
-| `deep_search` | same, heavier — escalate when `search` is weak/empty. |
+| `deep_search` | same, heavier. Escalate when `search` is weak or empty. |
 | `find_definition` / `find_usages` | exact symbol definition / all call sites. |
 | `find_tests_for` / `find_similar` | tests covering a symbol / structurally similar code. |
 | `graph_query` | call graph + inheritance + imports: `callers`, `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `status`. |
@@ -132,9 +132,9 @@ prompt you can paste.
 
 ## Notes
 
-- **Local-first.** Lynx never sends your code anywhere; only the companion
+- Local-first. Lynx never sends your code anywhere. Only the companion
   server's side of a join touches a remote API.
-- The agent decides the chaining — these prompts just steer it. If a step comes
+- The agent decides the chaining. These prompts just steer it. If a step comes
   back weak, nudge it ("escalate to `deep_search`", "expand with
   `graph_query neighbors`").
 - Prefer SQL or programmatic joins over agent reasoning? See [CORAL.md](CORAL.md)

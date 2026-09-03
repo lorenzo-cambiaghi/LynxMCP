@@ -1,27 +1,27 @@
 # Lynx
 
-[Lynx](https://github.com/lorenzo-cambiaghi/LynxMCP) is a **100% local** semantic
+[Lynx](https://github.com/lorenzo-cambiaghi/LynxMCP) is a 100% local semantic
 code-search engine (an MCP server) for codebases, library docs, and PDFs. This
-source exposes its local API as SQL, so you can query your code by *behavior*
-and **join the results with live data** from other Coral sources — without a
-byte leaving your machine.
+source exposes its local API as SQL. You query your code by behavior and join
+the hits with live data from other Coral sources, and nothing leaves your
+machine.
 
-- `lynx.sources` — the sources you've indexed (codebases / docs sites / PDFs).
-- `lynx.search(q => '...', source => '...')` — ranked hybrid (dense + BM25)
-  search. `q` is required; `source` is optional (omit it to search every
-  indexed source at once). Control how many results Lynx returns with SQL
-  `LIMIT` — Coral maps it to Lynx's `top_k` (clamped to 50). Each row carries
+- `lynx.sources`: the sources you have indexed (codebases, docs sites, PDFs).
+- `lynx.search(q => '...', source => '...')`: ranked hybrid (dense + BM25)
+  search. `q` is required. `source` is optional; omit it to search every
+  indexed source at once. SQL `LIMIT` controls how many results Lynx returns:
+  Coral maps it to Lynx's `top_k`, clamped to 50. Each row carries
   `source`, `file`, `file_path`, `symbol`, `kind`, `language`,
   `start_line`/`end_line`, `score`, and the code `content` itself.
-- **Code-graph functions** — pivot from a `lynx.search` hit's `symbol` to its
-  structural neighbourhood (who calls it, what it depends on, what breaks if it
-  changes), then JOIN that blast radius with live data:
-  `lynx.callers`, `lynx.callees`, `lynx.subclasses`, `lynx.superclasses`,
-  `lynx.imports`, and `lynx.neighbors` — each called as
-  `lynx.callers(symbol => '...')` with an optional `source`. Rows are flat edges
-  (`from_*` → `to_*` with `relation`, plus the `call_site_*`); SQL `LIMIT` caps
-  the edge count. Symbol matching is fuzzy (case-insensitive substring).
-  Available only for **codebase sources that have the graph layer enabled**.
+- Code-graph functions: `lynx.callers`, `lynx.callees`, `lynx.subclasses`,
+  `lynx.superclasses`, `lynx.imports`, and `lynx.neighbors`. They pivot from a
+  `lynx.search` hit's `symbol` to its structural neighbourhood (who calls it,
+  what it depends on, what breaks if it changes), so you can JOIN that blast
+  radius with live data. Each is called as `lynx.callers(symbol => '...')` with
+  an optional `source`. Rows are flat edges (`from_*` to `to_*`, with `relation`
+  and the `call_site_*` columns). SQL `LIMIT` caps the edge count. Symbol
+  matching is fuzzy (case-insensitive substring). Available only for codebase
+  sources that have the graph layer enabled.
 
 ## Setup
 
@@ -34,14 +34,14 @@ byte leaving your machine.
    lynx manager ui --port 8765 --no-browser  # serves the local API on 127.0.0.1:8765
    ```
 
-   `lynx manager init` writes a default config with **no sources yet** — it
-   does not index anything on its own. Open <http://127.0.0.1:8765> and use
+   `lynx manager init` writes a default config with no sources yet. It does
+   not index anything on its own. Open <http://127.0.0.1:8765> and use
    **+ Add your first source** to add a codebase, docs site, or PDF folder.
-   Adding a source only writes its config; it starts at **0 chunks**. On the
+   Adding a source only writes its config; it starts at 0 chunks. On the
    source detail page that opens, click **Rebuild index** and wait for it to
-   finish — that step is what actually indexes the source. A source with 0
+   finish. That step is what actually indexes the source. A source with 0
    chunks returns empty Coral results, so do this before validating. Leave the
-   `lynx manager ui` process running afterwards; it's the API Coral talks to.
+   `lynx manager ui` process running afterwards: it is the API Coral talks to.
    (Prefer a config-based setup? Add the source to `config.json`, run
    `lynx build --source <name>`, then start `lynx manager ui`. Don't run a CLI
    build against a source while another process is writing to it.)
@@ -71,8 +71,8 @@ LIMIT 5;
 ```
 
 Broad context: pair the top code hits with the repo's open PRs. This is a
-`CROSS JOIN` — every hit against every open PR — so keep the `LIMIT`s small
-and treat it as a context dump, not a precise match:
+`CROSS JOIN`, every hit against every open PR, so keep the `LIMIT`s small
+and treat it as a context dump rather than a precise match:
 
 ```sql
 SELECT s.file, s.symbol, s.score, p.html_url
@@ -91,8 +91,8 @@ SELECT name, type, chunk_count FROM lynx.sources;
 
 ### From a hit to its blast radius (the graph functions)
 
-Find the code behind a behaviour, then ask the graph who calls it — the set of
-things a change would ripple into:
+Find the code behind a behaviour, then ask the graph who calls it. That inbound
+set is what a change would ripple into:
 
 ```sql
 -- 1. locate the symbol
@@ -114,8 +114,8 @@ FROM lynx.neighbors(symbol => 'PaymentService', relation => 'calls', depth => 2)
 LIMIT 50;
 ```
 
-The payoff is joining structural impact with live data — e.g. who *owns* the
-code a change ripples into, by pairing callers with open PRs:
+The payoff is joining structural impact with live data. For example, who owns
+the code a change ripples into, by pairing callers with open PRs:
 
 ```sql
 SELECT c.from_symbol, c.from_file, p.html_url
@@ -191,8 +191,8 @@ capped at 50:
 | Query | Rows returned |
 |-------|---------------|
 | `SELECT file FROM lynx.search(...) LIMIT 3`   | 3 |
-| `SELECT file FROM lynx.search(...) LIMIT 12`  | 12 — exceeds Lynx's default 8, so `LIMIT` is driving `top_k` |
-| `SELECT file FROM lynx.search(...) LIMIT 100` | 50 — Lynx clamps `top_k` to its `[1, 50]` ceiling |
+| `SELECT file FROM lynx.search(...) LIMIT 12`  | 12: exceeds Lynx's default 8, so `LIMIT` is driving `top_k` |
+| `SELECT file FROM lynx.search(...) LIMIT 100` | 50: Lynx clamps `top_k` to its `[1, 50]` ceiling |
 
 ### Graph functions
 
@@ -225,15 +225,15 @@ $ coral sql "SELECT relation, from_symbol, to_symbol FROM lynx.neighbors(symbol 
 +----------+-------------------------------------------------------------------------------------+------------------------------+
 ```
 
-Each row is a real call edge from the codebase's graph layer — the inbound set
+Each row is a real call edge from the codebase's graph layer. The inbound set
 for `callers` is exactly the blast radius of a change to `Math.Clamp`. SQL
 `LIMIT` caps the edge count (Lynx's `limit`, clamped to 200).
 
 ## Notes
 
-- **Local-first.** The codebase and embeddings never leave your machine; only
-  the live-data side of a join touches an API.
-- The search string is a **literal** you pass — Coral resolves table-function
+- Local-first: the codebase and embeddings never leave your machine. Only the
+  live-data side of a join touches an API.
+- The search string is a literal you pass. Coral resolves table-function
   arguments at plan time, so `lynx.search` is a joinable source, not a per-row
   enrichment of another table. For one search per row of another table, Lynx
   ships a batch endpoint (`POST /api/v1/search`) and a small Python helper.

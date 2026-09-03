@@ -1,6 +1,6 @@
 # Design — self-contained HTML export of the code graph
 
-**Status:** ✅ Implemented in Lynx 1.7.2 — shipped as the `export_graph` MCP tool
+**Status:** Implemented in Lynx 1.7.2, shipped as the `export_graph` MCP tool
 and the `lynx graph export` CLI. This doc is kept as design rationale and still
 uses the original draft names (`export_graph_html` / `lynx graph report`).
 **Owner:** lcambiaghi
@@ -11,28 +11,28 @@ deterministic-SVG pattern already used for `docs/img/cost_savings.svg`.
 
 ## 1. Goal
 
-Produce a **single, self-contained `.html` file** that visualizes a slice of
-the code graph **for humans**: blast radius of a symbol, a module's
+Produce a single, self-contained `.html` file that visualizes a slice of
+the code graph for humans: blast radius of a symbol, a module's
 dependencies, an architecture snapshot. The file must be:
 
-- **Offline / air-gapped** — no external CDN, no network at view time. (This is
-  a hard requirement: the on-prem/regulated buyers who care most about a local
-  code tool cannot load `d3` from a CDN.)
-- **Distributable** — attach to a PR, email it, archive it for a compliance
+- **Offline / air-gapped**: no external CDN, no network at view time. This is
+  a hard requirement. The on-prem/regulated buyers who care most about a local
+  code tool cannot load `d3` from a CDN.
+- **Distributable**: attach to a PR, email it, archive it for a compliance
   audit ("architecture at release X").
-- **Zero build step** — one command (or one tool call) → one file you can
-  double-click.
+- **Zero build step**: one command (or one tool call) produces one file you
+  can double-click.
 
 ### Non-goals (v1)
 - Not a live dashboard (the Manager UI already serves the interactive view).
-- Not a whole-repo hairball dump — see §7 (scale).
-- Not editing/annotation — read-only artifact.
+- Not a whole-repo hairball dump (see §7, scale).
+- Not editing/annotation: a read-only artifact.
 
 ---
 
 ## 2. Output modes
 
-Ship **symbol-centric first** (small graphs, immediate value, lowest risk),
+Ship symbol-centric first (small graphs, immediate value, lowest risk),
 overview later.
 
 | Mode | Shows | Primary user |
@@ -60,13 +60,13 @@ Both resolve the graph the same way the existing graph tools do
 
 ## 4. Data model
 
-Reuse the existing dict shapes — no new graph code:
+Reuse the existing dict shapes, no new graph code:
 
 - **node**: `{id, label, kind, file, start_line, end_line, lang_key}`
   (from `query._node_to_dict`)
 - **edge**: `{source_id, target_id, relation, confidence}`
 
-The builder collects a **bounded** node/edge set for the chosen mode, then
+The builder collects a bounded node/edge set for the chosen mode, then
 hands it to the renderer. For the symbol mode:
 
 ```
@@ -86,17 +86,17 @@ Each node carries a role tag for coloring: `seed | caller | callee`.
 `<line>` / `<text>`, wrap it in a minimal HTML shell with inline `<style>`.
 
 Why SVG-first:
-- Truly self-contained, **diffable**, printable, zero deps, zero CDN — the
+- Truly self-contained, diffable, printable, zero deps, zero CDN: the
   strongest fit for the air-gapped/compliance angle.
 - No JS supply-chain or license to vendor.
 
 **v2 (later, opt-in `--interactive`): a ~200-line vanilla-JS canvas renderer**
 inlined into the file (hover, drag, click-to-open `file:line`). Still no
-external lib — keeps the air-gap guarantee. Decision deferred; v1 ships value
+external lib, so the air-gap guarantee holds. Decision deferred; v1 ships value
 without it.
 
-> Rejected for v1: vendoring d3/cytoscape inline (+250KB–1MB and a license to
-> track). Revisit only if the vanilla renderer proves too limiting.
+> Rejected for v1: vendoring d3/cytoscape inline (+250KB to 1MB and a license
+> to track). Revisit only if the vanilla renderer proves too limiting.
 
 ---
 
@@ -120,7 +120,7 @@ A raw 10k-node graph is an unreadable hairball. Bound it up front:
 - **symbol mode:** naturally small (N hops); hard-cap nodes (e.g. 150) and
   edges, with a visible "+N more (truncated)" note. Reuse the `limit` semantics
   already in `transitive_callers`.
-- **architecture mode:** never raw nodes — aggregate to **modules**
+- **architecture mode:** never raw nodes. Aggregate to modules
   (communities) as the unit; edges = cross-module dependency counts.
 
 If the cap is hit, the file says so explicitly rather than silently dropping
@@ -130,10 +130,10 @@ data (consistent with how the tools surface truncation today).
 
 ## 8. Layout algorithm
 
-- **Deterministic** (seeded) so the same graph → the same file → clean diffs
-  and reproducible audit artifacts.
+- **Deterministic** (seeded), so the same graph gives the same file: clean
+  diffs and reproducible audit artifacts.
 - v1: a simple seeded force-directed / layered layout computed in Python
-  (small graphs, so cost is negligible). For symbol mode, a **radial/layered**
+  (small graphs, so cost is negligible). For symbol mode, a radial/layered
   layout (seed in center, callers above, callees below, depth = ring) reads
   better than a generic force layout and is fully deterministic.
 
@@ -142,7 +142,7 @@ data (consistent with how the tools surface truncation today).
 ## 9. Privacy / security
 
 - 100% local: no network at generate or view time (matches Lynx's promise).
-- The file embeds **code structure** (symbols, file paths, line numbers) — NOT
+- The file embeds code structure (symbols, file paths, line numbers), not
   source bodies by default. Flag this in docs; offer `--no-paths` to redact
   absolute paths to repo-relative if a user wants to share externally.
 - All embedded text HTML-escaped (§6).
@@ -188,12 +188,12 @@ Returns the path; non-zero exit on "symbol not found" / "graph not enabled".
 
 | Milestone | Scope | Effort |
 |---|---|---|
-| **M1** | `export_graph_html` symbol mode, SVG, CLI + MCP tool, tests | Small–Medium |
+| **M1** | `export_graph_html` symbol mode, SVG, CLI + MCP tool, tests | Small to Medium |
 | **M2** | `--interactive` vanilla-JS renderer (still inline, no CDN) | Medium |
 | **M3** | module mode | Small (reuses `module_summary`) |
 | **M4** | architecture mode (communities + cycles), the audit artifact | Medium |
 
-Ship **M1** first — demoable, fits the pitch, anchors the whole governance story.
+Ship **M1** first: demoable, fits the pitch, anchors the whole governance story.
 
 ---
 
@@ -202,5 +202,5 @@ Ship **M1** first — demoable, fits the pitch, anchors the whole governance sto
 1. **Tool name:** `export_graph_html` vs `graph_report` vs `graph_view`?
 2. **Default output path:** `<storage>/reports/` vs current working dir?
 3. **v1 layout:** radial/layered (recommended) vs generic force?
-4. **Paths in output:** absolute by default with `--no-paths` opt-out — OK?
+4. **Paths in output:** absolute by default with `--no-paths` opt-out. OK?
 5. **Scope of M1:** symbol mode only, or also module mode in the first cut?

@@ -1,18 +1,18 @@
 # steampipe-plugin-lynx
 
 A [Steampipe](https://steampipe.io) plugin that exposes a local
-[Lynx](https://github.com/lorenzo-cambiaghi/LynxMCP) instance — semantic code
-search and the code knowledge graph — as SQL tables you can JOIN with
-Steampipe's connectors (GitHub, Jira, AWS, …).
+[Lynx](https://github.com/lorenzo-cambiaghi/LynxMCP) instance as SQL tables:
+semantic code search and the code knowledge graph, joinable with Steampipe's
+connectors (GitHub, Jira, AWS, …).
 
-It is a thin SQL skin over Lynx's stable, already-shipped `/api/v1` HTTP API; the
-design (tables, columns, qual → query-param mapping) is in
+It is a thin SQL skin over Lynx's stable `/api/v1` HTTP API. The design
+(tables, columns, qual to query-param mapping) is in
 [`../DESIGN.md`](../DESIGN.md).
 
-> **Platform note:** the Steampipe **engine** runs on **macOS / Linux** (or
-> **WSL2** on Windows). There is no native-Windows build — on Windows, run it
-> inside WSL2. You can still *write and compile* the plugin on any OS
-> (`go build ./...`); only *running* it needs the engine.
+> Platform note: the Steampipe engine runs on macOS and Linux (or WSL2 on
+> Windows). There is no native Windows build, so on Windows run it inside
+> WSL2. You can still write and compile the plugin on any OS
+> (`go build ./...`); only running it needs the engine.
 
 ## Install (prebuilt — no Go toolchain)
 
@@ -30,7 +30,7 @@ cp lynx.spc  ~/.steampipe/config/lynx.spc       # only if you don't have one yet
 Then start the Lynx backend and query (see [Query](#query) below). Optionally
 verify the download against the release's `SHA256SUMS`.
 
-Prefer building from source instead? See
+To build from source instead, see
 [Develop / build / test](#develop--build--test).
 
 ## Tables
@@ -43,9 +43,9 @@ Prefer building from source instead? See
 
 ## Why Steampipe (vs the Coral source)
 
-Steampipe pushes WHERE quals **down** and runs a nested loop in joins, so it
-calls the Lynx API **once per qual value** — `lynx_search` can be driven by
-another table's column:
+Steampipe pushes WHERE quals down and runs a nested loop in joins, so it
+calls the Lynx API once per qual value. `lynx_search` can therefore be driven
+by another table's column:
 
 ```sql
 select t.key, h.file, h.symbol, h.score
@@ -55,14 +55,14 @@ where t.status = 'Open';
 ```
 
 (Coral resolves table-function args at plan time, so there you batch instead.
-Honest caveat: N joined rows = N embedding passes; for large N, prefer Lynx's
-`POST /api/v1/search` batch endpoint from a script.)
+The cost here: N joined rows means N embedding passes. For large N, prefer
+Lynx's `POST /api/v1/search` batch endpoint from a script.)
 
 ## Develop / build / test
 
-Writing and compile-checking work anywhere (incl. Windows). **Running** needs the
-Steampipe engine → macOS, Linux, or WSL2. `go.sum` is committed, so `go mod tidy`
-is only needed when you change dependencies.
+Writing and compile-checking work anywhere, Windows included. Running needs the
+Steampipe engine, so macOS, Linux, or WSL2. `go.sum` is committed, so
+`go mod tidy` is only needed when you change dependencies.
 
 ```bash
 # compile-check (Windows-friendly, no engine)
@@ -80,18 +80,18 @@ cp config/lynx.spc ~/.steampipe/config/lynx.spc
 
 Start the backend first (`lynx manager ui --port 8765 --no-browser`).
 
-First, a **smoke test that works on any index** — it just lists the sources you
-have indexed and confirms the plugin can reach the Lynx API:
+First, a smoke test that works on any index. It lists the sources you have
+indexed and confirms the plugin can reach the Lynx API:
 
 ```bash
 steampipe query "select name, type, chunk_count from lynx_source;"
 ```
 
-The search and graph queries need values **from your own codebase**, so the
-examples below are *illustrative placeholders* — substitute a real `source` name
-(from the smoke test above) and symbols/behaviors that exist in your code (the
-literals here — `framework`, `camera zoom`, `ApplyDamage` — come from an
-example source index that isn't included, so they won't match yours):
+The search and graph queries need values from your own codebase, so the
+examples below are placeholders. Substitute a real `source` name (from the
+smoke test above) and symbols or behaviors that exist in your code. The
+literals `framework`, `camera zoom` and `ApplyDamage` come from an example
+source index that isn't included, so they won't match yours:
 
 ```bash
 # semantic + lexical search: describe the behavior in words.
@@ -106,13 +106,13 @@ steampipe query "select from_symbol, from_file from lynx_graph where operation =
 
 Two GitHub Actions workflows cover this plugin:
 
-- **`steampipe-plugin-ci.yml`** — on every push/PR that touches
-  `integrations/steampipe/**`: `go build`, `go vet`, a cross-compile sanity
-  check for all release targets, and a **load-validation** job that installs the
-  Steampipe engine and asserts it accepts the plugin. That last check catches
-  bugs invisible to `go build` (e.g. a key column without a matching column),
-  which is the safety net when developing on Windows.
-- **`steampipe-plugin-release.yml`** — cross-compiles macOS/Linux × amd64/arm64,
+- `steampipe-plugin-ci.yml`: on every push or PR that touches
+  `integrations/steampipe/**`, it runs `go build`, `go vet`, a cross-compile
+  sanity check for all release targets, and a load-validation job that installs
+  the Steampipe engine and asserts it accepts the plugin. That last check
+  catches bugs invisible to `go build` (e.g. a key column without a matching
+  column), which is the safety net when developing on Windows.
+- `steampipe-plugin-release.yml`: cross-compiles macOS/Linux × amd64/arm64,
   packages each as a `.tar.gz` (binary + `lynx.spc` + this README) plus a
   `SHA256SUMS`, and publishes them to a GitHub Release.
 

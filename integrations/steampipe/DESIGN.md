@@ -4,20 +4,19 @@ Design for a [Steampipe](https://steampipe.io) plugin that exposes Lynx's local
 code search + code graph as SQL tables, joinable with Steampipe's large catalogue
 of connectors (GitHub, Jira, AWS, …).
 
-**Status:** ✅ Implemented and released as `steampipe-v0.1.0`. The Go plugin lives
-in this repo at [`steampipe-plugin-lynx/`](steampipe-plugin-lynx/) (kept in-repo
-alongside Lynx — not a separate repo). This doc is retained as design rationale.
-Everything below maps onto Lynx's already-shipped, tested `/api/v1` contract, so
-the Go code is a thin SQL skin over HTTP.
+Status: implemented and released as `steampipe-v0.1.0`. The Go plugin lives
+in this repo at [`steampipe-plugin-lynx/`](steampipe-plugin-lynx/), alongside
+Lynx rather than in a separate repo. This doc is retained as design rationale. Everything below maps onto Lynx's shipped, tested `/api/v1`
+contract, so the Go code is a thin SQL skin over HTTP.
 
 ## Why Steampipe (and how it differs from Coral)
 
-Both turn Lynx into SQL. The key difference is **per-row correlation**:
+Both turn Lynx into SQL. The difference is per-row correlation:
 
-- **Coral** resolves table-function arguments to constants at *plan* time, so
+- Coral resolves table-function arguments to constants at plan time, so
   `lynx.search` can't be driven by another table's column (you batch instead).
-- **Steampipe** pushes WHERE quals *down* and runs a nested loop in joins, calling
-  the API **once per qual value**. So this works directly:
+- Steampipe pushes WHERE quals down and runs a nested loop in joins, calling
+  the API once per qual value. So this works directly:
 
   ```sql
   select t.key, h.file, h.symbol, h.score
@@ -26,9 +25,9 @@ Both turn Lynx into SQL. The key difference is **per-row correlation**:
   where t.status = 'Open';
   ```
 
-  Honest caveat: that's N API calls = N embedding passes. For large N it's still
-  cheaper to use Lynx's batch endpoint (`POST /api/v1/search`) from a script; for
-  interactive/moderate N, the Steampipe join is the nicest ergonomics.
+  The cost: N API calls means N embedding passes. For large N it is still
+  cheaper to use Lynx's batch endpoint (`POST /api/v1/search`) from a script.
+  For interactive or moderate N, the Steampipe join is the most convenient.
 
 ## Prerequisite
 
@@ -49,8 +48,8 @@ connection "lynx" {
 }
 ```
 
-The plugin reads NDJSON from the endpoints (`?format=ndjson`) — one row per
-line, so streaming/decoding is trivial.
+The plugin reads NDJSON from the endpoints (`?format=ndjson`): one row per
+line, so streaming and decoding are trivial.
 
 ## Tables
 
@@ -75,7 +74,7 @@ select name, type, chunk_count from lynx_source;
 
 ### `lynx_search` — semantic + lexical code search
 
-`GET /api/v1/search`. The query string is a **required qual**; `source` and
+`GET /api/v1/search`. The query string is a required qual; `source` and
 `top_k` are optional quals.
 
 **Key columns (quals):**
@@ -111,7 +110,7 @@ where query = 'where the camera zoom is clamped'
 
 ### `lynx_graph` — code knowledge graph
 
-`GET /api/v1/graph`. `operation` and `symbol` are **required quals**.
+`GET /api/v1/graph`. `operation` and `symbol` are required quals.
 
 **Key columns (quals):**
 
@@ -121,7 +120,7 @@ where query = 'where the camera zoom is clamped'
 | `symbol` | required | `symbol` | fuzzy (case-insensitive substring) |
 | `source` | optional | `source` | optional when one source has the graph layer |
 | `relation_filter` | optional | `relation` | for `neighbors`: restrict to one edge relation (named distinctly from the `relation` result column below) |
-| `depth` | optional | `depth` | for `neighbors`: 1–6 |
+| `depth` | optional | `depth` | for `neighbors`: 1 to 6 |
 | `edge_limit` | optional | `limit` | max edges (server clamps to 200) |
 
 **Result columns** (one flat edge per row):
@@ -153,9 +152,9 @@ left join github_codeowners o on o.path = g.from_file
 where g.operation = 'callers' and g.symbol = 'ApplyDamage';
 ```
 
-> Note on qual naming: `top_k`, `depth`, `edge_limit` are exposed as qual columns
-> rather than relying on SQL `LIMIT`, because Steampipe's `LIMIT` is a row cap on
-> the *result*, not a fetch budget for the upstream API. Keeping them explicit
+> Note on qual naming: `top_k`, `depth` and `edge_limit` are exposed as qual
+> columns rather than relying on SQL `LIMIT`. Steampipe's `LIMIT` is a row cap
+> on the result, not a fetch budget for the upstream API. Keeping them explicit
 > mirrors the `/api/v1` parameters one-to-one.
 
 ## Repo layout (`steampipe-plugin-lynx`)
@@ -179,18 +178,18 @@ steampipe-plugin-lynx/
 
 ## Implementation notes (for whoever writes the Go)
 
-- **SDK:** `github.com/turbot/steampipe-plugin-sdk/v5` (current major). Tables use
+- SDK: `github.com/turbot/steampipe-plugin-sdk/v5` (current major). Tables use
   `*plugin.Table` with a `List: &plugin.ListConfig{ KeyColumns: ..., Hydrate: ... }`.
-- **Quals → params:** in each List hydrate, read `d.EqualsQuals["query"]`,
+- Quals to params: in each List hydrate, read `d.EqualsQuals["query"]`,
   `d.EqualsQualString("source")`, etc., and build the URL query string. Mark
   required quals with `plugin.Required` in `KeyColumns`.
-- **Streaming:** call the endpoint with `format=ndjson`, scan line by line, and
+- Streaming: call the endpoint with `format=ndjson`, scan line by line, and
   `d.StreamListItem(ctx, row)` each decoded object. Respect `d.RowsRemaining(ctx)`.
-- **Transform:** `transform.FromField("Field")` (or `FromGo()` with matching Go
+- Transform: `transform.FromField("Field")` (or `FromGo()` with matching Go
   struct field names). Map snake_case JSON to columns directly.
-- **Config default:** if `api_url` is unset, fall back to `LYNX_API` env then
+- Config default: if `api_url` is unset, fall back to `LYNX_API` env then
   `http://127.0.0.1:8765`.
-- **Errors:** a 404 from `/api/v1/graph` (no graph-enabled source) should surface
+- Errors: a 404 from `/api/v1/graph` (no graph-enabled source) should surface
   as an empty result or a clear error, not a panic.
 
 ## Publishing
@@ -201,6 +200,6 @@ steampipe-plugin-lynx/
 
 ## See also
 
-- [docs/CORAL.md](../../docs/CORAL.md) — the other SQL surface (plan-time literal query).
-- [docs/DUCKDB.md](../../docs/DUCKDB.md) — local analytics over the same `/api/v1` NDJSON.
+- [docs/CORAL.md](../../docs/CORAL.md): the other SQL surface (plan-time literal query).
+- [docs/DUCKDB.md](../../docs/DUCKDB.md): local analytics over the same `/api/v1` NDJSON.
 - The endpoints this maps onto: `docs/CORAL.md#the-api-behind-it`.

@@ -1,6 +1,6 @@
 # Lynx retrieval benchmark — Django 5.2
 
-Target: `django/` package of [django 5.2](https://github.com/django/django.git) — 883 files, 157,865 lines, 10,027 indexed chunks (one-time index build: 587s on CPU; incremental afterwards via SHA cache).
+Target: `django/` package of [django 5.2](https://github.com/django/django.git): 883 files, 157,865 lines, 10,027 indexed chunks (one-time index build: 587s on CPU; incremental afterwards via SHA cache).
 
 20 natural-language tasks with known ground-truth files. Both pipelines return a ranked file list; see `run_benchmark.py` for the exact methodology (the grep baseline is deliberately generous).
 
@@ -20,7 +20,7 @@ Notes:
   conservative follow-up read (150 lines around the first match in the top
   file); real agents often need several reads and several grep refinements.
 - The grep baseline is intentionally strong (IDF-weighted multi-keyword
-  ranking with ideal stopword removal — closer to BM25 than to what an
+  ranking with ideal stopword removal, closer to BM25 than to what an
   agent's first `rg` attempt looks like).
 - Django is a favorable corpus for lexical search: extensively docstring-ed,
   English identifiers everywhere. Codebases with sparser comments or
@@ -36,22 +36,22 @@ outputs are not the same *kind* of thing:
 |---|---|---|
 | matching line(s) | ✅ | ✅ (whole AST chunk: the full function/class body) |
 | file + line range of the enclosing symbol | ❌ | ✅ (`db/models/base.py L767-881`) |
-| qualified symbol name (`Model._save_table`) | ❌ | ✅ — citable directly in the answer |
+| qualified symbol name (`Model._save_table`) | ❌ | ✅, citable directly in the answer |
 | relevance score (when to stop trusting results) | ❌ | ✅ |
 | works when the query shares NO words with the code | ❌ | ✅ (dense embeddings) |
 
 And there is a whole class of questions grep cannot answer at any number
 of calls, that Lynx answers in ONE (`graph_query` / `find_usages`):
 *who calls X? what implements this interface? what breaks if I change
-this?* — polymorphic dispatch leaves no textual trace, so grepping the
+this?* Polymorphic dispatch leaves no textual trace, so grepping the
 method name finds the definition and the textual mentions, not the
 runtime callers through base classes.
 
 ## The round-trip economy
 
 Tool execution time is noise (both pipelines answer in well under a
-second). The real cost is that **every tool round-trip is a full model
-inference over the entire growing context**: seconds of wall-clock and
+second). The real cost is that every tool round-trip is a full model
+inference over the entire growing context: seconds of wall-clock and
 the whole conversation re-billed in input tokens, every time.
 
 | Typical flow | model inferences before the code is in context |
@@ -88,15 +88,15 @@ the whole conversation re-billed in input tokens, every time.
 
 ## Structural queries: class relations (where grep dies)
 
-Question: *"what inherits from `Field` (django.db.models) — i.e. what breaks if I change it?"*
+Question: *"what inherits from `Field` (django.db.models), i.e. what breaks if I change it?"*
 
 | | grep (regex + manual closure) | Lynx graph_query |
 |---|---|---|
 | direct subclasses found | 49 | 49 (each with file + line) |
 | full descendant tree | 100 classes | 100 classes, 4 levels |
-| tool calls required | **101 grep rounds** (one per discovered class) | **1 per level (4 total)** — or 1 `get_neighbors(depth=N)` |
-| wall clock (this harness; a real `rg` would be faster — the call count would not change) | 125.4s | 0.39s |
-| symbol metadata (file:line, kind) | none — more reads needed | included in every edge |
+| tool calls required | **101 grep rounds** (one per discovered class) | **1 per level (4 total)**, or 1 `get_neighbors(depth=N)` |
+| wall clock (this harness; a real `rg` would be faster, but the call count would not change) | 125.4s | 0.39s |
+| symbol metadata (file:line, kind) | none, more reads needed | included in every edge |
 | descendants the regex closure missed | 0 | — |
 | found by grep but not in graph (false positives / unresolved) | 0 | — |
 

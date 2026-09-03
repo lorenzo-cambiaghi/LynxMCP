@@ -1,6 +1,6 @@
 # Lynx retrieval benchmark — Json.NET (Newtonsoft.Json)
 
-Target: `Src/Newtonsoft.Json` of [Json.NET (Newtonsoft.Json) master](https://github.com/JamesNK/Newtonsoft.Json.git) — 240 files, 69,132 lines, 3,724 indexed chunks (one-time index build: 186s on CPU).
+Target: `Src/Newtonsoft.Json` of [Json.NET (Newtonsoft.Json) master](https://github.com/JamesNK/Newtonsoft.Json.git): 240 files, 69,132 lines, 3,724 indexed chunks (one-time index build: 186s on CPU).
 
 15 natural-language tasks with known ground-truth files. Both pipelines return a ranked file list; see `run_benchmark.py` for the exact methodology (the grep baseline is deliberately generous).
 
@@ -20,7 +20,7 @@ Notes:
   conservative follow-up read (150 lines around the first match in the top
   file); real agents often need several reads and several grep refinements.
 - The grep baseline is intentionally strong (IDF-weighted multi-keyword
-  ranking with ideal stopword removal — closer to BM25 than to what an
+  ranking with ideal stopword removal, closer to BM25 than to what an
   agent's first `rg` attempt looks like).
 - A well-documented, English-identifier corpus is a favorable case for
   lexical search. Codebases with sparser comments or non-obvious naming
@@ -36,22 +36,22 @@ outputs are not the same *kind* of thing:
 |---|---|---|
 | matching line(s) | ✅ | ✅ (whole AST chunk: the full function/class body) |
 | file + line range of the enclosing symbol | ❌ | ✅ (`db/models/base.py L767-881`) |
-| qualified symbol name (`Model._save_table`) | ❌ | ✅ — citable directly in the answer |
+| qualified symbol name (`Model._save_table`) | ❌ | ✅, citable directly in the answer |
 | relevance score (when to stop trusting results) | ❌ | ✅ |
 | works when the query shares NO words with the code | ❌ | ✅ (dense embeddings) |
 
 And there is a whole class of questions grep cannot answer at any number
 of calls, that Lynx answers in ONE (`graph_query` / `find_usages`):
 *who calls X? what implements this interface? what breaks if I change
-this?* — polymorphic dispatch leaves no textual trace, so grepping the
+this?* Polymorphic dispatch leaves no textual trace, so grepping the
 method name finds the definition and the textual mentions, not the
 runtime callers through base classes.
 
 ## The round-trip economy
 
 Tool execution time is noise (both pipelines answer in well under a
-second). The real cost is that **every tool round-trip is a full model
-inference over the entire growing context**: seconds of wall-clock and
+second). The real cost is that every tool round-trip is a full model
+inference over the entire growing context: seconds of wall-clock and
 the whole conversation re-billed in input tokens, every time.
 
 | Typical flow | model inferences before the code is in context |

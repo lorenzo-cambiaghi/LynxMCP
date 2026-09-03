@@ -1,8 +1,8 @@
 # Lynx native installers
 
 One downloadable file per platform that installs Lynx and opens the guided
-web UI — no terminal, no `git`, no manual Python setup. Aimed at people who
-just want to *use* Lynx.
+web UI. No terminal, no `git`, no manual Python setup. Aimed at people who
+just want to use Lynx.
 
 ## Layout
 
@@ -20,7 +20,7 @@ installer/
     Lynx.ico  (optional) -> app icon; used by Inno Setup if present
 ```
 
-The `uv` binary is **not** committed — CI downloads it from the
+The `uv` binary is not committed. CI downloads it from the
 [astral-sh/uv releases](https://github.com/astral-sh/uv/releases) and bundles
 it into each installer. The pinned version lives in
 `.github/workflows/release.yml` (`UV_VERSION`).
@@ -29,9 +29,9 @@ it into each installer. The pinned version lives in
 
 Both installers are produced by `.github/workflows/release.yml`:
 
-- Push a tag `vX.Y.Z` -> builds both + publishes a GitHub Release with the
+- Push a tag `vX.Y.Z`: builds both and publishes a GitHub Release with the
   `.dmg` and `.exe` attached.
-- Run the workflow manually (`workflow_dispatch`) -> builds the artifacts
+- Run the workflow manually (`workflow_dispatch`): builds the artifacts
   only (no Release), handy for testing.
 
 ### Local macOS build
@@ -54,12 +54,12 @@ ISCC /DMyAppVersion=1.0.0 installer\windows\lynx.iss
 
 ## First-launch warnings (unsigned builds)
 
-The installers are **not code-signed yet**, so the OS shows a one-time
+The installers are not code-signed yet, so the OS shows a one-time
 warning. This is expected:
 
-- **macOS (Gatekeeper):** right-click `Lynx.app` -> **Open** -> **Open**.
-  After the first time it launches normally.
-- **Windows (SmartScreen):** click **More info** -> **Run anyway**.
+- macOS (Gatekeeper): right-click `Lynx.app`, then **Open**, then **Open**
+  again. After the first time it launches normally.
+- Windows (SmartScreen): click **More info**, then **Run anyway**.
 
 ### Adding signing later
 
@@ -69,16 +69,16 @@ The CI workflow has commented slots for both:
   the app, then `xcrun notarytool submit` + staple the `.dmg`.
 - Windows: `signtool sign` the `Lynx-Setup-*.exe` with a code-signing cert.
 
-Both need secrets added to the repo. Once signed + notarized, the warnings
+Both need secrets added to the repo. Once signed and notarized, the warnings
 above disappear.
 
 ## How it works (thin bootstrapper)
 
 The runtime stack (`torch` + `sentence-transformers` + `chromadb`) weighs
 ~1.1 GB, plus a ~130 MB embedding model. Shipping that inside a single
-offline binary would be huge and awkward to sign/distribute. Instead the
-installers are **thin**: they bundle only the [`uv`](https://docs.astral.sh/uv/)
-binary (~30 MB) and download everything else **on first launch**.
+offline binary would be huge and awkward to sign and distribute. Instead the
+installers are thin: they bundle only the [`uv`](https://docs.astral.sh/uv/)
+binary (~30 MB) and download everything else on first launch.
 
 ```
 download installer  ->  install (instant)  ->  first launch:
@@ -93,4 +93,4 @@ Python or PATH:
 - macOS: `~/Library/Application Support/Lynx/`
 - Windows: `%LOCALAPPDATA%\Lynx\`
 
-To fully remove Lynx: uninstall the app **and** delete that folder.
+To fully remove Lynx, uninstall the app and delete that folder.
