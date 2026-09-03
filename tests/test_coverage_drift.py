@@ -121,22 +121,26 @@ def test_zero_chunk_files_are_expected_absences_not_phantoms(tmp_path):
     assert report["empty_files"] == [r"C:\proj\empty.cs"]
 
 
-def test_paths_are_compared_normalized(tmp_path):
-    """The cache and the index may disagree on spelling; a phantom verdict
-    must come from a real absence, not from that.
+def test_case_differences_follow_the_platform(tmp_path):
+    """Case is the one thing the two sides can genuinely disagree on, and what
+    it means is the platform's business.
 
-    What counts as the same path is the platform's business, and the two
-    disagree: Windows folds case and treats both slashes as separators, while
-    on POSIX a backslash is an ordinary character in a filename and `Sub` and
-    `sub` are two different directories. So each side is checked against the
-    spellings its own rules actually unify.
+    Both writers normalize with ``normpath(abspath(...))`` (the index in
+    `chunking.chunk_file`, the cache through `rag_manager._norm`), so slash
+    style is already unified before either value is stored and the two can
+    never differ on it. Neither applies ``normcase``, so a config `path`, a
+    scanner walk and a watchdog event can each supply a different spelling of
+    the same directory. On Windows that is one file and must not read as a
+    phantom. On POSIX `Sub` and `sub` are two directories, and calling them
+    one would hide a file that really is missing.
     """
-    if os.name == "nt":
-        indexed, cached = "C:/proj/Sub/a.cs", r"C:\proj\sub\a.cs"
-    else:
-        indexed, cached = "/proj/Sub/a.cs", "/proj/./Sub//a.cs"
+    indexed, cached = _p("/proj/Sub/a.cs"), _p("/proj/sub/a.cs")
     _make_store(tmp_path, indexed_files=[indexed], cached={cached: _entry()})
-    assert integrity.inspect_coverage(tmp_path)["drifted"] is False
+    report = integrity.inspect_coverage(tmp_path)
+
+    windows = os.name == "nt"
+    assert report["drifted"] is not windows
+    assert report["phantom_files"] == ([] if windows else [cached])
 
 
 def test_a_genuinely_different_path_is_still_a_phantom(tmp_path):
