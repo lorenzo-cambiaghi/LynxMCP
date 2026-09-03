@@ -413,6 +413,11 @@ class WebdocBackend(SourceBackend):
         self.render_wait_until: str = str(source_config.get("render_wait_until", "networkidle"))
         self.render_timeout_seconds: float = float(source_config.get("render_timeout_seconds", 30.0))
 
+        # One process writes this store, the rest read it (see
+        # lynx/ownership.py). A webdoc refresh is manual, but two sessions
+        # running `lynx build` at once would still collide.
+        self._claim_store()
+
         # Inner indexing engine — same CodebaseRAG that handles the codebase
         # source type, just pointed at our dump folder.
         from ..rag_manager import CodebaseRAG
@@ -428,6 +433,7 @@ class WebdocBackend(SourceBackend):
             rrf_k=shared_config.search.rrf_k,
             candidate_pool_size=shared_config.search.candidate_pool_size,
             reranker_config=shared_config.search.reranker,
+            follower=not self.is_owner,
         )
 
     # ------------------------------------------------------------------
@@ -530,9 +536,11 @@ class WebdocBackend(SourceBackend):
     # ------------------------------------------------------------------
 
     def search(self, query, top_k=5, **kw):
+        self._before_read()
         return self.rag.search(query, top_k=top_k, **kw)
 
     def deep_search(self, queries, top_k=5, **kw):
+        self._before_read()
         return self.rag.deep_search(
             queries=queries,
             top_k=top_k,
@@ -549,6 +557,9 @@ class WebdocBackend(SourceBackend):
         cadence; they don't get stale "on their own", they get stale when
         the upstream site changes, which we can't detect without crawling.
         """
+        if not self.is_owner:
+            from ..errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.name, str(self.storage_dir))
         if not force:
             return
         self.fetch()
@@ -562,6 +573,7 @@ class WebdocBackend(SourceBackend):
         return None
 
     def status(self) -> dict:
+        self._before_read()
         state = self._load_fetch_state()
         try:
             chunk_count = self.rag.vector_store._collection.count()

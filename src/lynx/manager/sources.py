@@ -367,6 +367,22 @@ def remove_source(config_path, name: str, purge: bool = False) -> CrudResult:
                 root = Path(config_path).resolve().parent / root
             src_storage = root / name
             if src_storage.exists():
+                # Ask first, rather than relying on the delete to fail. Windows
+                # refuses to unlink a file a live process holds open, which is
+                # what used to stop this; everywhere else the unlink succeeds
+                # and the running session is left reading an index that no
+                # longer exists on disk.
+                from ..integrity import store_in_use_by_other_process
+                from .. import ownership
+                if store_in_use_by_other_process(src_storage):
+                    return CrudResult(
+                        False,
+                        f"Couldn't delete the index at {src_storage}: "
+                        f"{ownership.describe(src_storage)}. Source {name!r} was "
+                        f"left in the config — stop that process and run the "
+                        f"same command again.",
+                        409, purge_error="index in use",
+                    )
                 try:
                     shutil.rmtree(src_storage)
                 except OSError as e:

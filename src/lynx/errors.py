@@ -26,3 +26,25 @@ class CorruptIndexError(Exception):
             f"Reset it with `lynx reset --source {source}` (data is disposable; "
             f"it rebuilds from your files)."
         )
+
+
+class StoreNotOwnedError(Exception):
+    """A write was attempted on a store another Lynx process owns.
+
+    Several processes may read one index at a time, but only the owner writes
+    it (see `lynx.ownership`). This is not damage and nothing needs repairing:
+    the other process is keeping the index up to date, and the write belongs
+    to it.
+    """
+
+    def __init__(self, source: str, storage_dir: str | None = None):
+        self.source = source
+        self.storage_dir = storage_dir
+        from . import ownership
+        detail = (ownership.describe(storage_dir) if storage_dir
+                  else "another Lynx process owns this index")
+        super().__init__(
+            f"cannot write the index for source {source!r}: {detail}. "
+            f"That process keeps it up to date; stop it if you need to build "
+            f"or reset the index here."
+        )

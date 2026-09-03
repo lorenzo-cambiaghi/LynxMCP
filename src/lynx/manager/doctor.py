@@ -283,30 +283,55 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
             size_mb = chroma_db.stat().st_size / (1024 * 1024)
             details.append(f"ChromaDB: {size_mb:.1f} MB at {chroma_db}")
 
-            # 2b. WAL wedge fingerprint. A process killed mid-write can leave
-            # pending queue rows on which chromadb deadlocks forever (every
-            # open hangs — it shows up as integrity-probe timeouts at every
-            # serve/UI start). Read-only plain-sqlite inspection, never a
-            # Chroma client. Skip the verdict while another process holds the
-            # store: a live indexer legitimately has ops in flight.
+            # 2b. Integrity probe + WAL verdict. The WAL fingerprint (queued
+            # rows older than 10 min with a segment behind them) is NOT proof
+            # of the chromadb deadlock: a clean build whose size is not a
+            # multiple of the HNSW sync threshold ends in exactly that state
+            # and sits there while idle — this check called two healthy,
+            # searchable indexes "wedged" for 16 days. What separates the two
+            # is the out-of-process probe: a healthy store answers it in
+            # about a second, a wedged one never does. So the probe decides
+            # and the fingerprint only explains a timeout. The probe opens
+            # chroma in a child (no model load) and classifies a store held
+            # by another process as `in_use` up front, so it is cheap here.
+            from ..integrity import inspect_wal, check_index
             try:
-                from ..integrity import inspect_wal, _store_usage
                 wal = inspect_wal(source_storage)
             except Exception:
                 wal = None
-            if wal and wal["pending_ops"]:
-                if _store_usage(source_storage) == "other":
+            probe = check_index(source_storage, name, timeout=20)
+            verdict = probe.get("status")
+            if verdict == "in_use":
+                details.append(
+                    "Index: open in another running Lynx process (usually "
+                    "`lynx serve`) — healthy; verdicts that need the store "
+                    "are skipped"
+                )
+                if wal and wal["pending_ops"]:
                     details.append(
-                        f"WAL: {wal['pending_ops']} write(s) in flight — index "
-                        f"in use by another Lynx process, skipping the wedge check"
+                        f"WAL: {wal['pending_ops']} queued write(s), index in "
+                        f"use, skipping the wedge check"
                     )
-                elif wal["wedged"]:
+            elif verdict == "corrupt":
+                return CheckResult(
+                    name=f"Source {name!r}",
+                    status=STATUS_ERROR,
+                    summary="index is unreadable or crashes on open",
+                    details=details + [
+                        probe.get("detail", ""),
+                        f"Fix: `lynx reset --source {name}` wipes it and "
+                        f"rebuilds from the files on disk.",
+                    ],
+                )
+            elif verdict == "unverified":
+                if wal and wal["wedged"]:
                     mins = int(wal["oldest_pending_s"] // 60)
                     return CheckResult(
                         name=f"Source {name!r}",
                         status=STATUS_ERROR,
-                        summary=(f"index WAL is wedged — {wal['pending_ops']} "
-                                 f"write(s) stuck for {mins} min"),
+                        summary=(f"index WAL is wedged — {wal['unapplied_ops']} "
+                                 f"write(s) stuck for {mins} min and the index "
+                                 f"never answered the probe"),
                         details=details + [
                             "A process was likely killed mid-write; ChromaDB "
                             "deadlocks on this state (every open hangs forever, "
@@ -319,13 +344,30 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                             f"works but rebuilds the whole index.",
                         ],
                     )
-                else:
+                return CheckResult(
+                    name=f"Source {name!r}",
+                    status=STATUS_WARN,
+                    summary="index could not be verified (probe timed out)",
+                    details=details + [
+                        probe.get("detail", ""),
+                        "Close other Lynx processes and rerun; a large index on "
+                        "a slow or antivirus-scanned disk can also take longer "
+                        "than the probe budget.",
+                    ],
+                )
+            else:
+                if verdict == "ok" and probe.get("count") is not None:
                     details.append(
-                        f"WAL: {wal['pending_ops']} write(s) in flight "
-                        f"(normal during indexing)"
+                        f"Index: {probe['count']} chunk(s), answered the probe")
+                elif verdict == "empty":
+                    details.append("Index: empty (0 chunks)")
+                if wal and wal["pending_ops"]:
+                    details.append(
+                        f"WAL: {wal['pending_ops']} queued write(s), "
+                        f"{wal['unapplied_ops']} awaiting replay by a segment "
+                        f"(normal — the index answered the probe)"
                     )
-            if (wal and wal["discarding_writes"]
-                    and _store_usage(source_storage) != "other"):
+            if wal and wal["discarding_writes"] and verdict != "in_use":
                 return CheckResult(
                     name=f"Source {name!r}",
                     status=STATUS_ERROR,
@@ -602,13 +644,35 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
     if wal is None:
         print(f"[doctor] source {name!r} has no index yet — nothing to heal.")
         return 0
-    if (not wal["pending_ops"] and not wal["stale_locks"]
-            and not wal["discarding_writes"]):
-        print(f"[doctor] source {name!r}: WAL is clean — nothing to heal.")
+    if not wal["wedged"] and not wal["discarding_writes"]:
+        queued = (f" ({wal['pending_ops']} queued write(s) are the tail a "
+                  f"segment replays on its next open — normal)"
+                  if wal["pending_ops"] else "")
+        print(f"[doctor] source {name!r}: WAL is clean{queued} — nothing to heal.")
         return 0
     if wal["discarding_writes"]:
         print(f"[doctor] segments parked at seq {wal['watermark']} with an "
               f"empty queue: every write is being discarded as already-applied.")
+    else:
+        # The fingerprint alone is not a wedge (see inspect_wal): a healthy
+        # store answers the probe in about a second, a wedged one never
+        # does. Purging the queue of a healthy store would throw away the
+        # vectors it was about to replay, so confirm before cutting.
+        print("[doctor] fingerprint matches a wedge; confirming with the "
+              "out-of-process probe...")
+        probe = check_index(storage_dir, name, timeout=20)
+        if probe["status"] in ("ok", "empty"):
+            count = probe.get("count")
+            print(f"[doctor] source {name!r}: the index answers the probe"
+                  + (f" ({count} chunks)" if count else "")
+                  + f"; the {wal['unapplied_ops']} queued write(s) are the tail "
+                  f"the vector segment replays on open, not a wedge — nothing "
+                  f"to heal.")
+            return 0
+        if probe["status"] == "in_use":
+            print(f"[doctor] can't heal {name!r}: {probe['detail']}",
+                  file=sys.stderr)
+            return 2
 
     try:
         outcome = heal_wal(storage_dir)

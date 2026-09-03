@@ -243,7 +243,14 @@ def _cmd_build(args) -> int:
                 file=sys.stderr,
             )
         return 1
-    manager.update(source_name, force=True)
+    from .errors import StoreNotOwnedError
+    try:
+        manager.update(source_name, force=True)
+    except StoreNotOwnedError as e:
+        # Reads are shared; writes are not. Another session is keeping this
+        # index current, so building here would be both racy and pointless.
+        print(f"[cli] {e}", file=sys.stderr)
+        return 1
     print(f"Source {source_name!r} ready.")
     return 0
 
@@ -269,11 +276,18 @@ def _cmd_reset(args) -> int:
             print("Aborted.")
             return 1
 
+    from .errors import StoreNotOwnedError
+
     _, manager = _build_manager(getattr(args, "config", None))
     for name in targets:
         print(f"Resetting {name!r}: wiping index...", flush=True)
         try:
             status = manager.reset_source(name, rebuild=rebuild)
+        except StoreNotOwnedError as e:
+            # Not a failure to diagnose: another session is using the index,
+            # and the message already says what to do about it.
+            print(f"  {e}", file=sys.stderr)
+            return 1
         except Exception as e:
             print(f"  failed: {type(e).__name__}: {e}", file=sys.stderr)
             return 1
@@ -403,6 +417,9 @@ def _cmd_status(args) -> int:
         needs = backend.needs_update() if hasattr(backend, "needs_update") else False
         print(f"=== Source: {name} (type: {s['type']}) ===")
         print(f"Status:       {'Needs update' if needs else 'Up to date'}")
+        if not getattr(backend, "is_owner", True):
+            print("Indexing:     another Lynx process owns this index and keeps "
+                  "it current; searches here follow its updates")
         if s.get("path"):
             print(f"Path:         {s['path']}")
         print(f"Chunks:       {s.get('chunk_count', 'n/a')}")

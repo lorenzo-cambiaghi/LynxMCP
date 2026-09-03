@@ -12,6 +12,7 @@ and a fake Chroma collection, so this runs fast under pytest.
 from __future__ import annotations
 
 import os
+import threading
 
 from llama_index.core.schema import TextNode
 
@@ -54,6 +55,9 @@ def _new_rag(store_docs) -> CodebaseRAG:
     rag._bm25_meta = {}
     rag._bm25_okapi = None
     rag._bm25_doc_ids = []
+    # The cache is edited from the watcher thread and, on a follower, from the
+    # refresh; the BM25 rebuild snapshots it under this lock before iterating.
+    rag._write_lock = threading.RLock()
     rag.vector_store = _FakeVS(_FakeCollection(store_docs))
     return rag
 

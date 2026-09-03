@@ -36,6 +36,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -109,7 +110,15 @@ class GraphLayer:
         codebase_path,
         supported_extensions: Iterable[str],
         ignored_path_fragments: Optional[Iterable[str]] = None,
+        follower: bool = False,
     ):
+        # A follower reads a graph another Lynx process owns and maintains:
+        # it never writes, never bootstraps, and re-reads the JSON when the
+        # owner has rewritten it. See lynx/ownership.py.
+        self.follower = bool(follower)
+        self._disk_stamp = None
+        self._last_staleness_check = 0.0
+
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.codebase_path = Path(codebase_path)
@@ -143,6 +152,7 @@ class GraphLayer:
         }
 
         self._load_from_disk()
+        self._disk_stamp = self._read_disk_stamp()
 
         # First-boot bootstrap. If the persisted state is empty (either we
         # never ran or the cache was wiped by a schema bump) AND there's
@@ -150,7 +160,9 @@ class GraphLayer:
         # this, every graph MCP tool returns [] until the user discovers
         # they have to run `lynx graph build` manually — terrible UX.
         # Mirrors the behavior of `CodebaseRAG._load_or_build_index`.
-        if not self._file_hashes:
+        # A follower never bootstraps: building is the owner's job, and two
+        # processes writing this graph would race on the same JSON files.
+        if not self._file_hashes and not self.follower:
             try:
                 if self.codebase_path.exists() and any(self._list_candidate_files()):
                     _log(f"[graph] first-boot bootstrap of {self.codebase_path} "
@@ -163,6 +175,44 @@ class GraphLayer:
     # ------------------------------------------------------------------
     # Disk I/O
     # ------------------------------------------------------------------
+
+    # Followers re-check the graph on disk at most this often.
+    _STALENESS_INTERVAL_SEC = 2.0
+
+    def _read_disk_stamp(self):
+        """Cheap fingerprint of the persisted graph: metadata's size + mtime.
+
+        The builder rewrites metadata.json on every persist, so a change here
+        means the owner has written the graph since we loaded it.
+        """
+        try:
+            st = self.metadata_file.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def refresh_if_stale(self) -> bool:
+        """Reload the graph when the process that owns it has rewritten it.
+
+        No-op for an owner (its in-memory graph is the newest thing there is)
+        and throttled for a follower. Reloading the whole graph costs 0.66s on
+        a 28k-node / 80k-edge graph, and only happens after a real change.
+        """
+        if not self.follower:
+            return False
+        now = time.monotonic()
+        if now - self._last_staleness_check < self._STALENESS_INTERVAL_SEC:
+            return False
+        self._last_staleness_check = now
+        stamp = self._read_disk_stamp()
+        if stamp is None or stamp == self._disk_stamp:
+            return False
+        with self._lock:
+            self._load_from_disk()
+            self._disk_stamp = stamp
+        _log(f"[graph] reloaded {self.storage_dir.parent.name}: the owning "
+             f"process rewrote the graph")
+        return True
 
     def _load_from_disk(self) -> None:
         """Restore in-memory state from JSON files. Missing or invalid
@@ -517,6 +567,10 @@ class GraphLayer:
         Returns a summary dict with counts of nodes/edges/changed/added/
         removed for observability.
         """
+        if self.follower:
+            from ..errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.storage_dir.parent.name,
+                                     str(self.storage_dir.parent))
         with self._lock:
             if force:
                 _log("[graph] full rebuild (force=True): wiping state")
@@ -608,7 +662,11 @@ class GraphLayer:
     def update_file(self, abs_path: str) -> bool:
         """Re-process a single file (called by the watcher on FS events).
 
-        Returns True if the graph changed, False if SHA unchanged."""
+        Returns True if the graph changed, False if SHA unchanged.
+        A follower never writes: the owning process indexes this file and the
+        change arrives through `refresh_if_stale`."""
+        if self.follower:
+            return False
         with self._lock:
             abs_norm = os.path.normpath(os.path.abspath(abs_path))
             if os.path.splitext(abs_norm)[1].lower() not in self.supported_extensions:
@@ -661,6 +719,8 @@ class GraphLayer:
             return True
 
     def remove_file(self, abs_path: str) -> bool:
+        if self.follower:
+            return False
         with self._lock:
             abs_norm = os.path.normpath(os.path.abspath(abs_path))
             if abs_norm not in self._file_hashes and not any(
@@ -677,6 +737,7 @@ class GraphLayer:
 
     def status(self) -> dict:
         """Snapshot for `lynx graph status` / MCP tool."""
+        self.refresh_if_stale()
         with self._lock:
             lang_counts: dict = {}
             for n in self._nodes_by_id.values():
@@ -707,7 +768,12 @@ class GraphLayer:
     @property
     def graph(self) -> nx.DiGraph:
         """The in-memory `nx.DiGraph`. Read-only queries are safe to run
-        concurrently; mutate ONLY through update/remove/rebuild methods."""
+        concurrently; mutate ONLY through update/remove/rebuild methods.
+
+        Every graph query goes through here, which is why the follower's
+        staleness check lives here too.
+        """
+        self.refresh_if_stale()
         return self._graph
 
     @property

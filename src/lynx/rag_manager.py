@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 # ============================================================================
 # BLOCK ANY EXTERNAL COMMUNICATION AND SILENCE NOISY LOGS
@@ -253,7 +254,15 @@ class CodebaseRAG:
         candidate_pool_size: int = 30,
         reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
         ignored_path_fragments=(),
+        follower: bool = False,
     ):
+        # A follower shares a store another Lynx process owns: it reads and
+        # never writes, and it re-reads what the owner wrote (see
+        # `refresh_if_stale`). See lynx/ownership.py for who owns what.
+        self.follower = bool(follower)
+        self._watermark = None
+        self._last_staleness_check = 0.0
+
         self.codebase_path = Path(codebase_path)
         self.storage_path = Path(rag_storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -304,8 +313,11 @@ class CodebaseRAG:
         self._bm25_doc_ids: list = []
 
         # Serialize index mutations between the watcher, explicit updates,
-        # and the search path.
-        self._write_lock = threading.Lock()
+        # a follower's refresh, and the search path. Re-entrant so a path that
+        # already holds it can call a helper that takes it again: with several
+        # sessions on one store these paths interleave far more than they used
+        # to, and a plain Lock turns that into a deadlock instead of a wait.
+        self._write_lock = threading.RLock()
 
         # Configure LlamaIndex for fully offline operation.
         _configure_local_only(embedding_model_name)
@@ -329,7 +341,19 @@ class CodebaseRAG:
         self.file_hashes_file = self.storage_path / "file_hashes.json"
         self._file_hashes: dict = self._load_file_hashes()
 
+        # Where the store stood BEFORE we opened it, which is the safe order.
+        # Opening applies the write-ahead log up to that moment; a watermark
+        # read afterwards could already include a write the owner made in
+        # between, and we would never go back for it. Reading early can only
+        # cost one redundant refresh.
+        self._watermark = self._store_watermark()
+
         self.index = self._load_or_build_index()
+
+        if self._watermark is None:
+            # First build: there was no store to read a moment ago, there is
+            # one now. Start following from here.
+            self._watermark = self._store_watermark()
 
         # After index is loaded, check whether the live config matches the
         # config that built it. Surfaces silent drift (e.g. embedding model
@@ -356,6 +380,170 @@ class CodebaseRAG:
             settings=ChromaSettings(anonymized_telemetry=False),
         )
         return self._chroma_client.get_or_create_collection(self.collection_name)
+
+    # ------------------------------------------------------------------
+    # Follower mode: reading a store another Lynx process owns
+    # ------------------------------------------------------------------
+    # Several processes can read one ChromaDB store at the same time; only one
+    # may write it (see lynx/ownership.py). A follower therefore searches
+    # normally but has to be told when the owner has written something, because
+    # retrieval answers from state loaded at open time: the HNSW segment applies
+    # the write-ahead log when the store is opened, and the BM25 corpus is
+    # cached in memory. `count()` alone stays live, which is exactly why this
+    # went unnoticed — the numbers move while the results do not.
+
+    _STALENESS_INTERVAL_SEC = 2.0
+    # Above this many changed files, reloading the whole BM25 corpus is
+    # cheaper than patching it file by file.
+    _MAX_DELTA_FILES = 50
+
+    def _store_watermark(self):
+        """Monotonic "something was written" counter for this store.
+
+        Read with plain sqlite rather than through a Chroma client: it runs
+        before searches, so it has to cost nothing and must not contend with
+        the owner. None when there is no store yet.
+        """
+        import sqlite3
+
+        path = self.storage_path / "chroma.sqlite3"
+        if not path.exists():
+            return None
+        try:
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        except sqlite3.Error:
+            return None
+        try:
+            row = db.execute("SELECT max(seq_id) FROM embeddings_queue").fetchone()
+            return (row[0] if row else 0) or 0
+        except sqlite3.Error:
+            return None
+        finally:
+            db.close()
+
+    def _files_written_since(self, watermark):
+        """``(files, exact)`` for the writes logged above `watermark`.
+
+        `exact` is False when the log no longer covers the range we missed.
+        Chroma purges it on its own schedule and `heal_wal` rewrites it, so a
+        partial list would silently leave stale chunks in the BM25 cache; the
+        caller reloads everything instead.
+        """
+        import sqlite3
+
+        path = self.storage_path / "chroma.sqlite3"
+        if watermark is None or not path.exists():
+            return [], False
+        try:
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        except sqlite3.Error:
+            return [], False
+        try:
+            low, high = db.execute(
+                "SELECT min(seq_id), max(seq_id) FROM embeddings_queue").fetchone()
+            if low is None or low > watermark + 1 or high < watermark:
+                return [], False
+            files = set()
+            for (meta,) in db.execute(
+                    "SELECT metadata FROM embeddings_queue WHERE seq_id > ?",
+                    (watermark,)):
+                try:
+                    m = json.loads(meta) if meta else {}
+                except ValueError:
+                    continue
+                fp = m.get("file_path") or (m.get("metadata") or {}).get("file_path")
+                if fp:
+                    files.add(fp)
+            return sorted(files), True
+        except sqlite3.Error:
+            return [], False
+        finally:
+            db.close()
+
+    def _reopen_store(self):
+        """Re-open ChromaDB so this process sees what another one wrote.
+
+        Building a new client is what makes the segment replay the log;
+        Chroma's process-level cache has to be dropped first or the same
+        system is handed back. Collections other sources already hold keep
+        working (verified), and this costs 0.13s on a 270MB store.
+        """
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+            SharedSystemClient.clear_system_cache()
+        except Exception as e:
+            log(f"[rag] could not drop the Chroma client cache: {e}")
+        self._chroma_client = None
+        self.vector_store = ChromaVectorStore(
+            chroma_collection=self._get_or_create_collection()
+        )
+        self.storage_context = StorageContext.from_defaults(
+            vector_store=self.vector_store
+        )
+        self.index = VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
+
+    def _bm25_reload_file(self, abs_path: str) -> None:
+        """Re-read one file's chunks from the store into the BM25 cache.
+
+        The watcher path patches the cache from the nodes it just wrote; a
+        follower never sees those nodes, so it reads them back instead.
+        """
+        self._bm25_drop_file_entries(abs_path)
+        try:
+            data = self.vector_store._collection.get(
+                where={"file_path": abs_path},
+                include=["documents", "metadatas"],
+            )
+        except Exception as e:
+            log(f"[bm25] could not re-read {abs_path}: {e}")
+            return
+        for cid, content, meta in zip(data.get("ids") or [],
+                                      data.get("documents") or [],
+                                      data.get("metadatas") or []):
+            meta = meta or {}
+            self._bm25_docs[cid] = _tokenize_code(content or "")
+            self._bm25_meta[cid] = {
+                "file": meta.get("file_name", "unknown"),
+                "file_path": meta.get("file_path", ""),
+                "symbol_name": meta.get("symbol_name", ""),
+                "symbol_kind": meta.get("symbol_kind", ""),
+                "language": meta.get("language", ""),
+                "start_line": meta.get("start_line", 0),
+                "end_line": meta.get("end_line", 0),
+                "content": content or "",
+            }
+
+    def refresh_if_stale(self) -> bool:
+        """Pick up the owner's writes. No-op for an owner; throttled otherwise.
+
+        Returns True when something was actually reloaded.
+        """
+        if not self.follower:
+            return False
+        now = time.monotonic()
+        if now - self._last_staleness_check < self._STALENESS_INTERVAL_SEC:
+            return False
+        self._last_staleness_check = now
+        mark = self._store_watermark()
+        if mark is None or mark == self._watermark:
+            return False
+
+        files, exact = self._files_written_since(self._watermark)
+        with self._write_lock:
+            self._reopen_store()
+            patchable = (exact and files and len(files) <= self._MAX_DELTA_FILES
+                         and bool(self._bm25_docs))
+            if patchable:
+                for abs_path in files:
+                    self._bm25_reload_file(abs_path)
+                self._bm25_okapi = None
+            else:
+                self._invalidate_bm25()
+            self._watermark = mark
+        what = (f"picked up the owner's changes ({len(files)} file(s))"
+                if patchable else "reloaded after the owner wrote")
+        log(f"[rag] {self.collection_name}: {what}")
+        return True
 
     def _load_metadata(self):
         if self.metadata_file.exists():
@@ -537,6 +725,9 @@ class CodebaseRAG:
         directory, which Windows blocks while the open HNSW segment handle is
         live (WinError 32). Used by the `reset` flow to recover/clean a source
         in place."""
+        if self.follower:
+            from .errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.collection_name, str(self.storage_path))
         with self._write_lock:
             self._reset_collection()
             self._file_hashes = {}
@@ -801,6 +992,9 @@ class CodebaseRAG:
 
     def update(self, force=False):
         """Rebuild the index if there are git changes (or if force=True)."""
+        if self.follower:
+            from .errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.collection_name, str(self.storage_path))
         if not force and not self.needs_update():
             log("[rag] Index already up to date.")
             return
@@ -892,6 +1086,11 @@ class CodebaseRAG:
         pass a precomputed query vector to skip re-embedding; when None the dense
         retriever embeds the query itself.
         """
+        # A follower answers from what it loaded at open time, so ask the store
+        # whether the owner has written since. Throttled and, when nothing
+        # moved, one read-only sqlite query.
+        self.refresh_if_stale()
+
         has_filters = bool(file_glob or extensions or path_contains or paths)
         rerank_enabled = bool(
             self.reranker_config is not None and self.reranker_config.enabled
@@ -1253,11 +1452,14 @@ class CodebaseRAG:
         docs = data.get("documents") or []
         metas = data.get("metadatas") or []
 
-        self._bm25_docs = {}
-        self._bm25_meta = {}
+        # Built aside and swapped in at the end: a search on another thread
+        # then sees either the old corpus or the new one, never one being
+        # filled in.
+        fresh_docs: dict = {}
+        fresh_meta: dict = {}
         for cid, content, meta in zip(ids, docs, metas):
-            self._bm25_docs[cid] = _tokenize_code(content or "")
-            self._bm25_meta[cid] = {
+            fresh_docs[cid] = _tokenize_code(content or "")
+            fresh_meta[cid] = {
                 "file": (meta or {}).get("file_name", "unknown"),
                 "file_path": (meta or {}).get("file_path", ""),
                 "symbol_name": (meta or {}).get("symbol_name", ""),
@@ -1267,15 +1469,23 @@ class CodebaseRAG:
                 "end_line": (meta or {}).get("end_line", 0),
                 "content": content or "",
             }
+        self._bm25_docs = fresh_docs
+        self._bm25_meta = fresh_meta
 
     def _bm25_build_okapi(self):
-        """(Re)build the BM25Okapi object from the current cached corpus."""
-        self._bm25_doc_ids = list(self._bm25_docs.keys())
-        if self._bm25_doc_ids:
-            corpus = [self._bm25_docs[cid] for cid in self._bm25_doc_ids]
-            self._bm25_okapi = BM25Okapi(corpus)
-        else:
-            self._bm25_okapi = None
+        """(Re)build the BM25Okapi object from the current cached corpus.
+
+        The snapshot is taken under the write lock: the watcher and, on a
+        follower, the refresh both edit this cache from another thread, and
+        iterating a dict while it is being written raises. Only the copy is
+        locked, not the BM25 construction, so searches are not serialised
+        behind it.
+        """
+        with self._write_lock:
+            doc_ids = list(self._bm25_docs.keys())
+            corpus = [self._bm25_docs[cid] for cid in doc_ids]
+        self._bm25_doc_ids = doc_ids
+        self._bm25_okapi = BM25Okapi(corpus) if doc_ids else None
 
     def _invalidate_bm25(self):
         """Drop the BM25 cache entirely so the next search cold-loads from
@@ -1429,6 +1639,11 @@ class CodebaseRAG:
         any bytes, whitespace-only diffs the editor normalized back, etc.) so
         the watcher path stays cheap in noisy IDE environments.
         """
+        if self.follower:
+            # Last line of defence. The watcher is not started on a follower
+            # and stop_watcher cancels the timers it armed, but a write that
+            # slipped through either would be the second writer on one store.
+            return False
         abs_path = _norm(filepath)
         if not self.is_supported(abs_path):
             return False
@@ -1485,6 +1700,8 @@ class CodebaseRAG:
 
     def remove_file(self, filepath) -> bool:
         """Remove all chunks of a file from the index (on delete or move)."""
+        if self.follower:
+            return False
         abs_path = _norm(filepath)
         if Path(abs_path).suffix.lower() not in self.supported_extensions:
             return False

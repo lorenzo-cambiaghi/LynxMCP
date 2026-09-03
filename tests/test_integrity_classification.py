@@ -93,22 +93,54 @@ def test_missing_store_is_empty(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # "in use by another Lynx process" detection
 #
-# ChromaDB's core lock means a probe of a store `lynx serve` holds BLOCKS
-# forever in count() — no timeout can verify it. check_index must recognise
-# the situation up front and report `in_use` (healthy, just busy) instead of
-# burning 3 minutes and alarming the user with an unverified/corrupt card.
+# A store `lynx serve` holds was once reported `in_use` without probing, on the
+# belief that a second reader blocks forever in count(). Measured against a live
+# serve on chroma 1.5.9, it does not: the second process opens, counts and
+# queries in about a second. So a held store is probed like any other and
+# several sessions share one index; `in_use` is what we answer only when such a
+# store ALSO fails to respond, and it still keeps the index unopened.
 # ---------------------------------------------------------------------------
 
-def test_store_held_by_other_process_is_in_use_without_probing(tmp_path, monkeypatch):
+def test_store_held_by_other_process_is_probed_and_shared(tmp_path, monkeypatch):
+    storage = _seed_index(tmp_path)
+    monkeypatch.setattr(integrity, "_store_usage", lambda p: "other")
+    budgets = []
+
+    def fake_run(cmd, **kw):
+        budgets.append(kw.get("timeout"))
+        return SimpleNamespace(returncode=0, stdout='{"ok": true, "count": 7}', stderr="")
+    monkeypatch.setattr(integrity.subprocess, "run", fake_run)
+
+    result = integrity.check_index(storage, "framework", timeout=60)
+    assert result == {"status": "ok", "count": 7}
+    # Short budget: if some machine really does block, fall back in seconds.
+    assert budgets == [15.0]
+
+
+def test_held_store_that_does_not_answer_is_in_use(tmp_path, monkeypatch):
     storage = _seed_index(tmp_path)
     monkeypatch.setattr(integrity, "_store_usage", lambda p: "other")
     monkeypatch.setattr(
         integrity.subprocess, "run",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not probe")),
+        lambda cmd, **kw: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))),
     )
-    result = integrity.check_index(storage, "framework")
+    result = integrity.check_index(storage, "framework", timeout=0.1)
     assert result["status"] == "in_use"
     assert "not corrupt" in result["detail"]
+
+
+def test_held_store_that_crashes_the_probe_is_still_corrupt(tmp_path, monkeypatch):
+    # Sharing a store must not hide real damage.
+    storage = _seed_index(tmp_path)
+    monkeypatch.setattr(integrity, "_store_usage", lambda p: "other")
+    monkeypatch.setattr(
+        integrity.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=-1073741819, stdout="", stderr="access violation"),
+    )
+    result = integrity.check_index(storage, "framework")
+    assert result["status"] == "corrupt" and result["crashed"] is True
 
 
 def test_store_held_by_self_is_ok_without_probing(tmp_path, monkeypatch):

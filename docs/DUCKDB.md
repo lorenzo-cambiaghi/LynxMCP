@@ -1,9 +1,9 @@
 # Lynx + DuckDB
 
-Join Lynx's **local semantic code search** (and its code graph) with **any data
-DuckDB can read** — Parquet, CSV, SQLite, Postgres, JSON — in one SQL engine, on
-your machine. Lynx serves its results as NDJSON over a localhost HTTP API; DuckDB
-reads that URL as a table.
+Join Lynx's local semantic code search (and its code graph) with any data
+DuckDB can read, in one SQL engine, on your machine: Parquet, CSV, SQLite,
+Postgres, JSON. Lynx serves its results as NDJSON over a localhost HTTP API.
+DuckDB reads that URL as a table.
 
 This is the "total flexibility" path: shape and join the data in DuckDB, then
 hand the result to whatever you like (an LLM, a notebook, a report).
@@ -16,6 +16,9 @@ hand the result to whatever you like (an LLM, a notebook, a report).
    lynx manager ui --port 8765 --no-browser   # serves 127.0.0.1:8765
    ```
 
+   No need to stop the `lynx serve` your editor talks to. Sessions share an
+   index: they all read it, and whichever opened it first keeps it current.
+
 2. DuckDB with the `httpfs` + `json` extensions (read remote URLs as tables):
 
    ```sql
@@ -23,7 +26,7 @@ hand the result to whatever you like (an LLM, a notebook, a report).
    INSTALL json;   LOAD json;
    ```
 
-Everything stays local — `httpfs` only ever talks to `127.0.0.1`.
+Everything stays local: `httpfs` only ever talks to `127.0.0.1`.
 
 ## The endpoints
 
@@ -64,8 +67,8 @@ CROSS JOIN hits AS h            -- broad context pairing; keep top_k small
 ORDER BY t.id, h.score DESC;
 ```
 
-**3. Blast radius from the code graph** — pivot a search hit's symbol to who
-calls it / what breaks if it changes, then join with ownership data.
+**3. Blast radius from the code graph.** Pivot a search hit's symbol to who
+calls it and what breaks if it changes, then join with ownership data.
 
 ```sql
 SELECT from_symbol AS caller, to_symbol AS callee, call_site_file, call_site_line
@@ -73,17 +76,17 @@ FROM read_ndjson_auto(
   'http://127.0.0.1:8765/api/v1/graph?operation=callers&symbol=ApplyDamage&format=ndjson');
 ```
 
-> 💡 **Looking for an AST / dependency table?** You don't need to build one. The
-> `/api/v1/graph` endpoint *is* the dependency graph (callers / callees /
-> inheritance / imports, from tree-sitter) — stream it with `read_ndjson_auto`
-> and join it with `lynx_search` results to combine code *topology* with
-> *semantics* (e.g. "methods near 'token validation' that call `X`").
+> **Looking for an AST / dependency table?** You don't need to build one. The
+> `/api/v1/graph` endpoint *is* the dependency graph (callers, callees,
+> inheritance, imports, from tree-sitter). Stream it with `read_ndjson_auto`
+> and join it with `lynx_search` results to combine code topology with
+> semantics (for example "methods near 'token validation' that call `X`").
 
 ## Per-row correlation (one search per ticket)
 
-A SQL `JOIN` can't drive `lynx.search` from another table's column — the query
+A SQL `JOIN` can't drive `lynx.search` from another table's column: the query
 string has to be a literal in the URL. For "for each ticket, find the most
-relevant code", use the **batch** endpoint (`POST /api/v1/search`, all queries in
+relevant code", use the batch endpoint (`POST /api/v1/search`, all queries in
 one embedding call) from a few lines of Python, then register the result back
 into DuckDB:
 
@@ -113,11 +116,11 @@ print(con.execute(
 ```
 
 That's the "DuckDB + Python helper" pattern: batch the per-row searches once,
-then do all the joining/shaping in SQL.
+then do the joining and shaping in SQL.
 
 ## Joining with git history (regression hunting)
 
-Vectors tell you what the code *does*; git tells you what's *moving*. Cross them
+Vectors tell you what the code *does*. Git tells you what's *moving*. Cross them
 to isolate likely regressions: code that is both semantically related to an area
 and churning. Dump each commit×file with its date (so you get both churn and
 recency) to CSV:
@@ -128,7 +131,7 @@ git log --since="7 days ago" --date=short --pretty=format:'%ad' --name-only \
   > churn.csv                                      # rows: path,date
 ```
 
-Then join that churn against a semantic search — the search query is a constant,
+Then join that churn against a semantic search. The search query is a constant,
 so the join is plain SQL:
 
 ```sql
@@ -151,14 +154,14 @@ WHERE c.commits >= 2
 ORDER BY c.last_modified DESC, c.commits DESC, h.score DESC;
 ```
 
-> Joining on basename is robust across OSes but can collide for same-named files
-> in different folders; on a single platform you can tighten it to
+> Joining on basename works across OSes but can collide for same-named files
+> in different folders. On a single platform you can tighten it to
 > `h.file_path LIKE '%' || r.path`.
 
 ## Joining with logs (error → the code that caused it)
 
-Surface the noisiest errors from your app's local JSON logs, then jump straight
-to the code, no copy-paste:
+Surface the noisiest errors from your app's local JSON logs, then jump to the
+code without copy-pasting:
 
 ```sql
 -- 1. Top errors (DuckDB only)
@@ -174,16 +177,16 @@ FROM read_ndjson_auto(
 ORDER BY score DESC LIMIT 5;
 ```
 
-To resolve **all** the errors in one shot, feed their messages to the batch
-endpoint with the Python helper above — DuckDB (like Coral) resolves
+To resolve all the errors in one shot, feed their messages to the batch
+endpoint with the Python helper above. DuckDB, like Coral, resolves
 table-function arguments at plan time, so you can't drive `read_ndjson_auto` from
 a log column inside a join.
 
 ## Notes
 
-- **Local-first.** The codebase and embeddings never leave your machine; DuckDB
+- Local-first. The codebase and embeddings never leave your machine. DuckDB
   only reads from `127.0.0.1`.
 - The default (no `format`) returns the wrapped `{"results": [...]}` object used
-  by Coral and other consumers; `format=ndjson` is purely additive.
+  by Coral and other consumers. `format=ndjson` is purely additive.
 - See also [CORAL.md](CORAL.md) for the SQL-source integration and the full
   `/api/v1` surface.

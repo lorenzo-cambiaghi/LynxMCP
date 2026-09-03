@@ -124,6 +124,11 @@ class PdfBackend(SourceBackend):
         # Watcher state — only populated when start_watcher() runs.
         self._observer = None
 
+        # One process writes this store, the rest read it (see
+        # lynx/ownership.py). Claimed before the engine is built so it knows
+        # which of the two it is.
+        self._claim_store()
+
         # Lazy-import the RAG: keeps `import lynx.sources.pdf` fast for
         # CLI utilities that don't actually need the embedding model.
         from ..rag_manager import CodebaseRAG
@@ -137,6 +142,7 @@ class PdfBackend(SourceBackend):
             rrf_k=shared_config.search.rrf_k,
             candidate_pool_size=shared_config.search.candidate_pool_size,
             reranker_config=shared_config.search.reranker,
+            follower=not self.is_owner,
         )
 
         # Bootstrap: if the cache is empty AND there's at least one PDF
@@ -305,6 +311,7 @@ class PdfBackend(SourceBackend):
         path_contains=None,
         **_ignored,
     ) -> list[dict]:
+        self._before_read()
         return self.rag.search(
             query, top_k=top_k,
             file_glob=file_glob, extensions=extensions, path_contains=path_contains,
@@ -324,6 +331,7 @@ class PdfBackend(SourceBackend):
         return_all_variants: bool = False,
         **_ignored,
     ) -> dict:
+        self._before_read()
         return self.rag.deep_search(
             queries=queries, top_k=top_k, mode=mode,
             file_glob=file_glob, extensions=extensions, path_contains=path_contains,
@@ -345,6 +353,9 @@ class PdfBackend(SourceBackend):
         the user wants a clean re-extraction (e.g. after bumping
         `max_pages_per_file` or switching extractor backend).
         """
+        if not self.is_owner:
+            from ..errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.name, str(self.storage_dir))
         with self._lock:
             now = datetime.now().isoformat(timespec="seconds")
             candidates = set(self._discover_pdfs())
@@ -489,6 +500,15 @@ class PdfBackend(SourceBackend):
             return
         if self._observer is not None:
             return
+        if not self.is_owner:
+            # Two processes re-extracting the same PDFs into one store would
+            # race on every write. The owner's watcher does it; we read.
+            print(
+                f"[watcher:{self.name}] not started: another Lynx process owns "
+                f"this index and watches the files.",
+                file=sys.stderr,
+            )
+            return
 
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
@@ -573,6 +593,7 @@ class PdfBackend(SourceBackend):
     # ------------------------------------------------------------------
 
     def status(self) -> dict:
+        self._before_read()
         try:
             chunk_count = self.rag.vector_store._collection.count()
         except Exception:

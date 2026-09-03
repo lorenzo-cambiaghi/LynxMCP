@@ -662,6 +662,22 @@ def _register_build_routes(app) -> None:
 
         from pathlib import Path
         storage_path = Path(mgr.config.storage_path) / name
+        # Reading a source another process owns is fine and normal; writing it
+        # is not. Ownership is the honest question here, and a stabler answer
+        # than the instantaneous sqlite write lock: a `lynx serve` between two
+        # writes holds no lock but still owns the index.
+        from ... import ownership
+        backend = mgr.backends.get(name)
+        if backend is not None and not getattr(backend, "is_owner", True):
+            return HTMLResponse(
+                '<div id="build-status" class="p-3 border rounded text-sm '
+                'bg-amber-50 border-amber-200 text-amber-900">'
+                '🔒 <strong>Another process owns this index.</strong> '
+                f'{ownership.describe(storage_path)}. It keeps the index up to '
+                'date; stop it to build from here.'
+                '</div>',
+                status_code=409,
+            )
         # Force a fresh probe — the 30s cache could be stale right after
         # the user shut down `lynx serve` and tried to build immediately.
         lock_mod.invalidate_cache(storage_path)

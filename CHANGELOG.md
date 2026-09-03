@@ -1,8 +1,53 @@
 # Changelog
 
-## 1.8.0 — 2026-09-02
+## 1.8.0 — 2026-09-03
 
 ### Added
+- **Several sessions can share one index.** Two editor windows, or an editor
+  plus `lynx manager ui`, used to be one working session and one dead one: the
+  second was told the source was "in use by another Lynx process" and got no
+  usable sources at all. That was built on a wrong premise. ChromaDB was
+  believed to block a second reader forever; measured against a live
+  `lynx serve` on 1.5.9, a second process opens the store, counts it and runs a
+  KNN query in about a second, and both stay healthy. Only writing is
+  exclusive, so that is what is now serialised: the first process to open a
+  source claims it in `owner.json` and runs the watcher, and the rest open the
+  same store as followers. A claim left by a killed process is taken over on
+  the next start.
+
+  A follower reads and never writes. `lynx build`, `lynx reset` and the
+  dashboard's build button refuse there, naming the process that owns the
+  index, and its watcher stays quiet so two processes never index the same
+  file. Its searches stay current on their own: `count()` was always live
+  across processes, but retrieval answers from state loaded at open time, so a
+  follower checks the store's write log before searching and, when the owner
+  has written, reloads just the files that changed. Measured on a 270MB index:
+  reattaching to the store costs 0.13s, against 4.4s to rebuild the whole BM25
+  corpus, which is why the delta is applied file by file. The graph layer
+  follows the same way, reloading when the owner rewrites it.
+
+  Closing the window that happened to start first does not freeze the others
+  either. The owner refreshes its claim while it runs, so a follower can tell
+  an index that is being written from one whose owner is gone, and takes over
+  on its next search: it starts watching the files and scans for what changed
+  while nobody was listening, since a watcher only reports what happens after
+  it starts. Three cases land there: an owner that exited, one that was
+  killed, and one that stopped running without exiting, which is what a
+  sleeping laptop looks like from the outside. That last one is why a claim is
+  kept fresh rather than trusted for the life of a pid: pids get recycled, and
+  the woken-up owner is told to stand down instead of becoming a second
+  writer.
+
+  Verified with the sessions actually running in parallel, not by reasoning
+  about them: an owner and two followers searching in a loop through 7 rounds
+  of live edits, the owner killed mid-stream, 0 errors in 70 searches, every
+  new symbol found by both followers within 4 seconds, one claim holder
+  throughout and an undrifted index at the end. Also: 8 processes claiming one
+  store at the same instant yield exactly one owner; `lynx build` and
+  `lynx reset` refuse against a store someone else owns and leave it
+  byte-identical; and the web UI opened next to a running server searches
+  normally while its build button answers 409 naming the owner.
+
 - **`export_graph` and the feedback log reached the web UI.** They were the
   last two tools with a CLI and an MCP entry point but no place in the
   browser — backwards in both cases: `export_graph` produces a self-contained
@@ -133,6 +178,39 @@
   was parsing the old text.
 
 ### Fixed
+- **A fresh install could not start the server.** The `mcp` dependency had no
+  version bound. The SDK's 2.0 renamed `FastMCP` to `MCPServer` and removed
+  `mcp.server.fastmcp`, so anyone installing today resolved 2.x and got a
+  `lynx serve` that failed on import, while machines with an older `mcp`
+  already resolved kept working and showed nothing. Pinned to `mcp<2` until
+  the port to `MCPServer` lands. Verified on a clean Python 3.10 install with
+  the newest of everything else: 430 tests pass and `lynx serve` imports.
+- **On macOS and Linux, nothing stopped a reset from wiping a store in use.**
+  The guard in front of `lynx reset`, `--heal-wal` and `--heal-coverage` asks
+  whether another process holds the index, and that question could only be
+  answered on Windows, where the OS names the processes holding a file. Off
+  Windows it returned "no idea" and the guards let the delete through, which is
+  how a running server could have its files pulled out from under it. The
+  ownership claim answers it everywhere now.
+- **`lynx source remove --purge` had the same hole, one layer down.** It never
+  asked at all: it simply deleted, and relied on Windows refusing to unlink
+  files a live process holds open. Everywhere else the delete succeeded and
+  left a running session reading an index that was no longer there. It now
+  asks first and names the session that has it.
+- **`doctor` called healthy indexes "wedged".** The WAL fingerprint it used
+  (queued writes older than 10 minutes with a segment behind them) is the
+  normal end state of any build whose size is not a multiple of the HNSW
+  sync threshold: the vector segment replays that tail on its next open and
+  the rows sit there while the index is idle. Two healthy, searchable
+  indexes were reported wedged for 16 days, with `--heal-wal` as the advice,
+  and running it would have purged the very rows the segment still needed
+  (recoverable, but only through a re-index). The check now runs the
+  out-of-process integrity probe and lets it decide: a healthy store answers
+  in about a second, a wedged one never does, so the fingerprint only
+  explains a timeout. Same confirmation before `--heal-wal`, which now
+  refuses an index that answers. `doctor` also reports a corrupt or
+  unverifiable index itself, and `affected_files` names only the files of
+  rows no segment has applied, not everything still in the log.
 - **A BOM in the feedback log silently deleted a report.** `load_feedback`
   skips malformed lines on purpose — the log is append-only and a
   half-written final line shouldn't break the reader — but read as plain

@@ -212,11 +212,29 @@ def store_in_use_by_other_process(storage_dir) -> bool:
     return _store_usage(Path(storage_dir)) == "other"
 
 
+def _claim_based_usage(storage_dir: Path) -> str:
+    """Who holds this store, according to the ownership claim on disk.
+
+    Only Windows can ask the OS which process has a file open. Everywhere else
+    this is the answer, because a Lynx process that opens a store leaves a
+    claim naming its pid (see lynx/ownership.py). Without it, the guards that
+    refuse to wipe or heal a store somebody is using were Windows-only, and a
+    `lynx reset` on macOS or Linux would delete files out from under a running
+    server.
+    """
+    from . import ownership
+
+    owner = ownership.owner_of(storage_dir)
+    if owner is None:
+        return "unknown"
+    return "self" if owner.get("pid") == os.getpid() else "other"
+
+
 def _classify_store_usage(storage_dir: Path) -> str:
     """Single-shot classification behind `_store_usage` (which re-checks to
     filter transient holders)."""
     if os.name != "nt":
-        return "unknown"
+        return _claim_based_usage(storage_dir)
     sqlite_path = storage_dir / "chroma.sqlite3"
     try:
         if not _sqlite_handle_is_held(sqlite_path):
@@ -231,6 +249,45 @@ def _classify_store_usage(storage_dir: Path) -> str:
     if any(pid != os.getpid() for pid in holders):
         return "other"
     return "self" if holders else "free"
+
+
+def _probe_once(storage_dir, collection_name: str, budget: float):
+    """Run the child probe once. A verdict dict, or None if it timed out."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "lynx.integrity",
+             str(storage_dir), collection_name,
+             # Child's self-destruct deadline: strictly after our kill, so it
+             # only ever fires for orphans (see _self_destruct_after).
+             str(int(budget) + 30)],
+            capture_output=True,
+            text=True,
+            timeout=budget,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception as e:  # pragma: no cover - spawn failure is environmental
+        # If we can't even spawn the probe, fail open: assume healthy and let
+        # the in-process CorruptIndexError net catch real problems. Better than
+        # marking every source corrupt because of an unrelated OS hiccup.
+        return {"status": "ok", "count": None, "detail": f"probe unavailable: {e}"}
+
+    if proc.returncode == 0:
+        try:
+            data = json.loads(proc.stdout.strip().splitlines()[-1])
+            count = data.get("count")
+        except Exception:
+            return {"status": "ok", "count": None}
+        return {"status": "ok", "count": count} if count else {"status": "empty"}
+
+    # Non-zero exit. returncode 1 == our caught-exception path; anything else
+    # (negative on POSIX, large codes like 0xC0000005 on Windows) == the child
+    # crashed natively. Either way this IS a real corruption signal.
+    crashed = proc.returncode != 1
+    stderr_lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
+    tail = stderr_lines[-1] if stderr_lines else f"probe exited with code {proc.returncode}"
+    prefix = "the index crashed the probe process" if crashed else "the index is unreadable"
+    return {"status": "corrupt", "detail": f"{prefix}: {tail}", "crashed": crashed}
 
 
 def check_index(
@@ -248,7 +305,8 @@ def check_index(
         {"status": "empty"}                          # nothing built yet / 0 chunks
         {"status": "corrupt",    "detail": "...", "crashed": bool}
         {"status": "in_use",     "detail": "..."}    # another Lynx process holds
-                                                     # the store — healthy, just
+                                                     # the store AND a probe did
+                                                     # not finish — healthy, just
                                                      # not verifiable right now
         {"status": "unverified", "detail": "..."}    # probe timed out — NOT proof
                                                      # of corruption (slow disk,
@@ -258,13 +316,14 @@ def check_index(
     A genuinely corrupt or version-incompatible index makes the child exit
     non-zero (caught exception) or crash natively — those are the only signals
     we treat as ``corrupt``. A store held open by another process (typically
-    `lynx serve`) can never be probed: ChromaDB's core lock makes the child's
-    ``count()`` block forever, so we detect that case up front and report
-    ``in_use`` without spawning anything. A residual *timeout* is ambiguous:
-    a healthy probe returns in ~1s, so we retry once with a larger budget and,
-    if it still doesn't finish, report ``unverified`` — the host still won't
-    open the index (crash-safety is preserved), but we don't tell the user to
-    wipe a possibly-healthy one.
+    `lynx serve`) is probed like any other, on a shorter budget: ChromaDB does
+    let a second process read a live store, so sharing one index across
+    sessions is the normal case, and ``in_use`` is now only what we answer when
+    such a store also fails to respond. A residual *timeout* is ambiguous: a
+    healthy probe returns in ~1s, so we retry once with a larger budget and, if
+    it still doesn't finish, report ``unverified`` — the host still won't open
+    the index (crash-safety is preserved), but we don't tell the user to wipe a
+    possibly-healthy one.
     """
     storage_dir = Path(storage_dir)
     # Nothing on disk yet → a fresh source, not a corrupt one.
@@ -273,11 +332,23 @@ def check_index(
 
     usage = _store_usage(storage_dir)
     if usage == "other":
+        # Held by another Lynx process. That used to end the check here,
+        # because a second reader was believed to block forever on Chroma's
+        # lock. Measured on 1.5.9 against a live `lynx serve`, it does not: a
+        # second process opens the store, counts it and runs a KNN query in
+        # about a second. So probe it like any other store and let several
+        # sessions share one index (see lynx/ownership.py). The budget is kept
+        # short: if a machine or version really does block, we fall back to the
+        # old `in_use` answer in seconds rather than minutes.
+        result = _probe_once(storage_dir, collection_name,
+                             budget=min(timeout, 15.0))
+        if result is not None:
+            return result
         return {
             "status": "in_use",
             "detail": "the index is open in another running Lynx process "
-                      "(usually `lynx serve`) and can't be verified or opened "
-                      "here until that process exits; it is not corrupt",
+                      "(usually `lynx serve`) and did not answer a probe here; "
+                      "it is not corrupt",
             "crashed": False,
         }
     if usage == "self":
@@ -291,46 +362,10 @@ def check_index(
     budgets = (timeout, timeout * 2)
     timed_out_after = 0.0
     for budget in budgets:
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "lynx.integrity",
-                 str(storage_dir), collection_name,
-                 # Child's self-destruct deadline: strictly after our kill,
-                 # so it only ever fires for orphans (see _self_destruct_after).
-                 str(int(budget) + 30)],
-                capture_output=True,
-                text=True,
-                timeout=budget,
-            )
-        except subprocess.TimeoutExpired:
-            timed_out_after = budget
-            continue  # retry with a larger budget before concluding anything
-        except Exception as e:  # pragma: no cover - spawn failure is environmental
-            # If we can't even spawn the probe, fail open: assume healthy and let
-            # the in-process CorruptIndexError net catch real problems. Better than
-            # marking every source corrupt because of an unrelated OS hiccup.
-            return {"status": "ok", "count": None, "detail": f"probe unavailable: {e}"}
-
-        if proc.returncode == 0:
-            try:
-                data = json.loads(proc.stdout.strip().splitlines()[-1])
-                count = data.get("count")
-            except Exception:
-                return {"status": "ok", "count": None}
-            return {"status": "ok", "count": count} if count else {"status": "empty"}
-
-        # Non-zero exit. returncode 1 == our caught-exception path; anything else
-        # (negative on POSIX, large codes like 0xC0000005 on Windows) == the child
-        # crashed natively. Either way this IS a real corruption signal.
-        crashed = proc.returncode != 1
-        stderr_lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
-        tail = stderr_lines[-1] if stderr_lines else f"probe exited with code {proc.returncode}"
-        prefix = "the index crashed the probe process" if crashed else "the index is unreadable"
-        return {
-            "status": "corrupt",
-            "detail": f"{prefix}: {tail}",
-            "crashed": crashed,
-        }
+        result = _probe_once(storage_dir, collection_name, budget)
+        if result is not None:
+            return result
+        timed_out_after = budget
 
     # Every attempt timed out. Maybe a holder appeared after our up-front
     # check (e.g. `lynx serve` started meanwhile) — reclassify if so.
@@ -371,14 +406,25 @@ def inspect_wal(storage_dir) -> dict | None:
     Returns None when there is no store, else a dict:
 
         pending_ops       rows still in embeddings_queue
+        unapplied_ops     rows above the lowest segment watermark, i.e. the
+                          ones at least one segment has not consumed yet
         oldest_pending_s  age in seconds of the oldest pending row (0 if none)
         lagging_segments  segments whose max_seq_id trails the queue tail
-        stale_locks       rows in acquire_write (killed writers' leftovers)
-        affected_files    file_path values named by the pending rows
-        wedged            True on the deadlock fingerprint: pending ops older
-                          than 10 minutes with a lagging segment. A live
-                          indexer drains its queue in seconds, so age is the
-                          discriminator — but the caller should still skip
+        stale_locks       rows in acquire_write. Chroma leaves one behind per
+                          open (a healthy store accumulates them), so this is
+                          bookkeeping, not evidence of a killed writer.
+        affected_files    file_path values named by the UNAPPLIED rows — the
+                          files whose chunks a lagging segment never received.
+        wedged            True on the deadlock FINGERPRINT: pending ops older
+                          than 10 minutes with a lagging segment. Necessary,
+                          not sufficient: a clean build whose size is not a
+                          multiple of the HNSW sync threshold legitimately
+                          ends in this exact state (queue rows the vector
+                          segment replays on the next open), and stays there
+                          while idle. The store either answers a probe in
+                          about a second (healthy) or hangs on it forever
+                          (wedged) — so callers MUST confirm with
+                          ``check_index`` before acting on this flag. Skip
                           the verdict when another process holds the store.
         discarding_writes True on a second, quieter wedge: the queue is EMPTY
                           while segments still hold a high watermark. Because
@@ -398,9 +444,9 @@ def inspect_wal(storage_dir) -> dict | None:
     if not sqlite_path.exists():
         return None
 
-    info = {"pending_ops": 0, "oldest_pending_s": 0.0, "lagging_segments": 0,
-            "stale_locks": 0, "affected_files": [], "wedged": False,
-            "watermark": 0, "discarding_writes": False}
+    info = {"pending_ops": 0, "unapplied_ops": 0, "oldest_pending_s": 0.0,
+            "lagging_segments": 0, "stale_locks": 0, "affected_files": [],
+            "wedged": False, "watermark": 0, "discarding_writes": False}
     db = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     try:
         def one(sql, default=0):
@@ -425,11 +471,20 @@ def inspect_wal(storage_dir) -> dict | None:
             info["lagging_segments"] = one(
                 "SELECT count(*) FROM max_seq_id WHERE seq_id <"
                 " (SELECT max(seq_id) FROM embeddings_queue)")
+            # Rows every segment has already consumed are just waiting for
+            # chroma's log purge; only the ones above the lowest watermark
+            # are genuinely unapplied. Naming the files of ALL queued rows
+            # (as this used to) made a heal re-index files whose chunks were
+            # perfectly fine. No segment row at all = nothing applied yet.
+            floor = one("SELECT min(seq_id) FROM max_seq_id", default=0)
+            info["unapplied_ops"] = one(
+                f"SELECT count(*) FROM embeddings_queue"
+                f" WHERE id != '{SEQ_ANCHOR_ID}' AND seq_id > {int(floor)}")
             files = set()
             try:
                 for (meta,) in db.execute(
                         f"SELECT metadata FROM embeddings_queue"
-                        f" WHERE id != '{SEQ_ANCHOR_ID}'"):
+                        f" WHERE id != '{SEQ_ANCHOR_ID}' AND seq_id > {int(floor)}"):
                     try:
                         m = json.loads(meta) if meta else {}
                     except ValueError:
@@ -472,6 +527,12 @@ def heal_wal(storage_dir) -> dict:
     purge must not race a live Chroma client. Verified against the real
     wedge of 2026-07-04: the integrity probe went from an infinite hang to
     ``ok`` the moment the queue was purged.
+
+    This is surgery, not hygiene: on a HEALTHY store the queued rows are the
+    tail the vector segment replays on its next open, and purging them
+    throws those vectors away (they come back only through a re-index). The
+    caller is expected to have confirmed the wedge with ``check_index``
+    first — see ``inspect_wal`` on why the fingerprint alone is not proof.
     """
     import sqlite3
 

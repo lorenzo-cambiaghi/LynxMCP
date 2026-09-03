@@ -696,6 +696,10 @@ class SourceManager:
         for backend in self.backends.values():
             st = backend.status()
             st.setdefault("health", "ok")
+            # Several sessions can read one index; only the owner writes it.
+            # Surfacing which one we are explains why this session's watcher
+            # is quiet without it looking like a fault.
+            st.setdefault("owner", getattr(backend, "is_owner", True))
             rows.append(st)
         # Append sources that failed to load so the UI/CLI can surface them
         # (with a reset affordance) instead of silently hiding them.

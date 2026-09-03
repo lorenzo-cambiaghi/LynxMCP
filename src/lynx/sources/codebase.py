@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,12 @@ class CodebaseBackend(SourceBackend):
         # backend is actually instantiated.
         from ..rag_manager import CodebaseRAG
 
+        # Several Lynx processes may read one index at the same time, but only
+        # one may write it. The first to claim the store owns it and runs the
+        # watcher; the rest open the same store as followers and pick the
+        # owner's writes up on demand. Failing to claim never blocks reading.
+        self._claim_store()
+
         self.rag = CodebaseRAG(
             codebase_path=str(source_config["path"]),
             rag_storage_path=str(self.storage_dir),
@@ -53,10 +60,12 @@ class CodebaseBackend(SourceBackend):
             # just the watcher and graph (they used to disagree, polluting
             # search with node_modules etc.).
             ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+            follower=not self.is_owner,
         )
 
         # Watcher state — populated lazily by start_watcher().
         self._observer = None
+        self._handler = None
 
         # Opt-in graph layer (call graph + import graph + analyzer).
         # Disabled by default; activated via `graph: { enabled: true }` in
@@ -71,6 +80,7 @@ class CodebaseBackend(SourceBackend):
                 codebase_path=source_config["path"],
                 supported_extensions=source_config["supported_extensions"],
                 ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+                follower=not self.is_owner,
             )
 
     # ------------------------------------------------------------------
@@ -87,6 +97,7 @@ class CodebaseBackend(SourceBackend):
         path_contains=None,
         **_ignored,
     ) -> list[dict]:
+        self._before_read()
         return self.rag.search(
             query,
             top_k=top_k,
@@ -107,6 +118,7 @@ class CodebaseBackend(SourceBackend):
     ) -> list:
         """Search multiple queries with a single batched embedding call.
         Returns one result list per query (aligned to `queries`)."""
+        self._before_read()
         return self.rag.search_batch(
             queries,
             top_k=top_k,
@@ -129,6 +141,7 @@ class CodebaseBackend(SourceBackend):
         return_all_variants: bool = False,
         **_ignored,
     ) -> dict:
+        self._before_read()
         return self.rag.deep_search(
             queries=queries,
             top_k=top_k,
@@ -143,6 +156,11 @@ class CodebaseBackend(SourceBackend):
         )
 
     def update(self, force: bool = False) -> None:
+        # A follower must not write. Raising here (rather than in the engine)
+        # keeps the graph rebuild below from running either.
+        if not self.is_owner:
+            from ..errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.name, str(self.storage_dir))
         self.rag.update(force=force)
         # Keep the graph layer in sync with the same trigger. We do this
         # after the RAG update so a partial failure in the graph layer
@@ -156,6 +174,21 @@ class CodebaseBackend(SourceBackend):
                     f"[graph:{self.name}] rebuild failed (search still works): {e}",
                     file=sys.stderr,
                 )
+
+    def catch_up(self) -> None:
+        """Pick up edits made while no watcher was running.
+
+        A delta pass, not the full rebuild `update(force=True)` would trigger
+        on the graph: both layers keep their own SHA cache, so unchanged files
+        cost a stat and a hash, and only what actually moved is re-parsed.
+        """
+        self.rag.update(force=True)
+        if self.graph is not None:
+            try:
+                self.graph.rebuild(force=False)
+            except Exception as e:
+                print(f"[graph:{self.name}] catch-up failed "
+                      f"(search still works): {e}", file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Watcher
@@ -171,34 +204,66 @@ class CodebaseBackend(SourceBackend):
         self.update(force=True)
 
     def stop_watcher(self) -> None:
-        """Stop the watchdog Observer if one is running. Idempotent."""
+        """Stop the watchdog Observer and give up ownership of the store.
+
+        Idempotent. Releasing here (as well as at process exit) is what lets a
+        `lynx build` hand the store back to a later session without waiting for
+        the process to end.
+        """
         observer = self._observer
-        if observer is None:
-            return
+        handler = getattr(self, "_handler", None)
         try:
-            observer.stop()
-            observer.join(timeout=5)
+            if observer is not None:
+                observer.stop()
+                observer.join(timeout=5)
         except Exception:
             pass
         finally:
             self._observer = None
+            # Stopping the observer does not cancel the debounce timers it
+            # already armed: without this they fire seconds later and write to
+            # a store this process may no longer own.
+            if handler is not None:
+                try:
+                    with handler._lock:
+                        pending = list(handler._pending.values())
+                        handler._pending.clear()
+                    for timer in pending:
+                        timer.cancel()
+                except Exception:
+                    pass
+                self._handler = None
+            self._release_store()
 
     def start_watcher(self) -> None:
         """Start a watchdog Observer over this source's `path`.
 
         No-op when `watcher.enabled` is False in source_config. Idempotent:
         calling twice does not start two observers.
+
+        Also a no-op when another process owns this store: two watchers on one
+        index would write the same chunks from two processes. The owner's
+        watcher keeps the index current and this session reads the result.
         """
         watcher_cfg = self.source_config.get("watcher") or {}
         if not watcher_cfg.get("enabled", True):
             return
         if self._observer is not None:
             return
+        if not self.is_owner:
+            print(
+                f"[watcher:{self.name}] not started: another Lynx process owns "
+                f"this index and watches the files. Searches here follow its "
+                f"updates.",
+                file=sys.stderr,
+            )
+            return
 
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
 
         debounce_seconds = float(watcher_cfg.get("debounce_seconds", 2.0))
+        backend = self
         ignored_fragments = tuple(self.source_config.get("ignored_path_fragments") or ())
         rag = self.rag
         graph = self.graph
@@ -217,6 +282,11 @@ class CodebaseBackend(SourceBackend):
 
             def _flush(self, path: str, action: str):
                 try:
+                    if not backend.is_owner:
+                        # Stood down (or stopped) between the event and this
+                        # timer firing. Writing now would be the second writer
+                        # ownership exists to prevent.
+                        return
                     if action == "delete":
                         rag.remove_file(path)
                         if graph is not None:
@@ -270,9 +340,11 @@ class CodebaseBackend(SourceBackend):
                 if dest:
                     self._schedule(dest, "update")
 
+        handler = _DebouncedHandler()
+        self._handler = handler
         observer = Observer()
         observer.schedule(
-            _DebouncedHandler(), str(self.source_config["path"]), recursive=True
+            handler, str(self.source_config["path"]), recursive=True
         )
         observer.daemon = True
         observer.start()
@@ -287,6 +359,7 @@ class CodebaseBackend(SourceBackend):
     # ------------------------------------------------------------------
 
     def status(self) -> dict:
+        self._before_read()
         try:
             chunk_count = self.rag.vector_store._collection.count()
         except Exception:
@@ -399,6 +472,7 @@ class CodebaseBackend(SourceBackend):
         Each result carries `source` ("graph" or "search_bm25") so the
         AI client can communicate confidence to the user.
         """
+        self._before_read()
         out: list = []
         seen_keys: set = set()
 
@@ -473,6 +547,7 @@ class CodebaseBackend(SourceBackend):
              (we want USES, not the definition itself).
           4. Dedupe by (file, line range).
         """
+        self._before_read()
         out: list = []
         seen_keys: set = set()
 
@@ -555,6 +630,7 @@ class CodebaseBackend(SourceBackend):
         regex on `file_path` that covers the common test conventions.
         Caller can override `test_path_pattern` for custom layouts.
         """
+        self._before_read()
         import re
         pattern = test_path_pattern or self._DEFAULT_TEST_PATH_PATTERN
         # Case-insensitive: file systems mix conventions ("Tests/", "tests/",
@@ -647,6 +723,7 @@ class CodebaseBackend(SourceBackend):
         Raises ValueError if the source folder isn't a git repo or if
         no base branch can be resolved.
         """
+        self._before_read()
         try:
             from git import Repo, InvalidGitRepositoryError, NoSuchPathError
         except ImportError as e:
@@ -708,6 +785,7 @@ class CodebaseBackend(SourceBackend):
         Filters out the chunk that IS the snippet (exact content match)
         so the user gets *other* similar code, not their own input back.
         """
+        self._before_read()
         if not snippet or not snippet.strip():
             return []
         # Truncate at 2000 chars: anything longer dilutes the embedding
@@ -768,6 +846,7 @@ class CodebaseBackend(SourceBackend):
 
         Definition + tests work without the graph; callers/callees need it.
         """
+        self._before_read()
         result = {
             "symbol": symbol,
             "graph_enabled": self.graph is not None,
@@ -797,6 +876,7 @@ class CodebaseBackend(SourceBackend):
         search either way. Answers "if I change X, what could break and what
         should I re-run?".
         """
+        self._before_read()
         result = {
             "symbol": symbol,
             "graph_enabled": self.graph is not None,
@@ -817,6 +897,7 @@ class CodebaseBackend(SourceBackend):
         Graph-powered — `graph_enabled` is False (with empty lists) when the
         layer is off. Lets an AI grasp a unit without reading the whole file.
         """
+        self._before_read()
         result = {
             "file": file_or_symbol,
             "graph_enabled": self.graph is not None,
@@ -849,6 +930,7 @@ class CodebaseBackend(SourceBackend):
         (no graph, no index needed) — the 'what is this and where do I start'
         answer for an AI landing in an unfamiliar repository.
         """
+        self._before_read()
         from ..overview import build_overview
         return build_overview(self.source_config["path"])
 
@@ -860,6 +942,7 @@ class CodebaseBackend(SourceBackend):
         Returns {content, suggested_name} on success, or {empty, reason} when
         the graph is off or the target isn't found.
         """
+        self._before_read()
         if self.graph is None:
             return {"empty": True, "reason": "graph layer not enabled for this source"}
         import re as _re
