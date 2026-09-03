@@ -17,11 +17,17 @@ must drop exactly those entries so the next pass re-indexes them.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 
 import pytest
 
 from lynx import integrity
+
+
+def _p(posix_path: str) -> str:
+    """A path spelled the way the running platform spells absolute paths."""
+    return "C:" + posix_path.replace("/", "\\") if os.name == "nt" else posix_path
 
 
 def _make_store(storage_dir, *, indexed_files=(), cached=None, legacy=False,
@@ -116,12 +122,31 @@ def test_zero_chunk_files_are_expected_absences_not_phantoms(tmp_path):
 
 
 def test_paths_are_compared_normalized(tmp_path):
-    """The cache and the index may disagree on slash style / case; a phantom
-    verdict must come from a real absence, not from spelling."""
-    _make_store(tmp_path,
-                indexed_files=["C:/proj/Sub/a.cs"],
-                cached={r"C:\proj\sub\a.cs": _entry()})
+    """The cache and the index may disagree on spelling; a phantom verdict
+    must come from a real absence, not from that.
+
+    What counts as the same path is the platform's business, and the two
+    disagree: Windows folds case and treats both slashes as separators, while
+    on POSIX a backslash is an ordinary character in a filename and `Sub` and
+    `sub` are two different directories. So each side is checked against the
+    spellings its own rules actually unify.
+    """
+    if os.name == "nt":
+        indexed, cached = "C:/proj/Sub/a.cs", r"C:\proj\sub\a.cs"
+    else:
+        indexed, cached = "/proj/Sub/a.cs", "/proj/./Sub//a.cs"
+    _make_store(tmp_path, indexed_files=[indexed], cached={cached: _entry()})
     assert integrity.inspect_coverage(tmp_path)["drifted"] is False
+
+
+def test_a_genuinely_different_path_is_still_a_phantom(tmp_path):
+    """The normalizing above must not turn into "close enough"."""
+    _make_store(tmp_path,
+                indexed_files=[_p("/proj/Sub/a.cs")],
+                cached={_p("/proj/Sub/b.cs"): _entry()})
+    report = integrity.inspect_coverage(tmp_path)
+    assert report["drifted"] is True
+    assert report["phantom_files"] == [_p("/proj/Sub/b.cs")]
 
 
 def test_legacy_flat_cache_is_understood(tmp_path):
