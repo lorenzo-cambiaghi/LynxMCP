@@ -301,10 +301,6 @@ class CodebaseRAG:
         self.reranker_config = reranker_config
         self._reranker = None
 
-        # Tri-state cache for batched-query embedding (search_batch):
-        #   None  = not yet checked, True = batched path verified to match the
-        #   single-query embedding, False = it diverged → use per-query fallback.
-
         # BM25 sparse index, lazily built from chunks living in ChromaDB.
         # _bm25_docs maps chunk_id -> tokenized content; the BM25Okapi object
         # is rebuilt on demand from this dict whenever it goes stale.

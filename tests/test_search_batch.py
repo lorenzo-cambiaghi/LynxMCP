@@ -1,10 +1,9 @@
 """Script-style test: search_batch() must agree with search() per query.
 
-Guards the batched-search optimization on three fronts:
+Guards the batched-search optimization on two fronts:
   1. the batched query embedding matches the single-query path (catches the
      query-vs-text-embedding class of bug, which causes *large* divergences),
-  2. the shared `_retrieve_one` core keeps single and batch in lockstep,
-  3. the one-time embedding self-check engages and passes.
+  2. the shared `_retrieve_one` core keeps single and batch in lockstep.
 
 hybrid (RRF, rank-based) and sparse come out bit-identical; dense is score-
 sensitive, so batched float inference (padding) can reorder near-ties at the
@@ -64,16 +63,10 @@ def main() -> int:
                 fails += 1
                 print(f"[FAIL] mode={mode} q={q!r}\n   single={s}\n   batch ={b}")
 
-    if rag._batch_embed_ok is not True:
-        print(f"[FAIL] batched-embedding self-check did not pass "
-              f"(flag={rag._batch_embed_ok!r}) — batch fell back to per-query")
-        fails += 1
-
     if fails:
         print(f"[test] FAIL: {fails} problem(s)")
         return 1
-    print("[test] OK: search_batch agrees with search across hybrid/dense/sparse; "
-          "batched embedding verified")
+    print("[test] OK: search_batch agrees with search across hybrid/dense/sparse")
     return 0
 
 

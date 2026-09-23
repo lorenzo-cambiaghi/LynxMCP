@@ -11,8 +11,7 @@ it only reports.
 
 import sys
 
-from lynx.config import load_config
-from lynx.rag_manager import CodebaseRAG
+from conftest import build_rag_from_first_source
 
 
 # (label, query) tuples covering different retrieval regimes.
@@ -27,18 +26,10 @@ QUERIES = [
 TOP_K = 5
 
 
-def _build(mode: str) -> CodebaseRAG:
-    cfg = load_config()
-    return CodebaseRAG(
-        codebase_path=str(cfg.codebase_path),
-        rag_storage_path=str(cfg.storage_path),
-        supported_extensions=cfg.supported_extensions,
-        embedding_model_name=cfg.embedding.model_name,
-        collection_name=cfg.collection_name,
-        search_mode=mode,
-        rrf_k=cfg.search.rrf_k,
-        candidate_pool_size=cfg.search.candidate_pool_size,
-    )
+def _build(mode: str):
+    _, _, rag = build_rag_from_first_source(None)
+    rag.search_mode = mode
+    return rag
 
 
 def _format_ranking(results) -> list:
