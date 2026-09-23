@@ -42,9 +42,13 @@ SOURCE_NAME_HELP = (
 # dependency dirs, and build outputs. Build/dist/vendored dirs in particular
 # mirror source files, so indexing them produces duplicate-content hits. Stored
 # in forward-slash form; config load normalizes "/" to the OS separator.
+# `/obj/` is .NET's intermediate output (one generated AssemblyInfo.cs per
+# configuration and target); `/bin/` stays indexed, since outside .NET it
+# often holds real scripts.
 DEFAULT_CODEBASE_IGNORES = [
     "/.git/", "/.venv/", "/venv/", "/node_modules/", "/__pycache__/",
     "/.idea/", "/.vscode/", "/dist/", "/build/", "/target/", "/.next/",
+    "/obj/",
 ]
 
 

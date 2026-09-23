@@ -22,7 +22,7 @@ from pathlib import Path
 # `ignored_path_fragments` they declare (possibly none).
 _IGNORED_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__",
-    ".idea", ".vscode", "dist", "build", "target", ".next",
+    ".idea", ".vscode", "dist", "build", "target", ".next", "obj",
 }
 _IGNORED_EXTS = {".pyc", ".so", ".dylib", ".dll", ".class", ".o"}
 
