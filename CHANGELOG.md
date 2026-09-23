@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+Upgrading from 1.9.0: the first start rebuilds every code graph once,
+because node IDs changed (see Fixed). That is about 17 seconds for a
+source of 3,500 C# files, spent while `lynx serve` already answers. The
+search index is untouched.
+
+### Changed
+
+`lynx build`, the Build button in the web UI and `update_source_index` no
+longer throw the code graph away. They bring it up to date the way they
+already did the vector index: only files whose content changed are parsed
+again, cross-file calls are resolved again, and when nothing changed the graph
+on disk is left alone. On a C# source of 3,500 files that takes about 2.5
+seconds instead of 17, and the first build of a new source stops extracting
+the graph twice. Tests compare the result with a graph built from scratch
+after edits, additions and deletions. When the extraction code or a
+tree-sitter grammar has changed since the graph was built, as after an
+upgrade, the build starts over by itself. `lynx reset` and
+`lynx graph build --force` still rebuild from scratch.
+
+The graph is saved as compact JSON. Saving the graph of that source took 3.5
+seconds and now takes 1.1, and the watcher pays it after every saved file.
+
+New codebase sources ignore `/obj/`, the intermediate output of .NET builds.
+
+### Fixed
+
+On Windows, `lynx serve` could take minutes to open its indexes, and the first
+tool calls of a session came back saying Lynx was still loading. The MCP
+transport keeps a read pending on stdin, and Windows makes every other query
+against that pipe wait behind it. Two things stalled there until the client
+happened to send another message: the integrity probe, a child process that
+inherits stdin, and native libraries such as numpy, whose DLL checks the
+standard handles while it loads. The transport now reads from a private copy
+of the pipe and stdin points at the null device. Measured with two indexes of
+25,883 and 10,772 chunks and a client that stays quiet after the handshake,
+the indexes are ready in 10 seconds; before, they were still loading after
+150.
+
+The web UI refused to build any source after a config change, saying another
+Lynx process owned the index and naming its own pid. Saving the config, adding
+or removing a source and the reload button all dropped the loaded manager
+without giving back its claim on the indexes, so the manager built next found
+that claim alive and followed its own index until the UI was restarted. The
+old manager now releases its claims first.
+
+The code graph kept the node of an external module after the last file that
+imported it changed or was deleted, so a graph kept current by the watcher
+drifted away from one built from scratch.
+
+A process killed while saving the code graph could leave nodes from one save
+and edges from another, and the next start loaded them as they were. A save
+is now marked as in progress until its last file is written, and a graph
+found in that state is rebuilt.
+
+Two files with the same name in directories with the same name, like the
+Runtime/AssemblyInfo.cs every Unity package has, shared one node in the
+code graph. So could two same-named functions inside them, which then had
+one list of callers and one blast radius between them. Node IDs now carry
+a digest of the file path. The labels you read are the same as before.
+
 ## 1.9.0 - 2026-09-06
 
 Upgrading from 1.8.0: the index is unchanged, nothing to rebuild. Two things
