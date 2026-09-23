@@ -49,6 +49,16 @@ def _write_config(tmp_path: Path, sources: dict | None = None) -> Path:
     return p
 
 
+class _LoadedManager:
+    """A loaded manager, as far as dropping it goes: it can be closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 @pytest.fixture
 def app(tmp_path):
     """A UI app with a config it can read. The manager is never really
@@ -79,7 +89,7 @@ def test_dispose_clears_the_chromadb_system_cache(app, cache_clears):
     leaves the index locked, so the cache clear is the behaviour to pin."""
     from lynx.manager.ui.app import _dispose_manager
 
-    app.state.manager = object()
+    app.state.manager = _LoadedManager()
     _dispose_manager(app)
 
     assert app.state.manager is None
@@ -109,7 +119,7 @@ def test_dispose_survives_a_chromadb_api_change(app, monkeypatch):
 
     monkeypatch.setattr(SharedSystemClient, "clear_system_cache",
                         classmethod(_boom))
-    app.state.manager = object()
+    app.state.manager = _LoadedManager()
 
     _dispose_manager(app)  # must not raise
 
@@ -130,7 +140,7 @@ def test_dispose_survives_a_missing_shared_system_client(app, monkeypatch):
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", _no_chromadb)
-    app.state.manager = object()
+    app.state.manager = _LoadedManager()
 
     _dispose_manager(app)
 
@@ -159,7 +169,7 @@ def test_purge_route_releases_the_handles(tmp_path, monkeypatch, cache_clears):
                  "supported_extensions": [".py"]},
     })
     app = create_app(cfg)
-    app.state.manager = object()
+    app.state.manager = _LoadedManager()
 
     seen = {}
 
@@ -192,7 +202,7 @@ def test_plain_delete_does_not_clear_the_cache(tmp_path, monkeypatch,
                  "supported_extensions": [".py"]},
     })
     app = create_app(cfg)
-    app.state.manager = object()
+    app.state.manager = _LoadedManager()
 
     monkeypatch.setattr(
         routes_mod, "_remove_source",
@@ -211,7 +221,7 @@ def test_reload_releases_the_handles_and_redirects(app, cache_clears):
     held. Nulling the reference while keeping chromadb's cached client —
     and its open files — would make the button a no-op for the one thing
     it is for."""
-    app.state.manager = object()
+    old = app.state.manager = _LoadedManager()
 
     r = _client(app).post("/api/manager/reload")
 
@@ -219,6 +229,7 @@ def test_reload_releases_the_handles_and_redirects(app, cache_clears):
     assert r.headers["HX-Redirect"] == "/"
     assert app.state.manager is None
     assert cache_clears == [1]
+    assert old.closed, "the next manager would find our claim and follow it"
 
 
 def test_reload_lets_a_failed_manager_be_retried(app, cache_clears):

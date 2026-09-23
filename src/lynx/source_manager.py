@@ -342,6 +342,30 @@ class SourceManager:
                     file=sys.stderr,
                 )
 
+    def close(self) -> None:
+        """Stop the watchers and hand back every index this process owns.
+
+        For callers that drop this manager and build another one in the same
+        process, as the web UI does whenever the config changes. Without it
+        the new manager finds this one's claim still alive, takes it for
+        another Lynx process and follows its own index: the UI then refuses
+        every build, pointing at its own pid, until it is restarted. The
+        engines are left as they are, so a build job still running on this
+        manager finishes its write instead of failing halfway."""
+        from . import ownership
+
+        for backend in self.backends.values():
+            try:
+                backend.stop_watcher()
+            except Exception as e:
+                print(
+                    f"[manager] failed to stop watcher for {backend.name!r}: {e}",
+                    file=sys.stderr,
+                )
+            if getattr(backend, "is_owner", False):
+                ownership.release(backend.storage_dir)
+                backend.is_owner = False
+
     # ------------------------------------------------------------------
     # Per-source dispatch
     # ------------------------------------------------------------------

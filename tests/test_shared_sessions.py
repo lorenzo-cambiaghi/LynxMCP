@@ -301,7 +301,7 @@ def test_graph_follower_reloads_when_the_owner_rewrites_it(tmp_path):
     assert layer.refresh_if_stale() is False          # nothing on disk yet
 
     loads = []
-    layer._load_from_disk = lambda: loads.append(1)
+    layer._load_from_disk = lambda: loads.append(1) or True
     (graph_dir / "metadata.json").write_text(
         json.dumps({"schema_version": 1, "last_update": "now"}), encoding="utf-8")
     layer._last_staleness_check = 0.0
@@ -417,3 +417,28 @@ def test_the_takeover_check_is_throttled(tmp_path):
 def test_an_owner_never_tries_to_take_over(tmp_path):
     backend = _backend(tmp_path, is_owner=True)
     assert backend._claim_if_abandoned() is False
+
+
+# ---------------------------------------------------------------------------
+# Handing the indexes back
+# ---------------------------------------------------------------------------
+
+def test_the_ui_gives_its_indexes_back_when_it_drops_its_manager(tmp_path):
+    # The web UI drops its manager and builds a new one in the same process
+    # whenever the config changes. The new one must own the indexes again, not
+    # follow the claim the old one left behind with this very pid on it.
+    import types
+    from lynx.manager.ui.app import _drop_manager
+    from lynx.source_manager import SourceManager
+
+    backend = _backend(tmp_path)
+    assert backend._claim_store() is True
+    manager = SourceManager.__new__(SourceManager)
+    manager.backends = {"src": backend}
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        manager=manager, manager_error=None))
+
+    _drop_manager(app)
+
+    assert ownership.owner_of(tmp_path) is None
+    assert _backend(tmp_path)._claim_store() is True

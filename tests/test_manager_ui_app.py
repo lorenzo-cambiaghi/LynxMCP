@@ -63,6 +63,8 @@ def _stub_manager():
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.metadata = {"last_commit": "stubsha", "last_update": "2026-05-22T10:00:00"}
         self.vector_store = _StubVS()
+        self.follower = bool(kw.get("follower", False))
+        self.refresh_if_stale = lambda: None
 
     CodebaseRAG.__init__ = stub_rag_init
     CodebaseRAG.update = lambda self, force=False: None

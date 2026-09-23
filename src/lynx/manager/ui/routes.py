@@ -15,7 +15,7 @@ from fastapi import Query, Request
 
 from pydantic import BaseModel
 
-from .app import _dispose_manager, _get_manager
+from .app import _dispose_manager, _drop_manager, _get_manager
 from ...outline import doc_of, signature_for
 
 # Rendering and the playground moved out — `render.py` holds the HTML
@@ -498,8 +498,7 @@ def register(app) -> None:
             )
 
         # Invalidate the cached manager so next request reloads from disk
-        app.state.manager = None
-        app.state.manager_error = None
+        _drop_manager(app)
 
         return HTMLResponse(
             '<div class="p-3 bg-green-50 border border-green-200 rounded text-green-900 text-sm">'
@@ -896,8 +895,7 @@ def _register_source_crud_routes(app) -> None:
                                 status_code=res.status)
 
         # Invalidate cached manager so the new source becomes visible.
-        app.state.manager = None
-        app.state.manager_error = None
+        _drop_manager(app)
 
         # Tell HTMX to navigate to the new source detail page after
         # success. Falls back to swapping the toast if the caller isn't
@@ -928,8 +926,7 @@ def _register_source_crud_routes(app) -> None:
             return HTMLResponse(_toast_err(_html_escape(res.message)),
                                 status_code=res.status)
 
-        app.state.manager = None
-        app.state.manager_error = None
+        _drop_manager(app)
 
         purge_msg = ""
         if res.purged_path:

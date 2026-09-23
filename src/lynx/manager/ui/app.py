@@ -169,10 +169,24 @@ def _get_manager(app):
         return None
 
 
+def _drop_manager(app) -> None:
+    """Forget the cached SourceManager, so the next request that needs one
+    builds it lazily via `_get_manager` from the config on disk.
+
+    The old manager hands its indexes back first. The new one claims them
+    again, and would otherwise find a live claim with our own pid on it,
+    take it for another Lynx process and refuse every build until the UI is
+    restarted."""
+    if app.state.manager is not None:
+        app.state.manager.close()
+    app.state.manager = None
+    app.state.manager_error = None
+
+
 def _dispose_manager(app) -> None:
     """Drop the cached SourceManager AND release its ChromaDB file handles.
 
-    `app.state.manager = None` alone is not enough: chromadb caches the
+    `_drop_manager` alone is not enough: chromadb caches the
     client system per storage path (SharedSystemClient), so the SQLite and
     HNSW segment files stay open with zero references from our side.
     Measured on Windows: with a manager constructed, `rmtree` on a source's
@@ -185,8 +199,7 @@ def _dispose_manager(app) -> None:
     The next request that needs the manager rebuilds it lazily via
     `_get_manager`, integrity probes included.
     """
-    app.state.manager = None
-    app.state.manager_error = None
+    _drop_manager(app)
     SharedSystemClient = None
     for modpath in ("chromadb.api.shared_system_client", "chromadb.api.client"):
         try:

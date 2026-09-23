@@ -42,6 +42,16 @@ import pytest
 from lynx.cli import main as cli_main
 
 
+class _LoadedManager:
+    """A loaded manager, as far as dropping it goes: it can be closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 def _write_config(tmp_path: Path, sources: dict | None = None) -> Path:
     cfg = {
         "config_version": 2,
@@ -515,7 +525,7 @@ def test_ui_purge_disposes_its_manager_first(tmp_path, code_dir, monkeypatch):
                  "supported_extensions": [".py"]},
     })
     app = create_app(cfg)
-    app.state.manager = object()  # a "loaded" manager holding handles
+    app.state.manager = _LoadedManager()  # holding handles
 
     # Nulling the field is NOT what releases the ChromaDB files — chromadb
     # caches the client system per storage path, so the handles survive
@@ -559,7 +569,7 @@ def test_ui_plain_delete_keeps_the_manager_until_success(tmp_path, code_dir,
                  "supported_extensions": [".py"]},
     })
     app = create_app(cfg)
-    sentinel = object()
+    sentinel = _LoadedManager()
     app.state.manager = sentinel
 
     seen = {}
@@ -575,6 +585,7 @@ def test_ui_plain_delete_keeps_the_manager_until_success(tmp_path, code_dir,
     assert r.status_code == 200
     assert seen["manager_when_removing"] is sentinel  # still loaded during
     assert app.state.manager is None                  # invalidated after
+    assert sentinel.closed                            # and its indexes given back
 
 
 # ----------------------------------------------------------------------
