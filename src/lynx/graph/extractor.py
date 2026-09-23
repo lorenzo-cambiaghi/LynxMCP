@@ -24,6 +24,7 @@ Design notes
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import unicodedata
@@ -38,9 +39,10 @@ from ..chunking import parse_file
 # ID generation (stable, deterministic, cross-file)
 # ---------------------------------------------------------------------------
 #
-# Mirrors the pattern from graphify/extract.py:_make_id — we keep it
-# byte-for-byte compatible so anyone who wants to diff our graph against a
-# graphify graph can do so without an ID normalization step.
+# `_make_id` mirrors graphify/extract.py:_make_id byte for byte. The per-file
+# part fed to it does not: graphify's `parent.stem` merges files that share a
+# directory name and a file name, so ours carries a digest of the whole path
+# (see `_file_id_stem`), and file and symbol IDs differ from graphify's.
 
 _NON_WORD = re.compile(r"[^\w]+", re.UNICODE)
 _REPEAT_UNDERSCORE = re.compile(r"_+")
@@ -62,13 +64,26 @@ def _make_id(*parts: str) -> str:
 
 
 def _file_stem(path: str) -> str:
-    """Return `parent.name + "." + stem` so files with the same name in
-    different directories don't collide on ID generation."""
+    """Return `parent.name + "." + stem`: the file's label in the graph."""
     p = Path(path)
     parent = p.parent.name
     if parent and parent not in (".", ""):
         return f"{parent}.{p.stem}"
     return p.stem
+
+
+def _file_id_stem(path: str) -> str:
+    """What the IDs of a file and of its symbols are built from: the label
+    plus a digest of the whole path, so they are unique per file.
+
+    The label alone is not. Every Unity package has a Runtime/AssemblyInfo.cs,
+    two packages can each have a tests/test_utils.py with a `test_parse`, and
+    a shared ID merges the two files, or the two functions, into one node:
+    one set of callers, one blast radius, for two different things. Windows
+    paths are case-folded first, since casing does not tell files apart there.
+    """
+    digest = hashlib.sha256(os.path.normcase(path).encode("utf-8")).hexdigest()[:8]
+    return f"{_file_stem(path)}.{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -1386,7 +1401,7 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
 
 
 def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: str,
-                       file_id: str, stem: str, container_path: list,
+                       file_id: str, id_stem: str, container_path: list,
                        nodes: list, edges: list, local_index: dict,
                        function_bodies: list, raw_inherits: list) -> None:
     """First pass: collect class/function nodes, contains edges, imports,
@@ -1403,7 +1418,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         if child.type in rules.function_types:
             name = _name_of(child, source) or "<anonymous>"
             qualified = ".".join(container_path + [name]) if container_path else name
-            node_id = _make_id(stem, qualified)
+            node_id = _make_id(id_stem, qualified)
             nodes.append({
                 "id": node_id,
                 "label": qualified,
@@ -1419,7 +1434,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
             local_index.setdefault(name.split(".")[-1].lower(), node_id)
             # If we're inside a container, emit a contains edge.
             if container_path:
-                parent_id = _make_id(stem, ".".join(container_path))
+                parent_id = _make_id(id_stem, ".".join(container_path))
                 edges.append({
                     "source": parent_id,
                     "target": node_id,
@@ -1432,7 +1447,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         if child.type in rules.container_types:
             cname = _name_of(child, source) or "<container>"
             qualified = ".".join(container_path + [cname]) if container_path else cname
-            container_id = _make_id(stem, qualified)
+            container_id = _make_id(id_stem, qualified)
             nodes.append({
                 "id": container_id,
                 "label": qualified,
@@ -1453,7 +1468,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
                 )
             # Recurse to find nested classes / methods.
             _walk_declarations(
-                child, rules, source, file_path, file_id, stem,
+                child, rules, source, file_path, file_id, id_stem,
                 container_path + [cname], nodes, edges, local_index,
                 function_bodies, raw_inherits,
             )
@@ -1462,7 +1477,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         # modifiers, namespace bodies that don't appear in container_types,
         # etc.).
         _walk_declarations(
-            child, rules, source, file_path, file_id, stem,
+            child, rules, source, file_path, file_id, id_stem,
             container_path, nodes, edges, local_index, function_bodies,
             raw_inherits,
         )
@@ -1494,7 +1509,8 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
 
     abs_path_norm = os.path.normpath(os.path.abspath(abs_path))
     stem = _file_stem(abs_path_norm)
-    file_id = _make_id(stem)
+    id_stem = _file_id_stem(abs_path_norm)
+    file_id = _make_id(id_stem)
 
     nodes: list = []
     edges: list = []
@@ -1515,7 +1531,7 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     })
 
     _walk_declarations(
-        tree.root_node, rules, source, abs_path_norm, file_id, stem,
+        tree.root_node, rules, source, abs_path_norm, file_id, id_stem,
         container_path=[], nodes=nodes, edges=edges,
         local_index=local_index, function_bodies=function_bodies,
         raw_inherits=raw_inherits,

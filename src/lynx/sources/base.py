@@ -265,8 +265,9 @@ class SourceBackend(ABC):
 
     @abstractmethod
     def update(self, force: bool = False) -> None:
-        """Rebuild this source's index. `force=True` triggers a full rebuild
-        regardless of whether the underlying content has changed."""
+        """Bring this source's index up to date. `force=True` looks at all of
+        the content even when nothing signals a change (for a codebase, a pass
+        over every file's hash; for a webdoc, a new crawl)."""
 
     def start_watcher(self) -> None:
         """Start a background watcher if applicable.

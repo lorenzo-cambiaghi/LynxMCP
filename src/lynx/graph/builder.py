@@ -31,6 +31,7 @@ NetworkX's read API is thread-safe as long as the structure isn't mutated.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -66,7 +67,44 @@ def _log(msg: str) -> None:
 # History:
 #   1 — initial release (Lynx 0.5.0)
 #   2 — adds `inherits` edges + raw_inherits.json persistence (Lynx 0.6.0)
-GRAPH_SCHEMA_VERSION = 2
+#   3 — node IDs carry a digest of the file path, so files sharing a
+#       directory name and a file name no longer merge (after Lynx 1.9.0)
+GRAPH_SCHEMA_VERSION = 3
+
+
+# What a graph depends on besides the files it was built from: the code that
+# extracts and resolves it, relative to the package root.
+_EXTRACTOR_SOURCES = ("graph/extractor.py", "graph/builder.py", "chunking.py")
+
+
+@functools.lru_cache(maxsize=1)
+def extractor_fingerprint() -> str:
+    """Changes whenever an unchanged file could now extract to another graph.
+
+    A delta rebuild re-extracts only the files whose bytes changed, so it is
+    only as good as a full one while this stays put. Upgrading Lynx or a
+    tree-sitter grammar moves it (so does editing an editable install), and
+    the next rebuild is then a full one. The schema version above covers the
+    file format; this covers the rules, without anyone remembering to bump.
+    """
+    from importlib import metadata
+
+    digest = hashlib.sha256()
+    root = Path(__file__).resolve().parent.parent
+    for rel in _EXTRACTOR_SOURCES:
+        digest.update(rel.encode())
+        try:
+            digest.update((root / rel).read_bytes().replace(b"\r\n", b"\n"))
+        except OSError:
+            digest.update(b"unreadable")
+    grammars = set()
+    for dist in metadata.distributions():
+        name = (dist.metadata["Name"] or "").lower().replace("_", "-")
+        if name.startswith("tree-sitter"):
+            grammars.add(f"{name}=={dist.version}")
+    digest.update("\n".join(sorted(grammars)).encode())
+    return digest.hexdigest()[:16]
+
 
 # SHA-256 read buffer (1 MiB — same value as rag_manager).
 _HASH_READ_CHUNK_BYTES = 1 << 20
@@ -89,8 +127,12 @@ def _compute_sha256(abs_path: str) -> str:
 
 
 def _atomic_write_json(path: Path, data) -> None:
+    # Compact on purpose: `indent` makes json fall back from its C encoder to
+    # the pure-Python one. On a 45k-node graph that is 3.5 s instead of 1.1 s
+    # per persist, and the watcher persists after every saved file.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+                   encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -151,8 +193,10 @@ class GraphLayer:
             "last_full_rebuild": None,
         }
 
-        self._load_from_disk()
-        self._disk_stamp = self._read_disk_stamp()
+        # A follower that opened mid-write keeps no stamp, so its first
+        # staleness check loads the finished graph.
+        loaded = self._load_from_disk()
+        self._disk_stamp = self._read_disk_stamp() if loaded else None
 
         # First-boot bootstrap. If the persisted state is empty (either we
         # never ran or the cache was wiped by a schema bump) AND there's
@@ -208,29 +252,43 @@ class GraphLayer:
         if stamp is None or stamp == self._disk_stamp:
             return False
         with self._lock:
-            self._load_from_disk()
+            if not self._load_from_disk():
+                return False              # the owner is mid-write: next check
             self._disk_stamp = stamp
         _log(f"[graph] reloaded {self.storage_dir.parent.name}: the owning "
              f"process rewrote the graph")
         return True
 
-    def _load_from_disk(self) -> None:
+    def _load_from_disk(self) -> bool:
         """Restore in-memory state from JSON files. Missing or invalid
-        files reset to empty (and force a rebuild on the next call)."""
+        files reset to empty (and force a rebuild on the next call).
+
+        False when nothing was loaded because a write is in progress or was
+        cut short (see `_persist`). A follower keeps what it has and looks
+        again later; the owner discards the graph, since files from two
+        different writes would disagree, and the bootstrap rebuilds it."""
         # Metadata first — controls schema validation for the rest.
         if self.metadata_file.exists():
             try:
-                self._metadata = json.loads(self.metadata_file.read_text("utf-8"))
+                metadata = json.loads(self.metadata_file.read_text("utf-8"))
             except (OSError, json.JSONDecodeError) as e:
                 _log(f"[graph] metadata.json unreadable ({e}); resetting.")
-                self._metadata = {"schema_version": GRAPH_SCHEMA_VERSION,
-                                  "last_update": None, "last_full_rebuild": None}
+                metadata = {"schema_version": GRAPH_SCHEMA_VERSION,
+                            "last_update": None, "last_full_rebuild": None}
+            if metadata.get("write_complete") is False:
+                if self.follower:
+                    return False
+                _log("[graph] the last write of this graph did not finish; "
+                     "discarding it so it is rebuilt in full.")
+                self._reset_state()
+                return False
+            self._metadata = metadata
         if self._metadata.get("schema_version") != GRAPH_SCHEMA_VERSION:
             _log(f"[graph] schema_version mismatch (got "
                  f"{self._metadata.get('schema_version')!r}, expected "
                  f"{GRAPH_SCHEMA_VERSION}); discarding cache.")
             self._reset_state()
-            return
+            return True
 
         # Nodes
         nodes: list = []
@@ -240,7 +298,7 @@ class GraphLayer:
             except (OSError, json.JSONDecodeError) as e:
                 _log(f"[graph] nodes.json unreadable ({e}); resetting.")
                 self._reset_state()
-                return
+                return True
         # Edges
         edges: list = []
         if self.edges_file.exists():
@@ -249,7 +307,7 @@ class GraphLayer:
             except (OSError, json.JSONDecodeError) as e:
                 _log(f"[graph] edges.json unreadable ({e}); resetting.")
                 self._reset_state()
-                return
+                return True
         # Raw calls (keyed by file)
         raw_calls: dict = {}
         if self.raw_calls_file.exists():
@@ -292,6 +350,7 @@ class GraphLayer:
         self._raw_calls_by_file = raw_calls
         self._raw_inherits_by_file = raw_inherits
         self._file_hashes = hashes
+        return True
 
     def _reset_state(self) -> None:
         self._graph = nx.DiGraph()
@@ -307,16 +366,25 @@ class GraphLayer:
         }
 
     def _persist(self) -> None:
+        """Write the graph, bracketed by metadata saying the write is under way.
+
+        Each file is replaced atomically, the six together are not: a process
+        killed between two of them leaves nodes from one write and edges from
+        another, and nothing later would notice, because a delta rebuild trusts
+        what is on disk. The marker is what `_load_from_disk` checks."""
         nodes = list(self._nodes_by_id.values())
         edges = [
             {**data, "source": u, "target": v}
             for u, v, data in self._graph.edges(data=True)
         ]
+        self._metadata["write_complete"] = False
+        _atomic_write_json(self.metadata_file, self._metadata)
         _atomic_write_json(self.nodes_file, nodes)
         _atomic_write_json(self.edges_file, edges)
         _atomic_write_json(self.raw_calls_file, self._raw_calls_by_file)
         _atomic_write_json(self.raw_inherits_file, self._raw_inherits_by_file)
         _atomic_write_json(self.hashes_file, self._file_hashes)
+        self._metadata["write_complete"] = True
         _atomic_write_json(self.metadata_file, self._metadata)
 
     # ------------------------------------------------------------------
@@ -346,13 +414,15 @@ class GraphLayer:
         if register_external and v not in self._nodes_by_id:
             # Synthesize a stub "external" node so the import edge has a
             # target. We don't register it in symbol_index — external nodes
-            # are not call targets.
-            self._graph.add_node(v, kind="external", label=attrs.get("module", v))
-            self._nodes_by_id[v] = {
+            # are not call targets. The graph gets the same attributes the
+            # node will have when this graph is loaded back from disk.
+            stub = {
                 "id": v, "label": attrs.get("module", v),
                 "kind": "external", "subkind": "external",
                 "file": "", "start_line": 0, "end_line": 0, "lang_key": "",
             }
+            self._nodes_by_id[v] = stub
+            self._graph.add_node(v, **{k: val for k, val in stub.items() if k != "id"})
         self._graph.add_edge(u, v, **attrs)
 
     def _drop_file(self, abs_path: str) -> set:
@@ -368,6 +438,11 @@ class GraphLayer:
         touched_names: set = set()
         # Find affected node IDs.
         affected = [nid for nid, n in self._nodes_by_id.items() if n.get("file") == abs_path]
+        # External stubs exist only as targets of this file's imports might be.
+        externals = {
+            succ for nid in affected for succ in self._graph.successors(nid)
+            if (self._nodes_by_id.get(succ) or {}).get("kind") == "external"
+        }
         # Drop edges touching those nodes (DiGraph drops them with the node).
         for nid in affected:
             label = self._nodes_by_id[nid].get("label", "")
@@ -380,6 +455,12 @@ class GraphLayer:
                     del self._symbol_index[leaf]
             self._graph.remove_node(nid)
             del self._nodes_by_id[nid]
+        # A stub nobody imports any more would not exist in a graph built from
+        # scratch; leaving it behind is how an incremental graph drifts.
+        for ext in externals:
+            if ext in self._graph and self._graph.degree(ext) == 0:
+                self._graph.remove_node(ext)
+                self._nodes_by_id.pop(ext, None)
         # Clear raw_calls + raw_inherits bucketed under this file.
         self._raw_calls_by_file.pop(abs_path, None)
         self._raw_inherits_by_file.pop(abs_path, None)
@@ -474,6 +555,16 @@ class GraphLayer:
                 # member call with multiple candidates: deliberately skipped.
         return added
 
+    def _derived_edge_counts(self) -> dict:
+        """Cross-file edges currently in the graph, for a rebuild summary
+        that had nothing to resolve."""
+        counts = {"calls": 0, "inherits": 0}
+        for _u, _v, d in self._graph.edges(data=True):
+            if (d.get("relation") in counts
+                    and d.get("confidence") in ("resolved", "ambiguous")):
+                counts[d["relation"]] += 1
+        return counts
+
     def _clear_resolved_and_ambiguous(self, only_target_names: "set | None" = None) -> None:
         """Remove derived edges (calls + inherits) whose confidence is
         'resolved' or 'ambiguous'. These come from raw_calls / raw_inherits
@@ -566,12 +657,25 @@ class GraphLayer:
 
         Returns a summary dict with counts of nodes/edges/changed/added/
         removed for observability.
+
+        Without `force` the result is the graph a full rebuild would give,
+        at the cost of hashing the files: only changed files are extracted
+        again, cross-file resolution is redone over the whole graph, and
+        when nothing changed the graph on disk is already that result and is
+        left alone. A graph built by another extractor (see
+        `extractor_fingerprint`) is rebuilt in full.
         """
         if self.follower:
             from ..errors import StoreNotOwnedError
             raise StoreNotOwnedError(self.storage_dir.parent.name,
                                      str(self.storage_dir.parent))
         with self._lock:
+            fingerprint = extractor_fingerprint()
+            if (not force and self._file_hashes
+                    and self._metadata.get("extractor") != fingerprint):
+                _log("[graph] built by a different extractor or grammar "
+                     "version; rebuilding it in full")
+                force = True
             if force:
                 _log("[graph] full rebuild (force=True): wiping state")
                 self._reset_state()
@@ -592,6 +696,28 @@ class GraphLayer:
                     changed.append(p)
                 else:
                     unchanged.append(p)
+
+            if not force and not (added or changed or removed):
+                # Nothing moved and this extractor built the graph, so the
+                # graph on disk is already what a full rebuild would give: the
+                # watcher's per-file updates keep it equal to one (pinned by
+                # tests/test_graph_incremental.py). Resolving again and
+                # rewriting 100+ MB would reproduce the same bytes.
+                derived = self._derived_edge_counts()
+                return {
+                    "candidates": len(current_set),
+                    "added": 0,
+                    "changed": 0,
+                    "removed": 0,
+                    "unchanged": len(unchanged),
+                    "extracted_files": 0,
+                    "nodes_total": self._graph.number_of_nodes(),
+                    "edges_total": self._graph.number_of_edges(),
+                    "extracted_nodes": 0,
+                    "extracted_edges": 0,
+                    "resolved_cross_file": derived["calls"],
+                    "resolved_inherits": derived["inherits"],
+                }
 
             to_process = sorted(list(added) + list(changed))
 
@@ -642,6 +768,7 @@ class GraphLayer:
             self._metadata["last_update"] = now
             if force or not self._metadata.get("last_full_rebuild"):
                 self._metadata["last_full_rebuild"] = now
+            self._metadata["extractor"] = fingerprint
             self._persist()
 
             return {

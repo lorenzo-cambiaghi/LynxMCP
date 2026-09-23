@@ -165,30 +165,28 @@ class CodebaseBackend(SourceBackend):
         # Keep the graph layer in sync with the same trigger. We do this
         # after the RAG update so a partial failure in the graph layer
         # doesn't leave the vector index half-built.
-        if self.graph is not None:
-            try:
-                self.graph.rebuild(force=force)
-            except Exception as e:
-                # Failures here must not break search — log and move on.
-                print(
-                    f"[graph:{self.name}] rebuild failed (search still works): {e}",
-                    file=sys.stderr,
-                )
+        self._rebuild_graph(from_scratch=False)
 
-    def catch_up(self) -> None:
-        """Pick up edits made while no watcher was running.
+    def _rebuild_graph(self, *, from_scratch: bool) -> None:
+        """Bring the graph in line with the files on disk.
 
-        A delta pass, not the full rebuild `update(force=True)` would trigger
-        on the graph: both layers keep their own SHA cache, so unchanged files
-        cost a stat and a hash, and only what actually moved is re-parsed.
+        `force` on `update` means "look at every file", which for the vector
+        index is a pass over its SHA cache. The graph's equivalent is its
+        delta rebuild, which yields the same graph as starting over (and
+        starts over by itself when the extractor changed). Wiping it is for
+        `reset` alone: it cost 17 s on a 3,500-file source where the delta
+        takes about 2.5 s when nothing changed, most of it hashing files.
         """
-        self.rag.update(force=True)
-        if self.graph is not None:
-            try:
-                self.graph.rebuild(force=False)
-            except Exception as e:
-                print(f"[graph:{self.name}] catch-up failed "
-                      f"(search still works): {e}", file=sys.stderr)
+        if self.graph is None:
+            return
+        try:
+            self.graph.rebuild(force=from_scratch)
+        except Exception as e:
+            # Failures here must not break search — log and move on.
+            print(
+                f"[graph:{self.name}] rebuild failed (search still works): {e}",
+                file=sys.stderr,
+            )
 
     # ------------------------------------------------------------------
     # Watcher
@@ -199,9 +197,14 @@ class CodebaseBackend(SourceBackend):
 
         Empties the Chroma collection through its API (no storage-dir delete, so
         it works while the client holds the store open) and clears the SHA cache
-        so the rebuild re-indexes everything; the graph is force-rebuilt too."""
+        so the rebuild re-indexes everything; the graph is rebuilt from scratch
+        too."""
+        if not self.is_owner:
+            from ..errors import StoreNotOwnedError
+            raise StoreNotOwnedError(self.name, str(self.storage_dir))
         self.rag.reset_index()
-        self.update(force=True)
+        self.rag.update(force=True)
+        self._rebuild_graph(from_scratch=True)
 
     def stop_watcher(self) -> None:
         """Stop the watchdog Observer and give up ownership of the store.

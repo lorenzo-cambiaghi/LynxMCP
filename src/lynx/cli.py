@@ -2,7 +2,7 @@
 
 Subcommands:
   serve           - run the MCP server (default if no command is given)
-  build           - force a full rebuild of a source's index
+  build           - check every file of a source and re-index what changed
   reset           - wipe a source's index and rebuild it from scratch
   search          - run an ad-hoc search query against a source
   status          - show git state, last update time, config drift per source

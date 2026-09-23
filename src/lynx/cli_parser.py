@@ -211,7 +211,8 @@ def _build_parser() -> argparse.ArgumentParser:
              "(17). Overrides LYNX_TOOL_PROFILE and tools.profile in config.json.",
     )
 
-    sp_build = sub.add_parser("build", help="Force a full rebuild of a source's index")
+    sp_build = sub.add_parser(
+        "build", help="Check every file of a source and re-index what changed")
     sp_build.add_argument("--config", "-c", metavar="PATH")
     sp_build.add_argument(
         "--source", "-s", metavar="NAME",

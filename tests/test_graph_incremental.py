@@ -11,6 +11,7 @@ Pure graph layer — no HuggingFace, no ChromaDB. Fast.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lynx.graph import GraphLayer
@@ -178,3 +179,157 @@ def test_incremental_inheritance_reresolution(tmp_path: Path):
     (code / "base.py").unlink()
     layer.remove_file(str(code / "base.py"))
     _assert_matches_full_rebuild(layer, code, tmp_path, "inh_remove_base")
+
+
+# ---------------------------------------------------------------------------
+# The build path: a delta instead of a wipe, with what makes that safe
+# ---------------------------------------------------------------------------
+
+def _small_project(code: Path):
+    _write(code / "util.py", "def helper(x):\n    return x + 1\n")
+    _write(code / "service.py",
+           "from util import helper\n"
+           "class Service:\n"
+           "    def run(self, x):\n"
+           "        return helper(x)\n")
+    _write(code / "other.py", "def other():\n    return helper(2)\n")
+
+
+def _stamps(storage: Path) -> dict:
+    return {p.name: p.stat().st_mtime_ns for p in (storage / "graph").glob("*.json")}
+
+
+def test_a_delta_rebuild_equals_a_full_one(tmp_path: Path):
+    # `lynx build` runs this instead of wiping the graph. Edits, additions and
+    # deletions made while no watcher was running must end in the graph a
+    # build from scratch gives.
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    layer = _layer(code, storage)
+
+    _write(code / "util.py", "def helper2(x):\n    return x + 2\n")   # callers lose it
+    _write(code / "extra.py", "def extra():\n    return helper2(1)\n")
+    (code / "other.py").unlink()
+    summary = layer.rebuild(force=False)
+
+    assert (summary["changed"], summary["added"], summary["removed"]) == (1, 1, 1)
+    _assert_matches_full_rebuild(layer, code, tmp_path, "delta")
+
+
+def test_a_rebuild_with_nothing_changed_leaves_the_graph_alone(tmp_path: Path):
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    layer = _layer(code, storage)
+    before = _stamps(storage)
+
+    summary = layer.rebuild(force=False)
+
+    assert summary["extracted_files"] == 0 and summary["unchanged"] == 3
+    assert _stamps(storage) == before, "nothing changed, yet the graph was rewritten"
+
+
+def test_a_graph_from_another_extractor_is_rebuilt_in_full(tmp_path: Path, monkeypatch):
+    # After an upgrade of Lynx or of a grammar, an unchanged file may extract
+    # differently, so hashing the files proves nothing.
+    from lynx.graph import builder
+
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    layer = _layer(code, storage)
+
+    monkeypatch.setattr(builder, "extractor_fingerprint", lambda: "another")
+    summary = layer.rebuild(force=False)
+
+    assert summary["extracted_files"] == 3
+    assert layer._metadata["extractor"] == "another"
+    assert layer.rebuild(force=False)["extracted_files"] == 0
+
+
+def test_a_graph_whose_write_was_cut_short_is_rebuilt(tmp_path: Path):
+    # A process killed halfway through `_persist` leaves files from two
+    # different writes. A delta trusts what is on disk, so the load has to
+    # refuse it: here edges.json lost every edge before the closing marker.
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    _layer(code, storage)
+    graph_dir = storage / "graph"
+    meta = json.loads((graph_dir / "metadata.json").read_text(encoding="utf-8"))
+    meta["write_complete"] = False
+    (graph_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    (graph_dir / "edges.json").write_text("[]", encoding="utf-8")
+
+    reopened = _layer(code, storage)
+
+    _assert_matches_full_rebuild(reopened, code, tmp_path, "after_cut_write")
+
+
+def test_a_follower_waits_for_the_owner_to_finish_writing(tmp_path: Path):
+    from lynx.graph import GraphLayer
+
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    owner = _layer(code, storage)
+    follower = GraphLayer(storage_dir=storage / "graph", codebase_path=code,
+                          supported_extensions=[".py"], follower=True)
+    edges = follower.graph.number_of_edges()
+    assert edges > 0
+
+    graph_dir = storage / "graph"
+    meta = json.loads((graph_dir / "metadata.json").read_text(encoding="utf-8"))
+    meta["write_complete"] = False                     # the owner is mid-write
+    (graph_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    (graph_dir / "edges.json").write_text("[]", encoding="utf-8")
+    follower._last_staleness_check = 0.0
+    assert follower.refresh_if_stale() is False
+    assert follower.graph.number_of_edges() == edges   # kept what it had
+
+    owner._persist()                                   # ...and finishes
+    follower._last_staleness_check = 0.0
+    assert follower.refresh_if_stale() is True
+    assert follower.graph.number_of_edges() == edges
+
+
+def test_only_a_reset_starts_the_graph_over(tmp_path: Path):
+    # Build, the UI's Build button and update_source_index all reach
+    # `update(force=True)`, which must not wipe the graph; `reset` must.
+    import types
+    from lynx.sources.codebase import CodebaseBackend
+
+    calls = []
+    backend = CodebaseBackend.__new__(CodebaseBackend)
+    backend.name, backend.is_owner, backend.storage_dir = "src", True, tmp_path
+    backend.rag = types.SimpleNamespace(update=lambda force=False: None,
+                                        reset_index=lambda: None)
+    backend.graph = types.SimpleNamespace(
+        rebuild=lambda force=False: calls.append(force))
+
+    backend.update(force=True)
+    backend.reset()
+
+    assert calls == [False, True]
+
+
+def _externals(layer) -> set:
+    return {nid for nid, n in layer._nodes_by_id.items() if n.get("kind") == "external"}
+
+
+def test_an_import_nobody_makes_any_more_leaves_the_graph(tmp_path: Path):
+    # The stub node of an external module exists only while something imports
+    # it. A file dropping the last such import, through the watcher or a delta
+    # rebuild, must not leave the stub behind: a full rebuild would not have it.
+    code, storage = tmp_path / "code", tmp_path / "storage"
+    _small_project(code)
+    _write(code / "tool.py", "import zz_only_here\n\ndef tool():\n    return 1\n")
+    _write(code / "tool2.py", "import zz_only_here_too\n")
+    layer = _layer(code, storage)
+    before = _externals(layer)
+    assert any("zz_only_here" in e for e in before)
+
+    _write(code / "tool.py", "def tool():\n    return 1\n")
+    layer.update_file(str(code / "tool.py"))
+    _assert_matches_full_rebuild(layer, code, tmp_path, "watcher_drop_import")
+
+    (code / "tool2.py").unlink()
+    layer.rebuild(force=False)
+    _assert_matches_full_rebuild(layer, code, tmp_path, "delta_drop_import")
+    assert not any("zz_only_here" in e for e in _externals(layer))

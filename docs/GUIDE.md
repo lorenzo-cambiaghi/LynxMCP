@@ -82,7 +82,7 @@ Plus the global, cross-source tools:
 | `list_sources()` | Enumerate configured sources with type, path, chunk count, drift status. |
 | `search(query, ...)` | Run the query against every source in parallel and fuse rankings via RRF. Use when you don't know which source has the answer. |
 | `deep_search(queries, ...)` | Multi-query × multi-source fallback. Use sparingly: it runs N×M retrievals. |
-| `update_source_index(source, force)` | Force a full rebuild of one source. |
+| `update_source_index(source, force)` | Re-check one source's files and re-index what changed. |
 | `get_rag_status(source?)` | Report state of one source or all. |
 
 When you ask the AI *"how is damage handled in this codebase?"* with a
@@ -1294,7 +1294,7 @@ terminal is what the model reads.
 lynx [--version] [-h] COMMAND ...
 
   serve          Run the MCP server (default if no command is given)
-  build          Force a full rebuild of a source's index (search + graph)
+  build          Check every file of a source and re-index what changed
   reset          Wipe a source's index and rebuild it from scratch
   search         Run an ad-hoc search query (no MCP client needed)
   deep-search    Multi-query escalation when `search` came back weak
@@ -1345,13 +1345,18 @@ lynx serve --config /path/to/config.json
 
 ### `build`
 
-Forces a full rebuild of the index. Use this for the first-time build,
-after changing the embedding model, or whenever you want a known-clean
-rebuild:
+Checks every file of the source and re-indexes the ones whose content
+changed, in the search index and in the graph. Use it for the first
+build, after edits made while no Lynx was running, or after changing the
+embedding model, which it notices and answers by indexing everything
+again:
 
 ```bash
 lynx build --config /path/to/config.json
 ```
+
+When you want a clean slate instead, `lynx reset` wipes the source and
+builds it from scratch.
 
 ### `search`
 
@@ -1518,7 +1523,7 @@ lynx graph status --source myproject
 
 ```
 === Graph status: myproject ===
-  schema_version:    2
+  schema_version:    3
   nodes:             8421
   edges:             14732
   files_indexed:     1284
@@ -1532,8 +1537,10 @@ lynx graph status --source myproject
 
 Day-to-day you don't need `graph build`. The file watcher keeps the
 graph live the same way it does for the search index, and `lynx build`
-rebuilds both. Use `lynx graph build --force` after a graph schema bump
-or when you suspect stale edges.
+brings both up to date, parsing again only the files that changed. After
+an upgrade that touches the graph extraction or a grammar, it rebuilds the
+graph from scratch by itself. Use `lynx graph build --force` when you
+suspect stale edges anyway.
 
 #### `graph query`: ask the graph from a terminal
 
@@ -1795,9 +1802,10 @@ sparingly. In the worst case it runs N×M retrievals.
 
 #### `update_source_index(source, force=False)`
 
-Forces a full rebuild of one source's index. Day-to-day the watcher keeps
-things in sync. Use this after a complex merge, a bulk rename, or when
-drift detection flags a critical change.
+Re-checks every file of one source and re-indexes what changed. Day-to-day
+the watcher keeps things in sync. Use this after a complex merge, a bulk
+rename, edits made while Lynx was not running, or when drift detection
+flags a critical change.
 
 #### `get_rag_status(source=None)`
 

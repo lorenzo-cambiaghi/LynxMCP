@@ -121,9 +121,10 @@ TOOL_DESCRIPTIONS = {
         "drift. Check it before considering a rebuild."
     ),
     "update_source_index": (
-        "Force a full rebuild of a source's index. Expensive and blocking; the "
-        "watcher keeps the index current, so use it only after a big merge or a "
-        "drift warning."
+        "Re-check every file of a source and re-index what changed (a webdoc "
+        "source is crawled again). Blocking; the watcher keeps codebase sources "
+        "current, so use it after a big merge, edits made while Lynx was not "
+        "running, or a drift warning."
     ),
 }
 
