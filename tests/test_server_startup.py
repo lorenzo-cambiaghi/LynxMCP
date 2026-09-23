@@ -6,6 +6,8 @@ factory, and the tools are the real registered ones, called directly.
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -243,3 +245,50 @@ def test_tools_answer_with_the_loading_state_then_with_results():
     handle.set_manager(_FakeManager(cfg))
     later = tools["list_sources"].fn()
     assert "game" in later and "42" in later
+
+
+# ---------------------------------------------------------------------------
+# the transport's read on the client's pipe
+# ---------------------------------------------------------------------------
+
+# Plays `lynx serve`: the transport waits on the client's pipe, then the
+# process starts a child, which is what the integrity probe does during the
+# load. Writes the verdict to the file named by argv[1].
+_SERVER_STARTING_A_CHILD = """
+import os, subprocess, sys, threading, time
+from lynx.server import _transport_stdin
+
+stdin = _transport_stdin()
+threading.Thread(target=stdin.readline, daemon=True).start()
+time.sleep(0.5)
+started = time.monotonic()
+try:
+    subprocess.run([sys.executable, "-c", "pass"], timeout=15)
+    verdict = f"started in {time.monotonic() - started:.1f}s"
+except subprocess.TimeoutExpired:
+    verdict = "the child never started"
+with open(sys.argv[1], "w") as f:
+    f.write(verdict)
+os._exit(0)
+"""
+
+
+def test_a_child_starts_while_the_transport_waits_on_the_client(tmp_path):
+    # On Windows, a pending read on a pipe holds up every other query against
+    # it, and an interpreter starting up queries the standard handles it
+    # inherited. Before `_transport_stdin`, the probe hung until the client
+    # sent another message, and so did native libraries loading in the
+    # background. The client here (this test) never writes.
+    verdict = tmp_path / "verdict.txt"
+    server = subprocess.Popen(
+        [sys.executable, "-c", _SERVER_STARTING_A_CHILD, str(verdict)],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        server.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        raise
+    finally:
+        server.stdin.close()
+    assert verdict.read_text().startswith("started"), verdict.read_text()

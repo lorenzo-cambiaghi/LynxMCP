@@ -260,6 +260,10 @@ def _probe_once(storage_dir, collection_name: str, budget: float):
              # Child's self-destruct deadline: strictly after our kill, so it
              # only ever fires for orphans (see _self_destruct_after).
              str(int(budget) + 30)],
+            # Never our stdin: under `lynx serve` that is the MCP pipe, and on
+            # Windows a child that inherits it cannot even start while the
+            # transport's read is pending (see server._transport_stdin).
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=budget,

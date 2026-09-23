@@ -107,21 +107,46 @@ _ExtensionsArg = Annotated[list[str] | None, Field(description=_param("*.extensi
 _PathContainsArg = Annotated[str | None, Field(description=_param("*.path_contains"))]
 
 
+def _transport_stdin():
+    """The client's pipe as a text stream that only the transport reads.
+
+    The transport keeps a blocking read pending on stdin for the whole
+    session. On Windows that read holds up every other query against the same
+    pipe: a native library that checks the standard handles while it loads
+    (numpy's DLL does) and every child process that inherits them wait until
+    the client happens to send its next message. The background load of the
+    indexes stalled on exactly that, for anything from 20 seconds to minutes.
+    So the transport reads from a private duplicate, and fd 0, which is what
+    libraries and children see, becomes the null device."""
+    import io
+
+    real_fd = os.dup(0)
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)
+    os.close(null_fd)
+    return io.TextIOWrapper(os.fdopen(real_fd, "rb"), encoding="utf-8", errors="replace")
+
+
 def _run_stdio(mcp) -> None:
-    """Serve JSON-RPC on the real stdout while fd 1 stays pointed at stderr.
+    """Serve JSON-RPC on the real stdin and stdout while fds 0 and 1 point
+    elsewhere.
 
     The SDK's `stdio_server` writes to `sys.stdout` by default; we hand it a
     text stream on the descriptor saved at import instead, so a library that
-    prints during the background load cannot corrupt the channel."""
+    prints during the background load cannot corrupt the channel. Input comes
+    from `_transport_stdin`, for the reason given there."""
     import io
     import anyio
     from mcp.server.stdio import stdio_server
 
     raw = os.fdopen(_REAL_STDOUT_FD, "wb", buffering=0, closefd=False)
     real_stdout = io.TextIOWrapper(raw, encoding="utf-8", write_through=True)
+    real_stdin = _transport_stdin()
 
     async def _main():
-        async with stdio_server(stdout=anyio.wrap_file(real_stdout)) as (read, write):
+        async with stdio_server(
+            stdin=anyio.wrap_file(real_stdin), stdout=anyio.wrap_file(real_stdout),
+        ) as (read, write):
             await mcp._mcp_server.run(
                 read, write, mcp._mcp_server.create_initialization_options(),
             )
