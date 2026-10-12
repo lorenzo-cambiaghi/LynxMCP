@@ -5,7 +5,44 @@
 Upgrading from 1.9.0: the first start rebuilds every code graph once,
 because node IDs changed (see Fixed). That is about 17 seconds for a
 source of 3,500 C# files, spent while `lynx serve` already answers. The
-search index is untouched.
+search index is untouched. Every start now also checks each codebase source
+for files changed while no Lynx was running, in the background. The default
+`standard` profile loads one more tool, `find_similar`, for about 220 more
+tokens of definitions per session.
+
+### Added
+
+`ignored_globs` per codebase source, next to `ignored_path_fragments`:
+file-name or relative-path patterns to leave out, such as
+`**/20??-??-??-*.txt` for dated chat transcripts kept inside a source. Searches
+drop the excluded files at once, before the next build takes them out of the
+index. On a 4,868-file Unity source, eleven transcripts (3.4 MB of text) had
+been ranking among the first five results of shader queries; with the glob
+they no longer appear.
+
+`lynx manager doctor` checks two more things. It loads each source's lexical
+index the way a search does and runs a query against it, so a hybrid search
+that has quietly become dense-only shows up as an error. And it compares the
+files on disk with the files in the index, listing the ones missing and the
+ones that are gone or excluded now. On the first real run that found 158
+deleted files still searchable in one source and 407 stale or out-of-scope
+files in another, behind an "All checks passed".
+
+The doctor also tells you when the Lynx process serving an index runs other
+code than the command you typed: an editable checkout behind the MCP client
+and the published release on PATH both reported 1.9.0 while one discarded
+every graph the other wrote. Ownership claims now carry the version, the
+install path and a hash of the code.
+
+`search` and `find_similar` ask clients to load them up front
+(`_meta["anthropic/alwaysLoad"]`). Claude Code defers MCP tools behind a tool
+search by default, so a session saw only their names while Grep and Glob were
+ready to call, and agents reached for those.
+
+A rules snippet for `AGENTS.md` or `CLAUDE.md`,
+[`integrations/agent-rules/lynx-rules.md`](integrations/agent-rules/lynx-rules.md),
+with today's tool names and the real score scale. The template in the guide
+still listed tool names that had not existed since before 1.0.
 
 ### Changed
 
@@ -25,6 +62,26 @@ The graph is saved as compact JSON. Saving the graph of that source took 3.5
 seconds and now takes 1.1, and the watcher pays it after every saved file.
 
 New codebase sources ignore `/obj/`, the intermediate output of .NET builds.
+
+`find_similar` is part of the default `standard` profile. It answers "is my
+draft a duplicate?" with the parallel implementations of a snippet, and on a
+real source it found five copies of one quarter-turn rotation in five
+modules, but agents on the default profile could not see it. The handshake
+instructions now open with it and with `search`, the two questions Lynx
+answers better than grep, and stay under the 2,048 characters Claude Code
+keeps (1,889 with two sources; with many sources the paths are dropped first).
+
+A query written like code (`MeshVoxelizer.Voxelize`, `CELL_ON`,
+`getUserModel`) ranks the chunks named after it first in the lexical half of
+search. A method's body does not contain its class name, so a two-line test
+helper that called `MeshVoxelizer.Voxelize` used to outrank the method in a
+lexical search; the definition now comes first. Questions in plain English
+are not affected: none of the 50 tasks of the repository's benchmarks
+contains such an identifier, so their ranking takes the same path as before.
+
+The watcher and the build now agree on which files belong to a source. The
+watcher indexed files inside dot directories such as `.claude/` that every
+build then removed again.
 
 ### Fixed
 
@@ -61,6 +118,45 @@ Runtime/AssemblyInfo.cs every Unity package has, shared one node in the
 code graph. So could two same-named functions inside them, which then had
 one list of callers and one blast radius between them. Node IDs now carry
 a digest of the file path. The labels you read are the same as before.
+
+Hybrid search lost its lexical half on any source past about 32,000 chunks,
+and nothing said so. The BM25 corpus was read from ChromaDB in one call, which
+binds one SQL variable per chunk and failed past SQLite's limit; the error went
+to the log, and every search answered from embeddings alone. On a
+53,552-chunk source, `--mode sparse` returned nothing for
+"MeshVoxelizer Voxelize VoxelizationResult", hybrid scores never passed 0.0164
+(one ranking fused instead of two), and every search paid 2.4 seconds for the
+read that failed. The corpus is now read 5,000 chunks at a time: the same
+query finds `MeshVoxelizer.Voxelize` first in sparse mode, and hybrid scores
+reach 0.032 again. If the lexical index cannot load anyway, `search` and
+`deep_search` say so above their results, each hit carries `mode_effective`,
+and the read is retried after five minutes or when the index changes instead
+of on every query. Reading and tokenizing 53,000 chunks takes about 8 seconds,
+so `lynx serve` does it in the background once its tools answer, and the
+first search of a session finds it loaded.
+
+A filter could answer "no results" for a file that was indexed.
+`path_contains`, `extensions`, `file_glob` and the file list of `search_diff`
+were applied to the top 25 to 40 candidates after the ranking, out of 50,000
+chunks. Two `.compute` files ranked 76th and 87th for the query that was
+filtered to them, so the search said they did not exist, and someone wrote a
+duplicate. Filters now choose the files first and the ranking happens among
+them: both files are found. If ChromaDB refuses a filtered query (it can,
+for a moment, on a store another process has just written to), the search
+retries, then runs unfiltered on a wider pool and filters that.
+
+Files deleted or edited while no Lynx was running stayed in the index until
+someone ran a build. Only a session taking over from another one caught up;
+a server starting as the owner did not. `lynx serve` now scans its sources in
+the background once its watchers run.
+
+Catching up after a takeover crawled a webdoc source's whole site again, and
+re-extracted every PDF of a pdf source. It now does what an incremental
+update does for them: nothing for a webdoc, changed PDFs only.
+
+Commands no longer print `[config] removed SSLKEYLOGFILE=...` (set
+`LYNX_VERBOSE=1` to see it) or "LLM is explicitly disabled. Using MockLLM."
+once per source into their output.
 
 ## 1.9.0 - 2026-09-06
 
