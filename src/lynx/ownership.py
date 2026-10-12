@@ -29,6 +29,8 @@ deliberately advisory:
 from __future__ import annotations
 
 import errno
+import functools
+import hashlib
 import json
 import os
 import platform
@@ -148,9 +150,33 @@ def _write_claim(storage_dir, payload: dict) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def code_identity() -> dict:
+    """Which Lynx this process runs, so another process can tell.
+
+    The version string alone cannot: an editable checkout and the published
+    release both reported 1.9.0 while one wrote graphs the other discarded
+    (schema 3 against 2). `code` hashes the package's own sources, as loaded
+    when this process started; `path` says which install that was.
+    """
+    from . import __version__
+
+    package = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for source in sorted(package.rglob("*.py")):
+        digest.update(source.relative_to(package).as_posix().encode())
+        try:
+            digest.update(source.read_bytes().replace(b"\r\n", b"\n"))
+        except OSError:
+            pass
+    return {"version": __version__, "path": str(package),
+            "code": digest.hexdigest()[:12]}
+
+
 def _payload() -> dict:
     return {"pid": os.getpid(), "host": _host(), "beat": time.time(),
-            "since": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            "since": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "lynx": code_identity()}
 
 
 def _is_ours(claim) -> bool:

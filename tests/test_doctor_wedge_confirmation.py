@@ -17,6 +17,14 @@ from lynx import integrity
 from lynx.manager import doctor
 
 
+@pytest.fixture(autouse=True)
+def _no_lexical_probe(monkeypatch):
+    # The stores here are hand-built WAL tables, not ChromaDB stores, and the
+    # verdict under test is the WAL one: the lexical probe has nothing to read.
+    monkeypatch.setattr(doctor, "check_lexical_index",
+                        lambda *a, **k: {"status": "empty"})
+
+
 def _make_store(storage_dir, *, pending=0, age_s=0, lagging=False,
                 applied=0, file_paths=()):
     """Fabricate the minimal chroma.sqlite3 the inspector reads.

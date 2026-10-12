@@ -442,3 +442,51 @@ def test_the_ui_gives_its_indexes_back_when_it_drops_its_manager(tmp_path):
 
     assert ownership.owner_of(tmp_path) is None
     assert _backend(tmp_path)._claim_store() is True
+
+
+# ---------------------------------------------------------------------------
+# Catching up with what changed while nothing ran
+# ---------------------------------------------------------------------------
+
+def test_a_server_catches_up_only_on_the_sources_it_owns():
+    import types
+    from lynx.source_manager import SourceManager
+
+    caught = []
+    manager = SourceManager.__new__(SourceManager)
+    manager.backends = {
+        "mine": types.SimpleNamespace(
+            is_owner=True, _catch_up_in_background=lambda: caught.append("mine")),
+        "theirs": types.SimpleNamespace(
+            is_owner=False, _catch_up_in_background=lambda: caught.append("theirs")),
+    }
+
+    manager.catch_up()
+
+    assert caught == ["mine"]
+
+
+def test_catching_up_rehashes_a_codebase_and_crawls_no_website():
+    # `force` means "every file's hash" to a codebase, and "fetch the whole
+    # site again" to a webdoc: a takeover used to re-crawl it.
+    import types
+    from lynx.sources.base import SourceBackend
+    from lynx.sources.codebase import CodebaseBackend
+
+    calls = []
+    webdoc = types.SimpleNamespace(update=lambda force=False: calls.append(("webdoc", force)))
+    SourceBackend.catch_up(webdoc)
+    code = CodebaseBackend.__new__(CodebaseBackend)
+    code.update = lambda force=False: calls.append(("codebase", force))
+    code.catch_up()
+
+    assert calls == [("webdoc", False), ("codebase", True)]
+
+
+def test_a_claim_says_which_lynx_wrote_it(tmp_path):
+    # What `lynx manager doctor` compares to tell two installs apart.
+    assert ownership.claim(tmp_path) is True
+    try:
+        assert ownership.read_claim(tmp_path)["lynx"] == ownership.code_identity()
+    finally:
+        ownership.release(tmp_path)

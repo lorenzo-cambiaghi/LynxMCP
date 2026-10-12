@@ -666,7 +666,7 @@ def _anchor_queue_sequence(db) -> int:
 # Coverage drift: the SHA cache claims files the index does not hold
 # ---------------------------------------------------------------------------
 
-def inspect_coverage(storage_dir) -> dict | None:
+def inspect_coverage(storage_dir, disk_files=None) -> dict | None:
     """Read-only audit of the store's SHA cache against what the index HOLDS.
 
     ``file_hashes.json`` is what ``_partition_files`` trusts to decide which
@@ -696,6 +696,16 @@ def inspect_coverage(storage_dir) -> dict | None:
         unvectorized       chunks in the metadata with no vector (0 = clean)
         unvectorized_files the files those chunks belong to
         drifted            True when either kind of damage is present
+
+    Given `disk_files`, what the source should index today (the shared
+    `fs_scan` walk, ignores applied), it also compares the index with the
+    disk itself, which the SHA cache cannot: a file nothing ever recorded is
+    invisible to it. Two more keys then:
+
+        missing            on disk and in scope, under no chunk in the index
+                           (files recorded with `chunks: 0` are expected
+                           to be absent and are not counted)
+        orphans            in the index, gone from disk or out of scope now
     """
     import sqlite3
 
@@ -717,7 +727,8 @@ def inspect_coverage(storage_dir) -> dict | None:
             "SELECT DISTINCT string_value FROM embedding_metadata"
             " WHERE key = 'file_path' AND string_value IS NOT NULL"
         )
-        indexed = {norm(r[0]) for r in rows}
+        indexed_raw = {norm(r[0]): r[0] for r in rows}
+        indexed = set(indexed_raw)
         vector_ids = _vector_segment_ids(storage_dir)
         if vector_ids is not None:
             orphan_ids = [eid for (eid,) in
@@ -762,7 +773,20 @@ def inspect_coverage(storage_dir) -> dict | None:
         else:
             phantom.append(path)
 
+    extra = {}
+    if disk_files is not None:
+        disk = {norm(p): str(p) for p in disk_files}
+        expected_empty = {norm(p) for p, meta in entries.items()
+                          if isinstance(meta, dict) and meta.get("chunks") == 0}
+        extra = {
+            "missing": sorted(path for key, path in disk.items()
+                              if key not in indexed and key not in expected_empty),
+            "orphans": sorted(raw for key, raw in indexed_raw.items()
+                              if key not in disk),
+        }
+
     return {
+        **extra,
         "cached_files": len(entries),
         "indexed_files": len(indexed),
         "phantom_files": sorted(phantom),

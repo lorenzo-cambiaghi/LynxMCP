@@ -248,6 +248,72 @@ def check_config_file(config_path: Optional[Path]) -> "tuple[CheckResult, Option
     )
 
 
+def check_lexical_index(storage_dir: Path, collection_name: str) -> dict:
+    """Load a source's lexical (BM25) index the way a search does, and ask it
+    one question.
+
+    The question is a word taken from the index itself, so a working index
+    always answers it. A collection past SQLite's variable limit made this
+    load fail for weeks with nothing but a log line: every hybrid search
+    answered from the dense half alone, and this check said "All checks
+    passed". Returns {"status": "ok" | "empty" | "error", ...}.
+    """
+    import time
+
+    started = time.monotonic()
+    try:
+        import chromadb
+        from chromadb.config import Settings
+        from rank_bm25 import BM25Okapi
+        from ..rag_manager import lexical_corpus, read_collection_rows
+
+        client = chromadb.PersistentClient(
+            path=str(storage_dir), settings=Settings(anonymized_telemetry=False))
+        collection = client.get_collection(collection_name)
+        total = collection.count()
+        if not total:
+            return {"status": "empty"}
+        docs, _meta = lexical_corpus(read_collection_rows(collection))
+    except Exception as e:
+        return {"status": "error", "detail": f"loading it failed: {e}"}
+    probe = next((tokens for tokens in docs.values() if tokens), None)
+    if probe is None:
+        return {"status": "error",
+                "detail": f"it loaded no text out of {total} chunk(s)"}
+    okapi = BM25Okapi(list(docs.values()))
+    # The rarest word of a chunk: the one BM25 weighs most. On a corpus of a
+    # couple of chunks every word can weigh zero, and then no lexical query
+    # can rank anything, which is BM25, not a broken index.
+    word = max(probe, key=lambda w: okapi.idf.get(w, 0.0))
+    if okapi.idf.get(word, 0.0) > 0 and not (okapi.get_scores([word]) > 0).any():
+        return {"status": "error",
+                "detail": f"the word {word!r}, taken from the index, matched nothing"}
+    return {"status": "ok", "chunks": len(docs),
+            "seconds": time.monotonic() - started}
+
+
+def _files_in_scope(src_cfg: dict) -> list:
+    """The files a codebase source should index today: the walk the index
+    build itself uses, with the same extensions and ignores."""
+    from ..fs_scan import list_candidate_files
+    return list_candidate_files(
+        src_cfg["path"], src_cfg.get("supported_extensions") or (),
+        src_cfg.get("ignored_path_fragments") or (),
+        src_cfg.get("ignored_globs") or ())
+
+
+def _some_paths(paths: list, root: Path, limit: int = 8) -> str:
+    """A few paths relative to the source, and how many more there are."""
+    shown = []
+    for p in paths[:limit]:
+        try:
+            shown.append(str(Path(p).relative_to(root)))
+        except ValueError:
+            shown.append(str(p))
+    more = len(paths) - len(shown)
+    return ", ".join(shown) + (f" (and {more} more)" if more > 0 else "")
+
+
 def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
     """Check one source: path exists, ChromaDB readable, optional drift.
 
@@ -397,13 +463,39 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                     ],
                 )
 
+            # 2b'. The lexical half of hybrid search. A healthy vector index
+            # says nothing about it: the BM25 corpus is read separately, and
+            # when that read failed every search quietly went dense-only.
+            if verdict in ("ok", "in_use"):
+                lexical = check_lexical_index(source_storage, name)
+                if lexical["status"] == "error":
+                    return CheckResult(
+                        name=f"Source {name!r}",
+                        status=STATUS_ERROR,
+                        summary=("the lexical index cannot be loaded: hybrid "
+                                 "search answers from embeddings alone"),
+                        details=details + [
+                            f"BM25: {lexical['detail']}.",
+                            "Searches still return results, with a note saying "
+                            "they are dense-only; identifier queries suffer most.",
+                            f"If the detail is a ChromaDB error, `lynx reset "
+                            f"--source {name}` rebuilds the index from the files.",
+                        ],
+                    )
+                if lexical["status"] == "ok":
+                    details.append(
+                        f"Lexical index: {lexical['chunks']} chunk(s) loaded, "
+                        f"a probe query answered ({lexical['seconds']:.1f}s)")
+
             # 2c. Coverage drift. The SHA cache is what decides which files get
             # work: an entry written for a file whose chunks never landed makes
             # that file permanently invisible to search — silently, and with a
             # perfectly healthy count(). Cheap read-only comparison.
             try:
                 from ..integrity import inspect_coverage
-                coverage = inspect_coverage(source_storage)
+                coverage = inspect_coverage(
+                    source_storage, _files_in_scope(src_cfg)
+                    if src_type == "codebase" else None)
             except Exception:
                 coverage = None
             if coverage and coverage["drifted"]:
@@ -441,6 +533,35 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                     summary=" and ".join(parts),
                     details=findings,
                 )
+
+            # 2d. The disk against the index. The SHA cache only knows files
+            # something once recorded, so a file never indexed is invisible to
+            # 2c, and a search answers "no results" for a file that exists.
+            missing = (coverage or {}).get("missing") or []
+            orphans = (coverage or {}).get("orphans") or []
+            if missing or orphans:
+                root = Path(src_cfg.get("path", ""))
+                parts, findings = [], list(details)
+                if missing:
+                    parts.append(f"{len(missing)} file(s) on disk are not in the index")
+                    findings.append("Not indexed: " + _some_paths(missing, root))
+                if orphans:
+                    parts.append(f"{len(orphans)} indexed file(s) are gone from "
+                                 f"disk or excluded by the config now")
+                    findings.append("Indexed, should not be: " + _some_paths(orphans, root))
+                findings.append(
+                    "Files saved a few seconds ago can show here until the "
+                    "watcher's next pass; anything older is real.")
+                findings.append(
+                    f"Fix: `lynx build --source {name}`, from the Lynx session "
+                    f"that owns the index or with none running, indexes the "
+                    f"missing files and drops the others.")
+                return CheckResult(
+                    name=f"Source {name!r}",
+                    status=STATUS_WARN,
+                    summary=" and ".join(parts),
+                    details=findings,
+                )
         else:
             details.append(f"ChromaDB: not yet built (run `lynx build --source {name}`)")
     else:
@@ -459,6 +580,55 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
         status=STATUS_OK,
         summary=f"type={src_type}, ok",
         details=details,
+    )
+
+
+def check_running_lynx(storage_path: Path, source_names) -> CheckResult:
+    """Compare the Lynx serving each index with the one running this check.
+
+    Two installs on one machine (the published release on PATH, an editable
+    checkout behind the MCP client) read the same indexes with different
+    code: the older one discarded every graph the newer one wrote, and a fix
+    reached only one of them. The version string cannot tell them apart; the
+    owner's claim carries a hash of the code it runs.
+    """
+    from ..ownership import code_identity, owner_of
+
+    mine = code_identity()
+    owners: dict = {}
+    for name in source_names:
+        claim = owner_of(Path(storage_path) / name)
+        if claim and claim.get("pid") != os.getpid():
+            owners.setdefault(claim.get("pid"), (claim, []))[1].append(name)
+    if not owners:
+        return CheckResult(name="Lynx processes", status=STATUS_OK,
+                           summary="no other Lynx process owns these indexes")
+    differing = []
+    for pid, (claim, names) in owners.items():
+        theirs = claim.get("lynx")
+        where = f"pid {pid} (serving {', '.join(names)})"
+        if not theirs:
+            differing.append(f"{where} runs a Lynx older than this one, from "
+                             f"before processes reported their version.")
+        elif theirs.get("code") != mine["code"]:
+            differing.append(f"{where} runs {theirs.get('version')} from "
+                             f"{theirs.get('path')}.")
+    if not differing:
+        return CheckResult(
+            name="Lynx processes", status=STATUS_OK,
+            summary=f"{len(owners)} serving process(es) run the same code as this one")
+    return CheckResult(
+        name="Lynx processes",
+        status=STATUS_WARN,
+        summary="the Lynx serving these indexes is not the one running this check",
+        details=differing + [
+            f"This check runs {mine['version']} from {mine['path']}.",
+            "Both read the same indexes with different code: an older one "
+            "throws away what a newer one wrote, and a fix reaches only one.",
+            "Fix: keep one install, and point your MCP client and your terminal "
+            "at the same `lynx` (guide: 'One install, not two'). Restart the "
+            "client after upgrading, so the server picks the new code up.",
+        ],
     )
 
 
@@ -564,6 +734,7 @@ def run_all_checks(config_path: Optional[Path]) -> list:
         storage_path = Path(cfg.storage_path)
         for name, src_cfg in cfg.sources.items():
             results.append(check_source(name, src_cfg, storage_path))
+        results.append(check_running_lynx(storage_path, list(cfg.sources)))
         results.append(check_disk_space(storage_path))
 
     # Extras (always — informational).
