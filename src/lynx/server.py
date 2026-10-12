@@ -94,8 +94,8 @@ _ANN_WRITE_FILE = ToolAnnotations(
 
 from .tool_docs import desc as _tool_desc, param as _param
 from .tool_profiles import (
-    DEFAULT_PROFILE, PROFILES, ToolProfileError, available_tools, select_tools,
-    validate_profile,
+    ALWAYS_LOAD, DEFAULT_PROFILE, PROFILES, ToolProfileError, available_tools,
+    select_tools, validate_profile,
 )
 
 _SourceArg = Annotated[str | None, Field(description=_param("*.source"))]
@@ -193,14 +193,14 @@ from ._format import (
 # idea when to call each tool.
 
 
-def _source_catalog(manager) -> str:
+def _source_catalog(manager, with_paths: bool = True) -> str:
     """One-line catalog of configured sources, embedded in tool
     descriptions so the client can route without a discovery call."""
     parts = []
     for name, backend in manager.backends.items():
         entry = f"{name} (type={backend.type_name}"
         path = backend.source_config.get("path") or backend.source_config.get("url", "")
-        if path:
+        if path and with_paths:
             entry += f", {path}"
         entry += ")"
         parts.append(entry)
@@ -221,6 +221,11 @@ def _capabilities(manager) -> dict:
     }
 
 
+# Claude Code cuts a server's instructions at 2,048 characters
+# (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH): whatever comes later is lost.
+_MAX_INSTRUCTIONS = 2048
+
+
 def _build_instructions(manager, tools=None, profile: str | None = None) -> str:
     """Handshake instructions sent to the client in the MCP `initialize`
     response. Every client gets this automatically, no rules file needed.
@@ -228,9 +233,23 @@ def _build_instructions(manager, tools=None, profile: str | None = None) -> str:
     This is the one place the source catalog and the usage ladder are
     spelled out, so the tool descriptions don't have to repeat them 17
     times. Kept compact: it rides along in the client's context on every
-    turn. The full playbook is the `lynx://guide` resource. `tools` is the
-    set actually registered; anything outside it is not mentioned, and the
-    profile that hid it is named so the model can ask for it."""
+    turn, and Claude Code keeps only the first `_MAX_INSTRUCTIONS`
+    characters, so the two questions Lynx answers best come first and the
+    source paths go when they would push the text past it. The full playbook
+    is the `lynx://guide` resource. `tools` is the set actually registered;
+    anything outside it is not mentioned, and the profile that hid it is
+    named so the model can ask for it."""
+    for detail in ("full", "names", "compact"):
+        text = _compose_instructions(manager, tools, profile, detail=detail)
+        if len(text) <= _MAX_INSTRUCTIONS:
+            break
+    return text
+
+
+def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
+    """`detail` decides how the sources are described: "full" (type and
+    path), "names" (type, no path), "compact" (names only, and "all" for a
+    capability every source has)."""
     caps = _capabilities(manager)
     has = (lambda name: True) if tools is None else (lambda name: name in set(tools))
 
@@ -242,16 +261,35 @@ def _build_instructions(manager, tools=None, profile: str | None = None) -> str:
     ]
 
     parts = [
-        "Lynx: semantic + lexical search over locally indexed sources (code, "
-        f"library docs, PDFs). Sources: {_source_catalog(manager)}. ",
+        "Lynx searches the code and docs indexed on this machine, by meaning "
+        "and by name. "
     ]
+    if has("search") and has("find_similar"):
+        parts.append(
+            "Before writing new code, two questions it answers better than grep. "
+            "Does this already exist? Call `search` and describe what the code "
+            "does ('method that clamps camera zoom'); identifiers work too. Is "
+            "what I am about to write a duplicate? Run `find_similar` on your "
+            "draft, or on the function you are about to copy: it returns the "
+            "parallel implementations and how close each one is. "
+        )
+    if detail == "compact":
+        parts.append(f"Sources: {', '.join(manager.backends)}. ")
+    else:
+        parts.append(f"Sources: {_source_catalog(manager, detail == 'full')}. ")
+
+    def listed(names):
+        if detail == "compact" and len(names) == len(manager.backends) > 1:
+            return "all"
+        return ", ".join(names)
+
     scoped = []
     if codebase:
-        scoped.append(f"codebase: {', '.join(codebase)}")
+        scoped.append(f"codebase: {listed(codebase)}")
     if graph:
-        scoped.append(f"graph-enabled: {', '.join(graph)}")
+        scoped.append(f"graph-enabled: {listed(graph)}")
     if git:
-        scoped.append(f"git-enabled: {', '.join(git)}")
+        scoped.append(f"git-enabled: {listed(git)}")
     if scoped:
         parts.append(
             f"Per-source tools ({'; '.join(scoped)}) take `source`; omit it when "
@@ -259,12 +297,11 @@ def _build_instructions(manager, tools=None, profile: str | None = None) -> str:
         )
     if has("search"):
         parts.append(
-            "Use `search` FIRST for any question about this code or these docs: "
-            "describe what the code DOES in plain words ('method that clamps "
-            "camera zoom'), not identifier names. Omit `source` to search "
-            "everything. Hybrid scores are small by construction: ~0.03 is a "
-            "STRONG match. For broad queries or a large top_k use outline=true "
-            "(signatures only), then read just the one body you need. "
+            "Use `search` first for any question about this code or these docs; "
+            "omit `source` to search everything. Hybrid scores are small by "
+            "construction: about 0.03 is a strong match. For broad queries or a "
+            "large top_k use outline=true (signatures only), then read just the "
+            "one body you need. "
         )
     lookups = [n for n in ("find_definition", "find_usages", "describe_symbol") if has(n)]
     if lookups:
@@ -377,6 +414,11 @@ def _normalize_sources(manager, source):
     return list(dict.fromkeys(names))  # de-dup, preserve order
 
 
+def _with_notice(notice: str, text: str) -> str:
+    """Put a degraded-search notice above a tool's answer, when there is one."""
+    return f"{notice}\n\n{text}" if notice else text
+
+
 def _register_search_tools(mcp, manager):
     """Register `search` and `deep_search` (fixed names, `source` param)."""
     _desc_search = _tool_desc("search")
@@ -408,7 +450,8 @@ def _register_search_tools(mcp, manager):
                 label = f"sources {names}"
             filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
             fmt = _format_outline_results if outline else _format_search_results
-            return fmt(query, results, label, filter_suffix)
+            return _with_notice(manager.lexical_notice(names),
+                                fmt(query, results, label, filter_suffix))
         except Exception as e:
             return f"Error during search: {str(e)}"
 
@@ -468,7 +511,8 @@ def _register_search_tools(mcp, manager):
             if path_contains:
                 meta_parts.append(f"path_contains={path_contains!r}")
             meta_suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
-            return _format_deep_response(response, queries, label, meta_suffix)
+            return _with_notice(manager.lexical_notice(names),
+                                _format_deep_response(response, queries, label, meta_suffix))
         except Exception as e:
             return f"Error during deep search: {str(e)}"
 
@@ -907,7 +951,22 @@ def apply_tool_profile(mcp, profile: str, include=(), exclude=()):
         else:  # pragma: no cover - older mcp releases
             mcp._tool_manager._tools.pop(name, None)
     _slim_tool_schemas(mcp)
+    _mark_always_loaded(mcp)
     return kept, dropped
+
+
+def _mark_always_loaded(mcp) -> None:
+    """Ask clients to load the `ALWAYS_LOAD` tools up front.
+
+    `_meta["anthropic/alwaysLoad"]` on a `tools/list` entry is how Claude
+    Code learns it (the person configuring the server can still defer them).
+    Set after registration, on SDK releases whose tools carry `meta`; older
+    ones simply list the tools without it."""
+    for name in ALWAYS_LOAD:
+        tool = mcp._tool_manager._tools.get(name)
+        if tool is None or "meta" not in getattr(type(tool), "model_fields", {}):
+            continue
+        tool.meta = {**(tool.meta or {}), "anthropic/alwaysLoad": True}
 
 
 def _slim_tool_schemas(mcp) -> None:

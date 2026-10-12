@@ -85,7 +85,9 @@ def test_profiles_nest_and_full_is_everything():
     core, standard, full = (set(tp.PROFILES[p]) for p in ("core", "standard", "full"))
     assert core < standard < full
     assert full == set(tp.ALL_TOOLS)
-    assert (len(core), len(standard), len(full)) == (5, 10, 17)
+    assert (len(core), len(standard), len(full)) == (5, 11, 17)
+    # The answer to "is this a duplicate?" belongs where agents can reach it.
+    assert "find_similar" in standard
     assert tp.DEFAULT_PROFILE == "standard"
 
 
@@ -212,7 +214,10 @@ def test_config_tools_block(tmp_path):
 # 10,704 / 15,279 before that, and about 31,000 at full before the profiles
 # existed. Headroom is now thin: ~120 characters on core, ~270 on full. Raise a
 # ceiling only with a reason written next to it.
-_WIRE_BUDGET = {"core": 5_300, "standard": 11_800, "full": 16_800}
+# 2026-10-12, standard 11,800 -> 12,400: find_similar joined the profile (12,099
+# measured). It is the tool that finds parallel implementations of a draft,
+# and agents of the default profile could not see it.
+_WIRE_BUDGET = {"core": 5_300, "standard": 12_400, "full": 16_800}
 _MAX_DESCRIPTION = 450
 
 
@@ -259,3 +264,57 @@ def test_server_reports_the_package_version_not_the_sdk_version():
     opts = mcp._mcp_server.create_initialization_options()
     assert opts.server_version == package_version()
     assert opts.server_version != importlib.metadata.version("mcp")
+
+
+# ---------------------------------------------------------------------------
+# the instructions an agent sees first
+# ---------------------------------------------------------------------------
+
+def test_the_instructions_lead_with_the_two_questions_lynx_answers_best():
+    mgr = _Manager({"demo": _Backend()})
+    text = _build_instructions(mgr, list(tp.STANDARD_TOOLS), "standard")
+
+    lead = text[:600]
+    assert "`search`" in lead and "`find_similar`" in lead
+    assert lead.index("`find_similar`") < text.index("Sources:")
+
+
+def test_the_instructions_name_find_similar_only_where_it_is_loaded():
+    mgr = _Manager({"demo": _Backend()})
+
+    assert "find_similar` on your" not in _build_instructions(mgr, list(tp.CORE_TOOLS), "core")
+
+
+def test_the_instructions_fit_what_claude_code_keeps(monkeypatch):
+    # Claude Code cuts them at 2,048 characters. Thirty sources with long
+    # paths would not fit; without the paths they do, and the advice at the
+    # top survives either way.
+    backends = {}
+    for i in range(30):
+        b = _Backend()
+        b.source_config = {"path": f"C:/projects/client-{i:02d}/a-rather-long/source/tree",
+                           "git_integration": {"enabled": True}}
+        backends[f"src{i:02d}"] = b
+    mgr = _Manager(backends)
+
+    text = _build_instructions(mgr, list(tp.STANDARD_TOOLS), "standard")
+
+    assert len(text) <= 2048
+    assert "client-00" not in text and "src29" in text
+
+
+def test_search_and_find_similar_ask_to_be_loaded_up_front():
+    # Claude Code defers MCP tools behind a tool search unless a tool's _meta
+    # says otherwise; deferred, they lose to the always-loaded Grep and Glob.
+    mgr = _Manager({"demo": _Backend()})
+    mcp = _register_all(mgr)
+    apply_tool_profile(mcp, "standard")
+
+    flagged = {t.name for t in asyncio.run(mcp.list_tools())
+               if (t.meta or {}).get("anthropic/alwaysLoad") is True}
+
+    assert flagged == {"search", "find_similar"}
+    # On the wire the SDK serializes by alias: the key is `_meta`.
+    entry = next(t for t in asyncio.run(mcp.list_tools()) if t.name == "search")
+    assert entry.model_dump(mode="json", by_alias=True, exclude_none=True)["_meta"] == {
+        "anthropic/alwaysLoad": True}

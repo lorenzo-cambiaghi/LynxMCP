@@ -207,7 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_serve.add_argument("--config", "-c", metavar="PATH")
     sp_serve.add_argument(
         "--profile", choices=["core", "standard", "full"],
-        help="Which tools to expose: core (5), standard (10, default) or full "
+        help="Which tools to expose: core (5), standard (11, default) or full "
              "(17). Overrides LYNX_TOOL_PROFILE and tools.profile in config.json.",
     )
 

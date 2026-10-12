@@ -48,6 +48,9 @@ class FakeManager:
         )
         self.calls = []
 
+    def lexical_notice(self, names=None):
+        return getattr(self, "notice", "")
+
     def get(self, source):
         if source not in self.backends:
             raise KeyError(f"Unknown source {source!r}")
@@ -309,3 +312,14 @@ def test_resolve_source_none_no_candidates():
     mgr = FakeManager({"a": FakeBackend(type_name="webdoc")})
     with pytest.raises(ValueError, match="no configured"):
         _resolve_source(mgr, None, predicate=lambda b: b.type_name == "codebase")
+
+
+def test_search_puts_a_degraded_search_notice_above_the_results():
+    mgr = FakeManager({"a": FakeBackend()})
+    mgr.notice = "Note: lexical index unavailable for source 'a': results are dense-only"
+    tools = _tools(_register_everything(mgr))
+
+    out = tools["search"].fn(query="q", source="a")
+
+    assert out.startswith(mgr.notice)
+    assert "return a + b" in out

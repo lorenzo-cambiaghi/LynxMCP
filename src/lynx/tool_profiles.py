@@ -53,11 +53,23 @@ CORE_TOOLS: Tuple[str, ...] = (
 
 STANDARD_TOOLS: Tuple[str, ...] = CORE_TOOLS + (
     "find_definition",
+    # "Does this already exist?" asked with a draft in hand: the best answer
+    # Lynx has to duplicated code, and it used to be reachable only from the
+    # command line or the full profile.
+    "find_similar",
     "deep_search",
     "graph_query",
     "repo_overview",
     "search_diff",
 )
+
+# Tools a client should load with the session instead of deferring them
+# behind a tool search. Claude Code defers every MCP tool by default: the model
+# sees only the names, has to fetch a schema before a call, and Grep and Glob,
+# always loaded, win by default. These two answer "does this exist?" and "is
+# this a duplicate?", the questions Lynx is for. Each costs context on every
+# turn, so the list stays short.
+ALWAYS_LOAD: Tuple[str, ...] = ("search", "find_similar")
 
 PROFILES = {
     "core": CORE_TOOLS,
