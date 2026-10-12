@@ -60,7 +60,7 @@ The server answers the MCP handshake in about a second and opens the indexes in 
 
 ## The tools your AI gets
 
-The tool set is fixed: it does not grow with the number of sources. It is also layered, because every tool definition rides in your client's context on every turn. Three profiles: `core` (5 tools, about 1,300 tokens of definitions), `standard` (10 tools, about 2,800 tokens, the default) and `full` (17 tools, about 4,150 tokens). Set `tools.profile` in config.json or pass `lynx serve --profile full`; `tools.include` adds a single tool to a profile. Tools take a `source` argument where relevant.
+The tool set is fixed: it does not grow with the number of sources. It is also layered, because every tool definition rides in your client's context on every turn. Three profiles: `core` (5 tools, about 1,300 tokens of definitions), `standard` (11 tools, about 3,050 tokens, the default) and `full` (17 tools, about 4,150 tokens). Set `tools.profile` in config.json or pass `lynx serve --profile full`; `tools.include` adds a single tool to a profile. Tools take a `source` argument where relevant.
 
 | Tool | Profile | What it answers |
 |------|---------|-----------------|
@@ -70,7 +70,7 @@ The tool set is fixed: it does not grow with the number of sources. It is also l
 | `find_definition(symbol)` | standard | Where is X defined? (AST-precise when the graph is on, BM25 fallback otherwise.) |
 | `find_usages(symbol)` | core | Every use of X: calls *and* non-call references (generics, decorators, docs). |
 | `find_tests_for(symbol)` | full | Are there tests for X? |
-| `find_similar(snippet)` | full | Does code like this already exist? |
+| `find_similar(snippet)` | standard | Is my draft a duplicate? The parallel implementations of a snippet. |
 | `describe_symbol(symbol)` | core | One-shot context for X: definition, who calls it, what it calls, its tests, in a single call. |
 | `impact(symbol)` | core | Blast radius: everything that reaches X *transitively* through the call graph (with hop distance), plus the tests to re-run. |
 | `module_summary(file)` | full | A file as a unit: the symbols it defines, what it imports, and which files depend on it. *(graph)* |
@@ -193,6 +193,8 @@ Every search ranks the same way. `search(query, outline=true)` (or `?view=outlin
 
 ## Integrations
 
+Claude Code defers MCP tools behind a tool search by default; `search` and `find_similar` ask to be loaded up front, so an agent can call them without looking them up first. To make an agent reach for them before writing code, paste [the agent rules snippet](integrations/agent-rules/lynx-rules.md) into your `AGENTS.md` or `CLAUDE.md`.
+
 Search and the code graph are served as NDJSON over a local HTTP API (`/api/v1`), and the MCP tools compose with any other MCP server your agent has. Everything below stays on your machine; only the other side of a join (GitHub, Jira, Sentry) touches an API.
 
 - [Coral](docs/CORAL.md): Lynx is a community source in Coral's registry, `lynx.search` plus six graph functions, so a behavioural question becomes a SQL table you join with live GitHub or Sentry data.
@@ -209,6 +211,7 @@ Search and the code graph are served as NDJSON over a local HTTP API (`/api/v1`)
 | [Manager UI](docs/GUIDE.md#lynxmanager-guided-setup-web-ui-diagnostics-new-in-v09) | Guided setup, playground, diagnostics |
 | [Outline mode](docs/OUTLINE.md) | Signatures instead of bodies: when to use it, measured data, chart |
 | [Coral](docs/CORAL.md) / [DuckDB](docs/DUCKDB.md) / [Steampipe](integrations/steampipe/steampipe-plugin-lynx/) | Code search and the code graph as SQL tables |
+| [Agent rules snippet](integrations/agent-rules/lynx-rules.md) | Paste into `AGENTS.md` / `CLAUDE.md` so agents search before writing code |
 | [MCP recipes](docs/MCP_RECIPES.md) | Combining Lynx with GitHub / Sentry / Jira MCP servers |
 | [PR impact analysis (GitHub Action)](integrations/github-action/) | Downstream callers and related code, commented on every PR |
 | [config.example.json](config.example.json) | Annotated example configuration |

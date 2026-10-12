@@ -726,7 +726,8 @@ client will recognise in its tool list (e.g. `myproject`, `unityDoc`,
 | `type` | **Required.** `"codebase"` for a local directory of files. Other supported types: `"webdoc"` (see [Webdoc sources](#webdoc-sources)) and `"pdf"` (see [PDF sources](#pdf-sources)). |
 | `path` | **Required.** Absolute path of the directory to index. |
 | `supported_extensions` | File extensions to include (e.g. `[".py", ".md"]`). Anything else is ignored. |
-| `ignored_path_fragments` | Substrings: any path containing one is skipped by the watcher (forward slashes are auto-normalized). |
+| `ignored_path_fragments` | Substrings: any path containing one is left out of the index, the graph and the watcher (forward slashes are auto-normalized). A directory matching one is not even walked. |
+| `ignored_globs` | Glob patterns for files to leave out, such as `["**/20??-??-??-*.txt"]` for dated chat transcripts. Without a slash a pattern matches the file name; with one, the path relative to `path`, where a leading `**/` also matches at the top. Searches drop excluded files at once; the next build removes them from the index. |
 | `watcher.enabled` | Set to `false` to disable the live file watcher for this source. |
 | `watcher.debounce_seconds` | Time to wait after a save before re-indexing. Default `2.0`. |
 | `git_integration.enabled` | When `true`, drift / status reports include the last indexed git commit for this source. |
@@ -1672,8 +1673,8 @@ layers the tools in three profiles:
 | Profile | Tools | Size of `tools/list` |
 |---|---|---|
 | `core` | search, describe_symbol, find_usages, impact, feedback | 5.2k characters, about 1,300 tokens |
-| `standard` (default) | core + find_definition, deep_search, graph_query, repo_overview, search_diff | 11.3k characters, about 2,800 tokens |
-| `full` | all 17 | 16.5k characters, about 4,150 tokens |
+| `standard` (default) | core + find_definition, find_similar, deep_search, graph_query, repo_overview, search_diff | 12.2k characters, about 3,050 tokens |
+| `full` | all 17 | 16.7k characters, about 4,150 tokens |
 
 Measured with two codebase sources, graph and git enabled. Before the
 profiles existed the list weighed 30.7k characters, about 7,700 tokens.
@@ -1931,163 +1932,16 @@ project rules file the assistant reads at the start of every session.
 
 ### Drop-in template
 
-A generic template follows. Replace `<myproject>` / `<unityDoc>` / etc.
-with your actual source names, then copy it into whichever convention
-file your AI client uses (table further down).
-
-```markdown
-# Code Reuse & Library Awareness
-
-This project exposes a local MCP server with semantic search over
-multiple sources. Use them BEFORE writing new code or guessing at
-library APIs.
-
-## Sources available
-
-- `search`: our own codebase. Use it to find existing
-  implementations before writing new utilities, interfaces, or patterns.
-- `search`: Unity 6.x manual / API reference. Use it whenever
-  you're about to call a Unity API. The model's knowledge cutoff may
-  predate the version actually in use.
-- `search`: AvaloniaUI docs. Use it for any AvaloniaUI binding,
-  control, or style question (the model doesn't know this library well).
-
-When in doubt about *which* source has the answer, call
-`search(query)` once. It fuses results across every source
-with RRF and tags each hit with its source.
-
-## When to use the graph layer instead of search
-
-If the source `<myproject>` has `graph: { enabled: true }` in
-`config.json`, you also have 9 structural tools available
-(`graph_query("callers")`, `graph_query("callees")`,
-`graph_query("subclasses")`, `graph_query("superclasses")`,
-`graph_query("imports")`, `graph_query("neighbors")`,
-`graph_query("shortest_path")`, `graph_query("overview")`,
-`graph_query("surprising_connections")`).
-
-The rule of thumb: search finds files, the graph finds relationships.
-
-- Use search to answer "WHERE is the code that does X?".
-- Use the graph to answer "WHO calls X?", "WHAT does X depend on?",
-  "WHICH classes implement X?", "HOW does A reach B?".
-
-Specifically:
-
-- Before a refactor of `Foo.bar`: call `graph_query("callers")("bar")`
-  to see the blast-radius before proposing changes.
-- Before adding a method to an interface: call
-  `graph_query("subclasses")("IFoo")` to find every implementation
-  that will need updating.
-- When starting an unfamiliar session: call
-  `graph_query("overview")()` once to get god-nodes +
-  communities + stats in one shot.
-- When the user asks "what depends on this?" or "what uses this?": call
-  the graph, NOT a fuzzy text search.
-
-The graph is best-effort, not whole-program type inference. Each result
-carries a `confidence` flag:
-- `extracted`: intra-file, deterministic.
-- `resolved`: single cross-file candidate, high confidence.
-- `ambiguous`: multiple candidates with the same name. Surface all of
-  them to the user.
-
-## When to search first
-
-Before implementing any of the following, search the codebase source:
-
-- Utility functions: math, geometry, IO, parsing, formatting,
-  helpers, extension methods.
-- Generic interfaces or components: persistence, lifecycle,
-  eventing, pooling, caching, registration, validation.
-- Architectural patterns: factory, registry, observer, strategy,
-  command, mediator.
-
-Before invoking a library API, search the corresponding docs source.
-Relying on training-data knowledge is wrong for libraries that update
-frequently.
-
-For one-off code that lives in a single feature (gameplay scripting,
-a single API endpoint, a one-shot script), normal judgement is fine.
-
-## How to search
-
-- Semantic, not lexical. Describe what the code *does*, not the
-  name you would give it.
-  - Bad: `search("AngleBetween")`
-  - Good: `search("calculate angle between two vectors in degrees")`
-- Top-K: the server default is `search.default_top_k` from config
-  (typically 8). Pass `top_k=10` or higher for very open discovery
-  queries. Pass `top_k=3` when you only want the one canonical place.
-- Filters: when you already know the rough area, narrow with
-  `extensions=[...]`, `path_contains="..."`, or `file_glob="..."`.
-
-## How to interpret scores
-
-The default retrieval mode is hybrid (BM25 + dense, fused via
-Reciprocal Rank Fusion with `k=60`). RRF scores are NOT cosine
-similarity. They live on a different scale:
-
-| Hybrid (RRF) score | Meaning |
-|---|---|
-| ~0.030–0.033 | Excellent. The chunk is near rank 0 in both retrievers. This is the practical maximum. |
-| ~0.020–0.029 | Strong. Worth showing to the user. |
-| ~0.012–0.019 | Decent. Useful for context but maybe not the canonical answer. |
-| < 0.012 | Weak. Consider escalating to `deep_search`. |
-
-Do NOT read a hybrid score of 0.03 as "low confidence". That is the
-top of the scale, not the bottom. If you ever see scores between 0.3
-and 0.7, the call was running in `mode="dense"` (per-call override)
-and you're looking at cosine similarity, where `> 0.55` is a good
-match and `< 0.45` is weak.
-
-## When to escalate to `deep_search`
-
-`search` is your default: fast, one query, hybrid retrieval.
-Use it 90% of the time.
-
-Escalate to the matching `deep_search` ONLY when:
-
-1. `search` returned no results or all scores looked weak.
-2. The user rejected the previous results ("non è quello che cercavo",
-   "search more thoroughly", "look harder").
-3. The user explicitly asks for an exhaustive search.
-
-When you escalate, prepare 2 to 3 genuinely different query variants,
-not paraphrases. Bad: `["IDamageable", "IDamageable interface", "the
-IDamageable interface"]`. Good:
-
-```
-deep_search([
-  "IDamageable interface",                              # literal terms
-  "damage system contract",                             # semantic intent
-  "where damage is dispatched between entities",        # usage angle
-])
-```
-
-You can also override `mode` per-call:
-- `mode="dense"` if the previous hybrid result was diluted by lexical noise.
-- `mode="sparse"` to chase an exact identifier or string.
-
-Anti-pattern: do NOT default to `deep_search` "just in case".
-If `search` already gave you what you need, you're done.
-
-## How to report back
-
-For each candidate above the threshold, present:
-
-- Precise location: file + line range (e.g. `Container.cs:L555-580`)
-  plus the qualified symbol name from the result header (e.g.
-  `MyProject.DI.Container.TryInjectInterfaceReference`). Both come for
-  free from the AST chunker. Surface them so the user can jump straight
-  to the code instead of grepping.
-- One-line summary of what the chunk does.
-- Verdict for the current task: reusable as-is, extendable,
-  or only superficially similar.
-
-Only after the user confirms that nothing existing fits, implement
-from scratch.
-```
+The template is
+[`integrations/agent-rules/lynx-rules.md`](../integrations/agent-rules/lynx-rules.md).
+Replace `<project>` and `<library-docs>` with your source names and paste it
+into the file your AI client reads (table below). It covers the two questions
+Lynx answers best before code gets written (does this exist already? is my
+draft a duplicate?), the structural tools, how filters behave, and how to read
+the scores. Keep it in your repository rather than copying from an old
+version of this guide: rules that name tools which no longer exist, such as
+the per-source `search_<name>` of the releases before 1.0, make an agent
+call nothing at all.
 
 ### Where to put the rules file
 
@@ -2104,7 +1958,7 @@ agents.
 
 ### Tuning the strictness
 
-The template above is a reasonable default. Two knobs:
+The template is a reasonable default. Two knobs:
 
 First, how strict the "search first" rule should be. The strict version
 says "MUST search before implementing X". A softer version says
@@ -2128,9 +1982,10 @@ every session noisy.
 ### A note on what to *avoid* in your rules
 
 - Don't tell the AI to call `update_source_index(source, force=True)`
-  routinely. A force rebuild on a large source takes minutes and re-embeds
-  everything. It should be a deliberate user action, not a reflex. The
-  `Needs update` line is the right surface.
+  routinely. It re-checks every file of the source and blocks the session
+  while it runs; the watcher already keeps the index current. It should be
+  a deliberate user action, not a reflex. The `Needs update` line is the
+  right surface.
 - Don't ask the AI to call `search` for queries it can answer
   by reading a single known file. The tool's job is discovery. Once you
   know what file to read, just read it.
@@ -2884,14 +2739,40 @@ Pre-build with the snippet in
 [Build the index for the first time](#build-the-index-for-the-first-time).
 
 **The MCP client receives broken responses.**
-Something is writing to stdout after `_restore_real_stdout()`. Check that
-any `print()` you add uses `file=sys.stderr`.
+Something is writing to the JSON-RPC channel. The server keeps fd 1 pointed
+at stderr for its whole life and writes responses to a saved copy of the
+real stdout, so check that new code does not write to that copy or to
+`sys.__stdout__`; a plain `print()` lands on stderr.
 
 **A file change isn't being indexed.**
 - Verify the file extension is in `supported_extensions`.
-- Verify the path doesn't match any `ignored_path_fragments` substring.
+- Verify the path matches no `ignored_path_fragments` substring and no
+  `ignored_globs` pattern, and that no directory on it starts with a dot.
+  The watcher and the build apply the same rules.
 - Wait at least `watcher.debounce_seconds` after the save.
 - Check the server's stderr for `[rag] Re-indexed ...` or any error line.
+- `lynx manager doctor` lists the files on disk the index does not hold,
+  and the indexed files that are gone or excluded now.
+
+**One install, not two.**
+`lynx manager doctor` warns when the Lynx serving an index is not the one
+running the check. That happens with two installs: the published release
+that `uv tool install` or `pipx` put on your PATH, say, and an editable
+checkout or another Python behind the MCP client's `command`. Both read the
+same indexes with different code. When the graph format differs each one
+throws away what the other wrote, and the terminal prints
+`[graph] schema_version mismatch ...; discarding cache`.
+
+Find out what each one runs: `lynx --version` and `where lynx` (`which lynx`
+on macOS and Linux) for the terminal, the `command` and `args` of the lynx
+entry in your client's MCP config for the server. Then keep one. With the
+release, point the client at the same `lynx` executable
+(`"command": "lynx", "args": ["serve", "--config", "..."]`) and remove the
+other copies. When developing Lynx, install the checkout in one environment
+(`uv tool install --editable .`, or `pip install -e .` in a venv) and point
+both the client and the terminal at it. After an upgrade, restart the MCP
+client: the server keeps running the code it started with, and the warning
+names its process until then.
 
 **`config.json` not found.**
 Either copy `config.example.json` to `config.json`, or set the

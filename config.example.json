@@ -25,7 +25,7 @@
       "top_n_before_rerank": 30
     }
   },
-  "_tools_comment": "Which MCP tools `lynx serve` registers: core (5), standard (10, the default) or full (17). Every tool definition sits in the client's context on every turn, so smaller is cheaper. `include` / `exclude` adjust a profile by tool name; `lynx serve --profile` and the LYNX_TOOL_PROFILE variable override this block.",
+  "_tools_comment": "Which MCP tools `lynx serve` registers: core (5), standard (11, the default) or full (17). Every tool definition sits in the client's context on every turn, so smaller is cheaper. `include` / `exclude` adjust a profile by tool name; `lynx serve --profile` and the LYNX_TOOL_PROFILE variable override this block.",
   "tools": {
     "profile": "standard",
     "include": [],
@@ -74,6 +74,8 @@
         "/.idea/",
         "/.vscode/"
       ],
+      "_ignored_globs_comment": "File-name or relative-path globs to leave out, e.g. dated chat transcripts. A pattern without a slash matches the file name; with one, the path relative to `path` (a leading **/ also matches at the top).",
+      "ignored_globs": [],
       "watcher": {
         "enabled": true,
         "debounce_seconds": 2.0
