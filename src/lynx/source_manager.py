@@ -342,6 +342,33 @@ class SourceManager:
                     file=sys.stderr,
                 )
 
+    def catch_up(self) -> None:
+        """Pick up, in the background, what changed while no Lynx process
+        watched these sources: files edited, added or deleted meanwhile.
+
+        Only a takeover used to do this. A server starting as the owner did
+        not, so a file deleted while nothing ran stayed searchable until
+        someone ran a build (158 such files on a real source). Owned sources
+        only; call it after `start_watchers`, so nothing in between is missed.
+        A one-shot CLI command must not: it would exit in the middle of the
+        writes."""
+        for backend in self.backends.values():
+            if getattr(backend, "is_owner", False):
+                backend._catch_up_in_background()
+
+    def warm_up(self) -> None:
+        """Load the lexical index of every source that searches with it, so
+        the first search of a session does not pay for it: reading and
+        tokenizing 53,000 chunks takes about 8 seconds."""
+        for backend in self.backends.values():
+            rag = getattr(backend, "rag", None)
+            if rag is not None and getattr(rag, "search_mode", "dense") != "dense":
+                try:
+                    rag._ensure_bm25()
+                except Exception as e:
+                    print(f"[manager] could not load the lexical index of "
+                          f"{backend.name!r}: {e}", file=sys.stderr)
+
     def close(self) -> None:
         """Stop the watchers and hand back every index this process owns.
 
@@ -379,6 +406,25 @@ class SourceManager:
 
     def search(self, source: str, query: str, top_k: int = 5, **kw) -> list[dict]:
         return self.get(source).search(query, top_k=top_k, **kw)
+
+    def lexical_notice(self, names=None) -> str:
+        """A line per searched source whose lexical index failed to load.
+
+        Without it a hybrid search that lost its BM25 half looks like any
+        other: the same format, worse answers to identifier queries, and
+        scores that never pass about 0.016 because only one ranking is fused.
+        Empty when every source answered with both halves."""
+        lines = []
+        for name, backend in self.backends.items():
+            if names and name not in names:
+                continue
+            rag = getattr(backend, "rag", None)
+            reason = rag.lexical_unavailable() if rag is not None else None
+            if reason:
+                lines.append(
+                    f"Note: lexical index unavailable for source {name!r}: "
+                    f"results are dense-only ({reason[:120]})")
+        return "\n".join(lines)
 
     def search_batch(self, source: str, queries, top_k: int = 5, **kw) -> list:
         """Batch search: one result list per query. The codebase backend

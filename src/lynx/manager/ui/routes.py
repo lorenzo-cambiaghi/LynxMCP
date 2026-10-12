@@ -58,6 +58,8 @@ def _format_v1_hit(h: dict) -> dict:
         "start_line": h.get("start_line") or 0,
         "end_line": h.get("end_line") or 0,
         "score": float(h.get("score") or 0.0),
+        # "dense" on a hybrid source means its lexical index failed to load.
+        "mode_effective": h.get("mode_effective", ""),
         "content": h.get("content", ""),
     }
 

@@ -46,6 +46,9 @@ class _FakeManager:
         self.calls = []
         self._returns = returns
 
+    def lexical_notice(self, names=None):
+        return getattr(self, "notice", "")
+
     def _record(self, name, *a, **kw):
         self.calls.append((name, a, kw))
         if name in self._returns and isinstance(self._returns[name], Exception):
@@ -480,3 +483,37 @@ def test_search_json_is_pure_json(cli, capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0 and payload["ok"] is True
     assert payload["operation"] == "search" and payload["results"] == results
+
+
+# ---------------------------------------------------------------------------
+# What an agent reads: the answer, not the plumbing
+# ---------------------------------------------------------------------------
+
+def test_opening_the_engine_prints_nothing_to_stdout(monkeypatch, capfd):
+    # LlamaIndex printed "LLM is explicitly disabled. Using MockLLM." once per
+    # source into every command's output when handed llm=None.
+    import lynx.rag_manager as rag_manager
+    from llama_index.core import MockEmbedding
+
+    monkeypatch.setattr(rag_manager, "OnnxEmbedding",
+                        lambda model_name: MockEmbedding(embed_dim=4))
+    rag_manager._configure_local_only("any-model")
+
+    out, _err = capfd.readouterr()
+    assert out == ""
+    assert type(rag_manager.Settings.llm).__name__ == "MockLLM"
+
+
+def test_the_tls_workaround_is_silent_unless_asked(monkeypatch, capfd):
+    from lynx.config import sanitize_tls_keylog_env
+
+    monkeypatch.delenv("LYNX_VERBOSE", raising=False)
+    monkeypatch.delenv("LYNX_KEEP_SSLKEYLOGFILE", raising=False)
+    monkeypatch.setenv("SSLKEYLOGFILE", "C:/antivirus/pipe")
+    sanitize_tls_keylog_env()
+    assert "SSLKEYLOGFILE" not in "".join(capfd.readouterr())
+
+    monkeypatch.setenv("SSLKEYLOGFILE", "C:/antivirus/pipe")
+    monkeypatch.setenv("LYNX_VERBOSE", "1")
+    sanitize_tls_keylog_env()
+    assert "SSLKEYLOGFILE" in capfd.readouterr().err

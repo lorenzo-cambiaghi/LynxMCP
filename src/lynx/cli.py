@@ -329,7 +329,8 @@ def _cmd_search(args) -> int:
             results = manager.search_all(args.query, top_k=top_k,
                                          only=requested, **filters)
         return _render_search(args, results, f"sources {requested}",
-                              requested, as_json)
+                              requested, as_json,
+                              manager.lexical_notice(requested))
 
     args.source = requested[0] if requested else None
     source_name = _resolve_source(args, config, allow_all=True)
@@ -337,7 +338,8 @@ def _cmd_search(args) -> int:
     if source_name == "ALL":
         with _muted_stdout(as_json):
             results = manager.search_all(args.query, top_k=top_k, **filters)
-        return _render_search(args, results, "all sources", None, as_json)
+        return _render_search(args, results, "all sources", None, as_json,
+                              manager.lexical_notice())
     # --mode applies only to single-source search (cross-source uses RRF
     # over per-source default modes).
     with _muted_stdout(as_json):
@@ -357,10 +359,11 @@ def _cmd_search(args) -> int:
             results = manager.search(source_name, args.query,
                                      top_k=top_k, **filters)
     return _render_search(args, results, f"source {source_name!r}",
-                          source_name, as_json)
+                          source_name, as_json,
+                          manager.lexical_notice([source_name]))
 
 
-def _render_search(args, results, label, source, as_json) -> int:
+def _render_search(args, results, label, source, as_json, notice="") -> int:
     """Render search hits.
 
     Text goes through the same `_format_*` renderers the `search` MCP tool
@@ -370,9 +373,12 @@ def _render_search(args, results, label, source, as_json) -> int:
     thing to fix.
     """
     if as_json:
-        _emit_json({"ok": True, "operation": "search", "source": source,
-                    "query": args.query, "count": len(results),
-                    "results": results})
+        payload = {"ok": True, "operation": "search", "source": source,
+                   "query": args.query, "count": len(results),
+                   "results": results}
+        if notice:
+            payload["notice"] = notice
+        _emit_json(payload)
         return 0
     from ._format import (
         _build_filter_suffix, _format_outline_results, _format_search_results,
@@ -380,6 +386,8 @@ def _render_search(args, results, label, source, as_json) -> int:
     suffix = _build_filter_suffix(args.glob, args.ext, args.path_contains)
     fmt = (_format_outline_results if getattr(args, "outline", False)
            else _format_search_results)
+    if notice:
+        print(notice, end="\n\n")
     print(fmt(args.query, results, label, suffix))
     return 0
 

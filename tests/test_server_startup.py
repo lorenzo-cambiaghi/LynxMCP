@@ -62,9 +62,14 @@ class _FakeManager:
         self.backends = {n: _RealBackend(c) for n, c in config.sources.items()}
         self.broken = {}
         self.watchers_started = False
+        self.order = []
 
     def start_watchers(self):
         self.watchers_started = True
+        self.order.append("watchers")
+
+    def catch_up(self):
+        self.order.append("catch_up")
 
     def list_sources(self):
         return [{"name": n, "type": b.type_name, "chunk_count": 42} for n, b in self.backends.items()]
@@ -166,7 +171,7 @@ def test_wait_seconds_comes_from_the_environment(monkeypatch):
 # the loader
 # ---------------------------------------------------------------------------
 
-def test_loader_hands_the_manager_over_and_starts_the_watchers():
+def test_loader_hands_the_manager_over_and_starts_the_watchers_then_catches_up():
     cfg = _config(SOURCES)
     handle = ManagerHandle(cfg, wait_seconds=5)
     logged = []
@@ -175,6 +180,9 @@ def test_loader_hands_the_manager_over_and_starts_the_watchers():
     assert handle.ready and not handle.failed
     assert handle.list_sources()[0]["chunk_count"] == 42
     assert handle._manager.watchers_started
+    # The watchers first, so nothing that happens from then on is missed,
+    # then the scan for what changed while nothing was running.
+    assert handle._manager.order == ["watchers", "catch_up"]
     assert any("indexes ready" in m for m in logged)
 
 
@@ -292,3 +300,18 @@ def test_a_child_starts_while_the_transport_waits_on_the_client(tmp_path):
     finally:
         server.stdin.close()
     assert verdict.read_text().startswith("started"), verdict.read_text()
+
+
+def test_the_lexical_index_warms_up_after_the_tools_can_answer():
+    cfg = _config(SOURCES)
+    handle = ManagerHandle(cfg, wait_seconds=5)
+    seen = {}
+
+    class _Warming(_FakeManager):
+        def warm_up(self):
+            seen["ready_while_warming"] = handle.ready
+
+    thread = startup.start_loader(cfg, handle, factory=_Warming, log=lambda m: None)
+    thread.join(timeout=5)
+
+    assert seen == {"ready_while_warming": True}

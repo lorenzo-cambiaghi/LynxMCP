@@ -203,8 +203,17 @@ def start_loader(config, handle: ManagerHandle, *,
                 manager.start_watchers()
             except Exception as e:  # a watcher is a convenience, not the index
                 log(f"[server] failed to start watchers: {e}")
+            try:
+                manager.catch_up()
+            except Exception as e:
+                log(f"[server] could not start the catch-up scan: {e}")
             handle.set_manager(manager)
             log(f"[server] indexes ready after {handle.elapsed():.1f}s")
+            # Tools answer from here on; the lexical indexes load meanwhile.
+            warm_up = getattr(manager, "warm_up", None)
+            if callable(warm_up):
+                warm_up()
+                log(f"[server] lexical indexes loaded after {handle.elapsed():.1f}s")
         except Exception as e:
             handle.set_error(f"{type(e).__name__}: {e}")
             log(f"[server] source manager failed to load: {e}")

@@ -196,6 +196,11 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
     extensions = frozenset(ext.lower() for ext in extensions)
 
     ignored = _normalize_ignored_fragments(raw.get("ignored_path_fragments") or [])
+    globs = raw.get("ignored_globs") or []
+    if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
+        _config_error(
+            f"source {name!r}: 'ignored_globs' must be a list of glob strings, "
+            f"like [\"**/20??-??-??-*.txt\"]")
 
     watcher_raw = raw.get("watcher") or {}
     watcher = {
@@ -225,6 +230,7 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
         "path": path,
         "supported_extensions": extensions,
         "ignored_path_fragments": ignored,
+        "ignored_globs": tuple(globs),
         "watcher": watcher,
         "git_integration": git_integration,
         "graph": graph,
@@ -711,12 +717,16 @@ def sanitize_tls_keylog_env() -> None:
     if os.environ.get("LYNX_KEEP_SSLKEYLOGFILE"):
         return  # explicit opt-in — caller accepts the applink crash risk
     os.environ.pop("SSLKEYLOGFILE", None)
-    print(
-        f"[config] removed SSLKEYLOGFILE={value!r} from this process: it crashes "
-        f"the bundled interpreter on first TLS use (no OPENSSL_Applink) and Lynx "
-        f"never needs TLS key logging. Set LYNX_KEEP_SSLKEYLOGFILE=1 to keep it.",
-        file=sys.stderr,
-    )
+    # Said only on request: antivirus injects the variable into every process,
+    # so the line opened the output of every command an agent ran.
+    if os.environ.get("LYNX_VERBOSE"):
+        print(
+            f"[config] removed SSLKEYLOGFILE={value!r} from this process: it "
+            f"crashes the bundled interpreter on first TLS use (no "
+            f"OPENSSL_Applink) and Lynx never needs TLS key logging. Set "
+            f"LYNX_KEEP_SSLKEYLOGFILE=1 to keep it.",
+            file=sys.stderr,
+        )
 
 
 def configure_hf_offline(config) -> None:

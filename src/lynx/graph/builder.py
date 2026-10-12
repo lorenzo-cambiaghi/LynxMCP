@@ -152,6 +152,7 @@ class GraphLayer:
         codebase_path,
         supported_extensions: Iterable[str],
         ignored_path_fragments: Optional[Iterable[str]] = None,
+        ignored_globs: Optional[Iterable[str]] = None,
         follower: bool = False,
     ):
         # A follower reads a graph another Lynx process owns and maintains:
@@ -170,6 +171,7 @@ class GraphLayer:
             for e in supported_extensions
         )
         self.ignored_path_fragments = list(ignored_path_fragments or [])
+        self.ignored_globs = list(ignored_globs or [])
 
         # Paths.
         self.nodes_file = self.storage_dir / "nodes.json"
@@ -480,6 +482,7 @@ class GraphLayer:
             self.codebase_path,
             self.supported_extensions,
             self.ignored_path_fragments,
+            self.ignored_globs,
         )
 
     # ------------------------------------------------------------------

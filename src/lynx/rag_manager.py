@@ -95,6 +95,106 @@ def _tokenize_code(text: str) -> list:
     return tokens
 
 
+# Rows per `get()` when reading a whole collection. One call for everything
+# binds one SQL variable per row and fails past SQLite's limit of 32,766: a
+# 53k-chunk source lost its lexical index that way, silently.
+_READ_PAGE_ROWS = 5000
+
+
+def read_collection_rows(collection, include=("documents", "metadatas")) -> dict:
+    """Every row of a ChromaDB collection as {id: (document, metadata)}.
+
+    Read a page at a time. The page shrinks when a build of SQLite with a
+    lower variable limit still refuses it, and the whole read starts over when
+    the collection changed under it (offsets shift when another process writes
+    meanwhile), up to three times. Raises when it cannot read at all.
+    """
+    page = _READ_PAGE_ROWS
+    rows: dict = {}
+    for _attempt in range(3):
+        expected = collection.count()
+        rows = {}
+        offset = 0
+        while True:
+            try:
+                data = collection.get(limit=page, offset=offset, include=list(include))
+            except Exception as e:
+                if "too many SQL variables" in str(e) and page > 100:
+                    page //= 2
+                    continue
+                raise
+            ids = data.get("ids") or []
+            docs = data.get("documents") or [None] * len(ids)
+            metas = data.get("metadatas") or [None] * len(ids)
+            for cid, doc, meta in zip(ids, docs, metas):
+                rows[cid] = (doc, meta or {})
+            offset += len(ids)
+            if len(ids) < page:
+                break
+        if len(rows) == expected == collection.count():
+            break
+    return rows
+
+
+def lexical_corpus(rows: dict) -> tuple:
+    """Tokenized BM25 documents and the display metadata, keyed by chunk id."""
+    docs: dict = {}
+    meta: dict = {}
+    for cid, (content, m) in rows.items():
+        docs[cid] = _tokenize_code(content or "")
+        meta[cid] = {
+            "file": m.get("file_name", "unknown"),
+            "file_path": m.get("file_path", ""),
+            "symbol_name": m.get("symbol_name", ""),
+            "symbol_kind": m.get("symbol_kind", ""),
+            "language": m.get("language", ""),
+            "start_line": m.get("start_line", 0),
+            "end_line": m.get("end_line", 0),
+            "content": content or "",
+        }
+    return docs, meta
+
+
+# Identifier matching. BM25 over chunk bodies cannot tell a definition from a
+# mention: a method's body does not contain its class name, so for
+# "MeshVoxelizer.Voxelize" a two-line test helper that calls it outranks the
+# method itself. When a query is written like code, chunks whose qualified
+# name carries those identifiers come first in the lexical ranking.
+_IDENT_SPLIT = re.compile(r"[^\w]+")
+_DOTTED_OR_WORD = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+_HUMP = re.compile(r"[a-z0-9][A-Z]")
+
+
+def identifier_terms(query: str) -> set:
+    """The words of a query written like code identifiers, lowercased.
+
+    camelCase or PascalCase with an inner capital, snake_case, and every part
+    of a dotted name (`MeshVoxelizer.Voxelize`) count; plain words do not, so
+    a question in English is ranked exactly as it was without this.
+    """
+    terms = set()
+    for match in _DOTTED_OR_WORD.finditer(query or ""):
+        word = match.group(0)
+        parts = word.split(".")
+        if len(parts) > 1:
+            terms.update(p.lower() for p in parts if len(p) > 1)
+        elif "_" in word.strip("_") or _HUMP.search(word):
+            terms.add(word.lower())
+    return terms
+
+
+def _identity_of(meta: dict) -> set:
+    """What a chunk is called: the segments of its qualified symbol name and
+    its file's stem, lowercased, snake_case kept whole."""
+    terms = set()
+    symbol = meta.get("symbol_name") or ""
+    if symbol and not symbol.startswith("<"):
+        terms.update(s for s in _IDENT_SPLIT.split(symbol.lower()) if s)
+    stem = os.path.splitext(meta.get("file") or "")[0]
+    terms.update(s for s in _IDENT_SPLIT.split(stem.lower()) if s)
+    return terms
+
+
 def _normalize_extension(ext: str) -> str:
     """Make sure an extension has a leading dot and is lowercased."""
     ext = ext.lower().strip()
@@ -227,10 +327,13 @@ def _configure_local_only(embedding_model_name: str):
     # that uses the same model.
     Settings.embed_model = OnnxEmbedding(model_name=embedding_model_name)
 
-    # LLM = None: we don't want LlamaIndex to ever call a remote LLM.
-    # We only use the vector retriever (similarity search); the AI client
-    # connected via MCP is responsible for any generation.
-    Settings.llm = None
+    # No LLM: we don't want LlamaIndex to ever call a remote one. We only use
+    # the vector retriever (similarity search); the AI client connected via
+    # MCP does any generation. A MockLLM rather than None, which LlamaIndex
+    # turns into the same MockLLM after printing "LLM is explicitly disabled"
+    # to stdout, once per source, into every command's output.
+    from llama_index.core.llms.mock import MockLLM
+    Settings.llm = MockLLM()
 
 
 def _norm(path) -> str:
@@ -256,6 +359,7 @@ class CodebaseRAG:
         candidate_pool_size: int = 30,
         reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
         ignored_path_fragments=(),
+        ignored_globs=(),
         follower: bool = False,
     ):
         # A follower shares a store another Lynx process owns: it reads and
@@ -279,6 +383,8 @@ class CodebaseRAG:
         # (so it's part of the drift config snapshot) and because the shared
         # fs_scan walk needs it on every (re)build.
         self.ignored_path_fragments = tuple(ignored_path_fragments or ())
+        # File-name or relative-path globs to exclude (see fs_scan.glob_hit).
+        self.ignored_globs = tuple(ignored_globs or ())
 
         # Stored as instance state because they are part of the config snapshot
         # used for drift detection.
@@ -308,6 +414,11 @@ class CodebaseRAG:
         self._bm25_meta: dict = {}  # chunk_id -> {"file": ..., "content": ...}
         self._bm25_okapi = None
         self._bm25_doc_ids: list = []
+        # Why the lexical index could not be loaded, or None. While set, hybrid
+        # results are dense-only and the tools say so; the load is retried
+        # after `_BM25_RETRY_SEC` or when the index changes, not on every query.
+        self._bm25_error = None
+        self._bm25_retry_at = 0.0
 
         # Serialize index mutations between the watcher, explicit updates,
         # a follower's refresh, and the search path. Re-entrant so a path that
@@ -494,21 +605,14 @@ class CodebaseRAG:
         except Exception as e:
             log(f"[bm25] could not re-read {abs_path}: {e}")
             return
-        for cid, content, meta in zip(data.get("ids") or [],
-                                      data.get("documents") or [],
-                                      data.get("metadatas") or []):
-            meta = meta or {}
-            self._bm25_docs[cid] = _tokenize_code(content or "")
-            self._bm25_meta[cid] = {
-                "file": meta.get("file_name", "unknown"),
-                "file_path": meta.get("file_path", ""),
-                "symbol_name": meta.get("symbol_name", ""),
-                "symbol_kind": meta.get("symbol_kind", ""),
-                "language": meta.get("language", ""),
-                "start_line": meta.get("start_line", 0),
-                "end_line": meta.get("end_line", 0),
-                "content": content or "",
-            }
+        docs, meta = lexical_corpus({
+            cid: (content, m or {})
+            for cid, content, m in zip(data.get("ids") or [],
+                                       data.get("documents") or [],
+                                       data.get("metadatas") or [])
+        })
+        self._bm25_docs.update(docs)
+        self._bm25_meta.update(meta)
 
     def refresh_if_stale(self) -> bool:
         """Pick up the owner's writes. No-op for an owner; throttled otherwise.
@@ -745,6 +849,7 @@ class CodebaseRAG:
             self.codebase_path,
             self.supported_extensions,
             self.ignored_path_fragments,
+            self.ignored_globs,
         )
 
     def _partition_files(self, candidate_files: list) -> tuple:
@@ -1103,25 +1208,57 @@ class CodebaseRAG:
         if rerank_enabled:
             fetch_n = max(fetch_n, self.reranker_config.top_n_before_rerank)
 
-        if mode == "dense":
-            results = self._dense_lookup(query, fetch_n, embedding=embedding)
-        elif mode == "sparse":
-            results = self._bm25_lookup(query, fetch_n)
-        elif mode == "hybrid":
-            pool = max(fetch_n, self.candidate_pool_size)
-            dense_hits = self._dense_lookup(query, pool, embedding=embedding)
-            sparse_hits = self._bm25_lookup(query, pool)
-            results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
-        else:
+        if mode not in ("dense", "sparse", "hybrid"):
             raise ValueError(
                 f"mode must be one of 'hybrid' | 'dense' | 'sparse', got {mode!r}"
             )
+
+        # Filters choose the files first and the ranking happens among them.
+        # Applied afterwards to the top 25 or 40 candidates out of 50,000,
+        # they answered "no results" for files that were indexed, whenever
+        # those ranked below the cut (76th and 87th, in the case that showed it).
+        scope, dense_filter, dense_n = None, None, fetch_n
+        if mode != "dense":
+            self._ensure_bm25()     # loads the file list the scope is cut from
+        excluded = (getattr(self, "_bm25_excluded", None)
+                    if self._bm25_okapi is not None else None)
+        if has_filters or excluded:
+            scope = self._file_scope(file_glob, extensions, path_contains, paths)
+            if scope is None:                    # no metadata: widen and hope
+                dense_n = self._widened_pool(fetch_n, None)
+            elif len(scope) == len(self._bm25_files):
+                scope = None                     # the filters keep every file
+            elif scope and has_filters:
+                dense_filter = self._dense_scope_filter(scope)
+                if dense_filter is None:         # too many files to name
+                    dense_n = self._widened_pool(fetch_n, scope)
+            # Files only the config leaves out are few and on their way out
+            # of the index: the dense half drops them afterwards instead of
+            # paying a store filter, slower and fragile, on every search.
+
+        if scope == set():
+            results = []                         # no indexed file passes them
+        elif mode == "dense":
+            results = self._dense_lookup(query, dense_n, embedding=embedding,
+                                         files=dense_filter,
+                                         fallback_n=self._widened_pool(fetch_n, scope))
+        elif mode == "sparse":
+            results = self._bm25_lookup(query, fetch_n, files=scope)
+        else:
+            pool = max(fetch_n, self.candidate_pool_size)
+            dense_hits = self._dense_lookup(query, max(pool, dense_n),
+                                            embedding=embedding, files=dense_filter,
+                                            fallback_n=self._widened_pool(pool, scope))
+            sparse_hits = self._bm25_lookup(query, pool, files=scope)
+            results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
 
         if has_filters:
             results = [
                 r for r in results
                 if _matches_filters(r, file_glob, extensions, path_contains, paths=paths)
             ]
+        # Whatever path a result came by, a file the config excludes is out.
+        results = [r for r in results if not self._out_of_scope(r.get("file_path", ""))]
 
         # Collapse chunks with byte-identical bodies: vendored copies, `build/`
         # / `dist/` mirrors of source, or a file checked in twice produce
@@ -1141,9 +1278,16 @@ class CodebaseRAG:
                     model_name=self.reranker_config.model_name,
                 )
             pool = results[: self.reranker_config.top_n_before_rerank]
-            return self._reranker.rerank(query, pool, top_k=top_k)  # already top_k
+            results = self._reranker.rerank(query, pool, top_k=top_k)  # already top_k
+        else:
+            results = results[:top_k]
 
-        return results[:top_k]
+        # What actually ranked these hits: a hybrid search whose lexical half
+        # could not load is a dense search, and JSON consumers can see it.
+        effective = "dense" if (mode == "hybrid" and self._bm25_error) else mode
+        for r in results:
+            r["mode_effective"] = effective
+        return results
 
     def deep_search(
         self,
@@ -1341,8 +1485,66 @@ class CodebaseRAG:
             return batch(list(queries))
         return [embed_model.get_query_embedding(q) for q in queries]
 
-    def _dense_lookup(self, query: str, top_n: int, embedding=None) -> list:
+    # Longest file list a filtered dense search hands to ChromaDB by name,
+    # either as the files to search or as the ones to leave out. Measured on
+    # 5,000 indexed files: 100-230 ms per query up to 3,000 names.
+    _MAX_SCOPE_FILES = 3000
+
+    def _file_scope(self, file_glob, extensions, path_contains, paths):
+        """The indexed files a filtered search may answer from.
+
+        None when the chunk metadata is not loaded (the lexical index failed):
+        the filters then run on a widened candidate pool, as a best effort.
+        """
+        self._ensure_bm25()
+        if self._bm25_okapi is None:
+            return None
+        return {
+            path for path, (name, _chunks) in self._bm25_files.items()
+            if path not in self._bm25_excluded
+            and _matches_filters({"file": name, "file_path": path},
+                                 file_glob, extensions, path_contains, paths=paths)
+        }
+
+    def _widened_pool(self, fetch_n: int, scope) -> int:
+        """Dense candidates to take when the store cannot apply the filters:
+        enough that those passing them still fill `fetch_n`, twice over, in
+        proportion to the chunks they keep. Without metadata to measure the
+        proportion, twenty times."""
+        if scope is None:
+            return fetch_n * 20
+        kept = max(1, sum(self._bm25_files[f][1] for f in scope))
+        total = sum(chunks for _name, chunks in self._bm25_files.values())
+        return min(total, max(fetch_n, (fetch_n * total * 2 + kept - 1) // kept))
+
+    def _dense_scope_filter(self, scope):
+        """MetadataFilters restricting the dense search to `scope`, or None
+        when neither the scope nor its complement is short enough to name."""
+        from llama_index.core.vector_stores import (
+            FilterOperator, MetadataFilter, MetadataFilters,
+        )
+        if len(scope) <= self._MAX_SCOPE_FILES:
+            op, names = FilterOperator.IN, scope
+        else:
+            names = set(self._bm25_files) - scope
+            if len(names) > self._MAX_SCOPE_FILES:
+                return None
+            op = FilterOperator.NIN
+        return MetadataFilters(filters=[
+            MetadataFilter(key="file_path", value=sorted(names), operator=op)])
+
+    def _dense_lookup(self, query: str, top_n: int, embedding=None, files=None,
+                      fallback_n=None) -> list:
         """Pure semantic retrieval via the LlamaIndex / ChromaDB pipeline.
+
+        `files` (MetadataFilters from `_dense_scope_filter`) restricts the
+        search to the chunks of some files inside ChromaDB. A filtered query
+        makes ChromaDB check each allowed id against the vector index this
+        process loaded, so on a store another process has written to since,
+        it can fail with "Error finding id" while an unfiltered one works. A
+        follower then catches up and retries once; if it still fails, the
+        search runs unfiltered on `fallback_n` candidates and the caller's
+        own filtering cuts them.
 
         Propagates the AST-aware chunker metadata (symbol_name, symbol_kind,
         language, start_line, end_line) so the formatter can cite results
@@ -1352,7 +1554,25 @@ class CodebaseRAG:
         skips re-embedding and uses it directly — this is what `search_batch`
         relies on to embed N queries in a single model call.
         """
-        retriever = self.index.as_retriever(similarity_top_k=top_n)
+        if files is not None:
+            for attempt in range(2):
+                try:
+                    return self._retrieve_dense(query, top_n, embedding, files)
+                except Exception as e:
+                    if attempt == 0 and self.follower:
+                        with self._write_lock:
+                            self._reopen_store()
+                        continue
+                    log(f"[rag] {self.collection_name}: a filtered search "
+                        f"failed ({e}); searching unfiltered and filtering after")
+            return self._retrieve_dense(query, fallback_n or top_n * 20, embedding, None)
+        return self._retrieve_dense(query, top_n, embedding, None)
+
+    def _retrieve_dense(self, query: str, top_n: int, embedding, files) -> list:
+        kwargs = {"similarity_top_k": top_n}
+        if files is not None:
+            kwargs["filters"] = files
+        retriever = self.index.as_retriever(**kwargs)
         if embedding is not None:
             from llama_index.core import QueryBundle
             results = retriever.retrieve(
@@ -1394,42 +1614,50 @@ class CodebaseRAG:
         """
         if self._bm25_okapi is not None:
             return
-        if not self._bm25_docs:
-            self._bm25_load_from_store()
-        self._bm25_build_okapi()
+        # One load at a time: the server warms this up in the background, and a
+        # search arriving meanwhile waits for that load instead of starting a
+        # second one (8 s on a 53k-chunk source).
+        with self.__dict__.setdefault("_bm25_load_lock", threading.Lock()):
+            if self._bm25_okapi is not None:
+                return
+            if not self._bm25_docs:
+                if self._bm25_error and time.monotonic() < self._bm25_retry_at:
+                    return    # failed a moment ago: do not pay the read per query
+                self._bm25_load_from_store()
+            self._bm25_build_okapi()
+
+    # A failed load is retried after this long, or as soon as the index changes.
+    _BM25_RETRY_SEC = 300.0
 
     def _bm25_load_from_store(self):
-        """Cold-load the tokenized corpus from ChromaDB into the cache."""
+        """Cold-load the tokenized corpus from ChromaDB into the cache.
+
+        A failure is remembered rather than only logged: until it clears,
+        `lexical_unavailable()` says why, the tools tell the agent its hybrid
+        results are dense-only, and no query pays for another full read.
+        """
         try:
-            data = self.vector_store._collection.get(include=["documents", "metadatas"])
+            rows = read_collection_rows(self.vector_store._collection)
+            if not rows and self._collection_count():
+                raise RuntimeError("the store returned no chunks although it holds some")
         except Exception as e:
             log(f"[bm25] could not read ChromaDB collection: {e}")
             self._bm25_docs = {}
             self._bm25_meta = {}
+            self._bm25_error = str(e)
+            self._bm25_retry_at = time.monotonic() + self._BM25_RETRY_SEC
             return
-        ids = data.get("ids") or []
-        docs = data.get("documents") or []
-        metas = data.get("metadatas") or []
-
         # Built aside and swapped in at the end: a search on another thread
         # then sees either the old corpus or the new one, never one being
         # filled in.
-        fresh_docs: dict = {}
-        fresh_meta: dict = {}
-        for cid, content, meta in zip(ids, docs, metas):
-            fresh_docs[cid] = _tokenize_code(content or "")
-            fresh_meta[cid] = {
-                "file": (meta or {}).get("file_name", "unknown"),
-                "file_path": (meta or {}).get("file_path", ""),
-                "symbol_name": (meta or {}).get("symbol_name", ""),
-                "symbol_kind": (meta or {}).get("symbol_kind", ""),
-                "language": (meta or {}).get("language", ""),
-                "start_line": (meta or {}).get("start_line", 0),
-                "end_line": (meta or {}).get("end_line", 0),
-                "content": content or "",
-            }
-        self._bm25_docs = fresh_docs
-        self._bm25_meta = fresh_meta
+        self._bm25_docs, self._bm25_meta = lexical_corpus(rows)
+        self._bm25_error = None
+
+    def lexical_unavailable(self):
+        """Why the lexical (BM25) index is unavailable, or None when it works.
+
+        Only meaningful once a sparse or hybrid search has tried to load it."""
+        return self._bm25_error
 
     def _bm25_build_okapi(self):
         """(Re)build the BM25Okapi object from the current cached corpus.
@@ -1443,8 +1671,34 @@ class CodebaseRAG:
         with self._write_lock:
             doc_ids = list(self._bm25_docs.keys())
             corpus = [self._bm25_docs[cid] for cid in doc_ids]
+            metas = [self._bm25_meta.get(cid) or {} for cid in doc_ids]
+        identity: dict = {}
+        files: dict = {}
+        for pos, meta in enumerate(metas):
+            for term in _identity_of(meta):
+                identity.setdefault(term, []).append(pos)
+            path = meta.get("file_path", "")
+            name, chunks = files.get(path, (meta.get("file", ""), 0))
+            files[path] = (name, chunks + 1)
         self._bm25_doc_ids = doc_ids
+        self._bm25_doc_files = [meta.get("file_path", "") for meta in metas]
+        self._bm25_identity = identity      # identity term -> chunk positions
+        self._bm25_files = files            # file_path -> (file name, chunks)
+        # Files the config excludes now that the index still holds: they
+        # leave it at the next build, and searches skip them until then.
+        self._bm25_excluded = {path for path in files if self._out_of_scope(path)}
         self._bm25_okapi = BM25Okapi(corpus) if doc_ids else None
+
+    def _out_of_scope(self, path: str) -> bool:
+        """True if the source, as configured now, would not index this file:
+        an ignore added since, a dot directory, an extension dropped."""
+        root = getattr(self, "codebase_path", None)
+        if root is None or not path:
+            return False
+        return not fs_scan.in_scope(
+            path, root, self.supported_extensions,
+            getattr(self, "ignored_path_fragments", ()),
+            getattr(self, "ignored_globs", ()))
 
     def _invalidate_bm25(self):
         """Drop the BM25 cache entirely so the next search cold-loads from
@@ -1454,6 +1708,9 @@ class CodebaseRAG:
         self._bm25_docs = {}
         self._bm25_meta = {}
         self._bm25_doc_ids = []
+        # The index changed: a load that failed before may work now.
+        self._bm25_error = None
+        self._bm25_retry_at = 0.0
 
     def _bm25_drop_file_entries(self, abs_path: str):
         """Remove every cached BM25 entry whose chunk belongs to `abs_path`."""
@@ -1503,8 +1760,15 @@ class CodebaseRAG:
         self._bm25_drop_file_entries(abs_path)
         self._bm25_okapi = None
 
-    def _bm25_lookup(self, query: str, top_n: int) -> list:
-        """BM25 sparse retrieval over the in-memory tokenized corpus."""
+    def _bm25_lookup(self, query: str, top_n: int, files=None) -> list:
+        """BM25 sparse retrieval over the in-memory tokenized corpus.
+
+        `files`, when given, is the set of file paths a filtered search may
+        answer from: the ranking is taken among their chunks, not cut to
+        `top_n` first and filtered afterwards. A query written like code
+        (see `identifier_terms`) ranks the chunks named after it first, each
+        matching identifier adding more than any body score can.
+        """
         self._ensure_bm25()
         if self._bm25_okapi is None or not self._bm25_doc_ids:
             return []
@@ -1512,8 +1776,20 @@ class CodebaseRAG:
         if not query_tokens:
             return []
         scores = self._bm25_okapi.get_scores(query_tokens)
+        named: dict = {}
+        for term in identifier_terms(query):
+            for pos in self._bm25_identity.get(term, ()):
+                named[pos] = named.get(pos, 0) + 1
+        if named:
+            unit = float(max(scores)) + 1.0
+            scores = scores.copy()
+            for pos, count in named.items():
+                scores[pos] += count * unit
+        positions = range(len(scores))
+        if files is not None:
+            positions = [i for i in positions if self._bm25_doc_files[i] in files]
         # Pair scores with doc ids, sort desc, take top_n.
-        ranked_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
+        ranked_idx = sorted(positions, key=lambda i: scores[i], reverse=True)[:top_n]
         out = []
         for i in ranked_idx:
             if scores[i] <= 0:

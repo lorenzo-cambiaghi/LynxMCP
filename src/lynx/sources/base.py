@@ -164,8 +164,13 @@ class SourceBackend(ABC):
         return True
 
     def catch_up(self) -> None:
-        """Index whatever changed while nobody was watching. Owner only."""
-        self.update(force=True)
+        """Index whatever changed while nobody was watching. Owner only.
+
+        The incremental update: skips what did not change where the source
+        can tell (a PDF folder), and does nothing where it cannot (a webdoc
+        has no files to look at; `force` would crawl the whole site again).
+        Codebase sources override it."""
+        self.update(force=False)
 
     def _catch_up_in_background(self) -> None:
         """Run `catch_up` off the calling thread.

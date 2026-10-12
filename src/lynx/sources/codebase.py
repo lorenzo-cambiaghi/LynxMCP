@@ -60,6 +60,7 @@ class CodebaseBackend(SourceBackend):
             # just the watcher and graph (they used to disagree, polluting
             # search with node_modules etc.).
             ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+            ignored_globs=source_config.get("ignored_globs") or (),
             follower=not self.is_owner,
         )
 
@@ -80,6 +81,7 @@ class CodebaseBackend(SourceBackend):
                 codebase_path=source_config["path"],
                 supported_extensions=source_config["supported_extensions"],
                 ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+                ignored_globs=source_config.get("ignored_globs") or (),
                 follower=not self.is_owner,
             )
 
@@ -166,6 +168,11 @@ class CodebaseBackend(SourceBackend):
         # after the RAG update so a partial failure in the graph layer
         # doesn't leave the vector index half-built.
         self._rebuild_graph(from_scratch=False)
+
+    def catch_up(self) -> None:
+        """Index what changed while nobody was watching: a pass over every
+        file's hash, in the vector index and in the graph. Owner only."""
+        self.update(force=True)
 
     def _rebuild_graph(self, *, from_scratch: bool) -> None:
         """Bring the graph in line with the files on disk.
@@ -268,14 +275,18 @@ class CodebaseBackend(SourceBackend):
         debounce_seconds = float(watcher_cfg.get("debounce_seconds", 2.0))
         backend = self
         ignored_fragments = tuple(self.source_config.get("ignored_path_fragments") or ())
+        ignored_globs = tuple(self.source_config.get("ignored_globs") or ())
+        root = self.source_config["path"]
         rag = self.rag
         graph = self.graph
         source_name = self.name
 
-        def _is_ignored(path: str) -> bool:
-            # Shared, separator-agnostic match — same rule the index build uses.
-            from ..fs_scan import is_ignored
-            return is_ignored(path, ignored_fragments)
+        extensions = tuple(self.source_config.get("supported_extensions") or ())
+
+        def _in_scope(path: str) -> bool:
+            # The rule the index build walks the tree with, for one path.
+            from ..fs_scan import in_scope
+            return in_scope(path, root, extensions, ignored_fragments, ignored_globs)
 
         class _DebouncedHandler(FileSystemEventHandler):
             def __init__(self):
@@ -308,9 +319,7 @@ class CodebaseBackend(SourceBackend):
                         self._pending.pop(path, None)
 
             def _schedule(self, path: str, action: str):
-                if not path or _is_ignored(path):
-                    return
-                if action != "delete" and not rag.is_supported(path):
+                if not path or not _in_scope(path):
                     return
                 with self._lock:
                     existing = self._pending.get(path)

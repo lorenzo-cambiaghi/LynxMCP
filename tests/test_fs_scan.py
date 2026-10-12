@@ -73,3 +73,49 @@ def test_is_ignored_matches_watcher_use(tmp_path: Path):
     assert fs_scan.is_ignored(p, ["node_modules"])
     assert not fs_scan.is_ignored(p, ["dist"])
     assert not fs_scan.is_ignored(p, [])
+
+
+# ---------------------------------------------------------------------------
+# ignored_globs, and the single-path rule the watcher and search share
+# ---------------------------------------------------------------------------
+
+def _touch(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x = 1", encoding="utf-8")
+
+
+def test_ignored_globs_match_names_and_relative_paths(tmp_path: Path):
+    _touch(tmp_path / "Voxel" / "2026-06-11-223340-analisi.txt")
+    _touch(tmp_path / "2026-06-16-chat.txt")
+    _touch(tmp_path / "Voxel" / "plan.txt")
+    _touch(tmp_path / "Gen" / "A.cs")
+    _touch(tmp_path / "Sub" / "Gen" / "B.cs")
+
+    files = fs_scan.list_candidate_files(
+        tmp_path, [".txt", ".cs"], (),
+        ["20??-??-??-*.txt", "**/Gen/*.cs"])
+
+    names = sorted(Path(f).name for f in files)
+    assert names == ["plan.txt"]
+
+
+def test_a_relative_glob_is_anchored_at_the_source_root(tmp_path: Path):
+    _touch(tmp_path / "Gen" / "A.cs")
+    _touch(tmp_path / "Sub" / "Gen" / "B.cs")
+
+    files = fs_scan.list_candidate_files(tmp_path, [".cs"], (), ["Gen/*.cs"])
+
+    assert [Path(f).name for f in files] == ["B.cs"]
+
+
+def test_in_scope_agrees_with_the_walk_on_every_file(tmp_path: Path):
+    for rel in (".claude/settings.py", "build/out.py", "2026-01-01-x.py",
+                "notes.md", "keep.py", "deep/keep2.py"):
+        _touch(tmp_path / rel)
+    exts, frags, globs = [".py"], ["/build/"], ["20??-??-??-*.py"]
+
+    walked = set(fs_scan.list_candidate_files(tmp_path, exts, frags, globs))
+    every = {os.path.normpath(os.path.abspath(p))
+             for p in tmp_path.rglob("*") if p.is_file()}
+
+    assert {p for p in every if fs_scan.in_scope(p, tmp_path, exts, frags, globs)} == walked
