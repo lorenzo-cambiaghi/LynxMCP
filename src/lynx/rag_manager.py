@@ -1568,8 +1568,22 @@ class CodebaseRAG:
         return getattr(self, "codebase_path", None)
 
     def indexed_files(self) -> list:
-        """Every file the index holds chunks of, as stored (absolute)."""
-        return list(self._file_hashes)
+        """Every file the index holds chunks of, as stored (absolute).
+
+        Read from the store, through the lexical corpus: the SHA cache is
+        written only when a build ends, so during a source's first build, or
+        after one was interrupted, it listed nothing and `module_summary`
+        answered "no file matches" for a file whose chunks were right there.
+        Files the config now leaves out are not listed.
+        """
+        try:
+            self._ensure_bm25()
+        except Exception:
+            pass
+        excluded = getattr(self, "_bm25_excluded", None) or set()
+        files = set(getattr(self, "_bm25_files", None) or {})
+        files.update(getattr(self, "_file_hashes", None) or {})
+        return [p for p in files if p not in excluded]
 
     def _file_scope(self, file_glob, extensions, path_contains, paths):
         """The indexed files a filtered search may answer from.
