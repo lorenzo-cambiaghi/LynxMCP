@@ -109,6 +109,11 @@ def create_app(config_path: Optional[Path] = None):
         lambda p: str(p).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if p else p
     )
 
+    # Which code this UI runs. The version alone cannot say it: an editable
+    # checkout reports the same number before and after its code changes.
+    from ...ownership import code_identity
+    app.state.templates.env.globals["lynx_identity"] = code_identity()
+
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     # Register routes + pages
@@ -130,6 +135,34 @@ def _lynx_version() -> str:
         except Exception:
             continue
     return "dev"
+
+
+def serving_info(storage_dir, is_owner) -> dict:
+    """Who keeps an index current, and whether it runs this UI's code.
+
+    `who` is "this UI" (we own it), "another" (a live claim names another
+    process) or "nobody" (no live claim: no watcher runs). For "another",
+    `same_code` compares the code hash in its claim with ours, which is the
+    question behind "is the MCP server still on the old version?".
+    """
+    from ...ownership import code_identity, owner_of
+    mine = code_identity()
+    if is_owner:
+        return {"who": "this UI", "same_code": True, "version": mine["version"],
+                "code": mine["code"], "path": mine["path"]}
+    try:
+        claim = owner_of(storage_dir)
+    except Exception:
+        claim = None
+    if not claim:
+        return {"who": "nobody"}
+    theirs = claim.get("lynx") or {}
+    return {
+        "who": "another", "pid": claim.get("pid"), "host": claim.get("host"),
+        "since": claim.get("since"), "version": theirs.get("version"),
+        "code": theirs.get("code"), "path": theirs.get("path"),
+        "same_code": bool(theirs.get("code")) and theirs.get("code") == mine["code"],
+    }
 
 
 def _get_manager(app):

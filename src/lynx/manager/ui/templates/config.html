@@ -15,12 +15,7 @@
   previous content is kept at <code>{{ config_path }}.bak</code> after every save.
 </div>
 
-<form id="config-form"
-      hx-put="/api/config"
-      hx-ext="json-enc"
-      hx-trigger="submit"
-      hx-target="#config-result"
-      hx-swap="innerHTML">
+<form id="config-form">
   <textarea
     id="config-content"
     name="content"
@@ -64,12 +59,29 @@
   updateCounts();
   document.getElementById('config-content').addEventListener('input', updateCounts);
 
-  // Intercept form submit so we send a JSON body (HTMX's default is form-encoded).
-  document.getElementById('config-form').addEventListener('htmx:configRequest', function(evt) {
-    const text = document.getElementById('config-content').value;
-    evt.detail.headers['Content-Type'] = 'application/json';
-    evt.detail.parameters = {}; // clear default form params
-    evt.detail.body = JSON.stringify({content: text});
+  // Save sends {"content": "..."} as JSON. This used to go through htmx with
+  // a json-enc extension that was never loaded and a `detail.body` htmx 2
+  // ignores: the request went out empty, the server answered 400, and htmx
+  // did not show it. Plain fetch, as the add-source form does.
+  document.getElementById('config-form').addEventListener('submit', async function(evt) {
+    evt.preventDefault();
+    const result = document.getElementById('config-result');
+    const button = evt.submitter || this.querySelector('button[type=submit]');
+    if (button) button.disabled = true;
+    result.innerHTML = '<div class="p-3 text-sm text-slate-500">Saving…</div>';
+    try {
+      const resp = await fetch('/api/config', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content: document.getElementById('config-content').value}),
+      });
+      result.innerHTML = await resp.text();
+    } catch (e) {
+      result.innerHTML = '<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
+        + 'Could not reach the server: ' + String(e) + '</div>';
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
 </script>
 

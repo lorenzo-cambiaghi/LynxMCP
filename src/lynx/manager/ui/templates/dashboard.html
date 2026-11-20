@@ -11,39 +11,11 @@
   </div>
 </div>
 
-<!-- Doctor summary card -->
-<div class="mb-6 p-4 bg-white border border-slate-200 rounded shadow-sm">
-  <div class="flex items-center justify-between mb-2">
-    <div class="font-semibold text-slate-900">Health check</div>
-    <a href="/doctor" class="text-xs text-indigo-600 hover:underline">View full report →</a>
-  </div>
-  <div class="flex gap-4 text-sm">
-    <div class="flex items-center gap-1">
-      <span class="text-green-600 font-bold">✓</span>
-      <span>{{ doctor_counts.ok }} ok</span>
-    </div>
-    {% if doctor_counts.warn %}
-      <div class="flex items-center gap-1">
-        <span class="text-amber-600 font-bold">⚠</span>
-        <span>{{ doctor_counts.warn }} warning{{ '' if doctor_counts.warn == 1 else 's' }}</span>
-      </div>
-    {% endif %}
-    {% if doctor_counts.error %}
-      <div class="flex items-center gap-1">
-        <span class="text-red-600 font-bold">✗</span>
-        <span>{{ doctor_counts.error }} error{{ '' if doctor_counts.error == 1 else 's' }}</span>
-      </div>
-    {% endif %}
-  </div>
-  <div class="mt-2 text-xs">
-    {% if doctor_worst == "ok" %}
-      <span class="text-green-700">All checks passing — Lynx is healthy.</span>
-    {% elif doctor_worst == "warn" %}
-      <span class="text-amber-700">Some warnings — review the Doctor page.</span>
-    {% else %}
-      <span class="text-red-700">Errors detected — fix them via the Doctor page.</span>
-    {% endif %}
-  </div>
+<!-- Health card: the doctor probes every index, so it loads after the page. -->
+<div id="health-card" hx-get="/partials/health" hx-trigger="load" hx-swap="outerHTML"
+     class="mb-6 p-4 bg-white border border-slate-200 rounded shadow-sm">
+  <div class="font-semibold text-slate-900 mb-2">Health check</div>
+  <div class="text-sm text-slate-500">Running the checks… (each index is probed; a large one takes a few seconds)</div>
 </div>
 
 <!-- Sources grid -->
@@ -73,7 +45,7 @@
   <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
   {% for s in sources %}
     {% if s.health == "corrupt" %}
-    <div class="p-4 bg-red-50 border border-red-200 rounded shadow-sm">
+    <div id="source-{{ s.name }}" class="p-4 bg-red-50 border border-red-200 rounded shadow-sm">
       <div class="flex items-start justify-between mb-2">
         <div>
           <span class="font-semibold text-red-900">{{ s.name }}</span>
@@ -91,19 +63,20 @@
           hx-post="/api/sources/{{ s.name }}/reset"
           hx-target="#reset-status-{{ s.name }}"
           hx-swap="innerHTML"
+          hx-confirm="Reset the index of '{{ s.name }}'? It is deleted and rebuilt from your files, which can take a while."
           class="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">
           Reset index
         </button>
       </div>
     </div>
     {% elif s.health == "in_use" %}
-    <div class="p-4 bg-sky-50 border border-sky-200 rounded shadow-sm">
+    <div id="source-{{ s.name }}" class="p-4 bg-sky-50 border border-sky-200 rounded shadow-sm">
       <div class="flex items-start justify-between mb-2">
         <div>
           <span class="font-semibold text-sky-900">{{ s.name }}</span>
           <div class="text-xs text-sky-700 mt-0.5">type: {{ s.type }}</div>
         </div>
-        <span class="badge bg-sky-100 text-sky-800" title="Another running Lynx process (usually `lynx serve`, possibly a build or a second manager) holds this index. It is healthy and serving queries there — ChromaDB just doesn't allow a second process to open it.">🔒 in use by another Lynx process</span>
+        <span class="badge bg-sky-100 text-sky-800" title="Another running Lynx process (usually `lynx serve`, possibly a build or a second manager) holds this index and did not answer the integrity probe in time.">🔒 in use by another Lynx process</span>
       </div>
       {% if s.path %}
         <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
@@ -117,7 +90,7 @@
       </button>
     </div>
     {% elif s.health == "unverified" %}
-    <div class="p-4 bg-amber-50 border border-amber-200 rounded shadow-sm">
+    <div id="source-{{ s.name }}" class="p-4 bg-amber-50 border border-amber-200 rounded shadow-sm">
       <div class="flex items-start justify-between mb-2">
         <div>
           <span class="font-semibold text-amber-900">{{ s.name }}</span>
@@ -142,6 +115,7 @@
             hx-post="/api/sources/{{ s.name }}/reset"
             hx-target="#reset-status-{{ s.name }}"
             hx-swap="innerHTML"
+            hx-confirm="Reset the index of '{{ s.name }}'? It may only be slow to verify; a reset deletes it and rebuilds it from your files."
             class="px-3 py-1.5 text-sm rounded border border-amber-300 text-amber-800 hover:bg-amber-100">
             Reset anyway
           </button>
@@ -149,7 +123,7 @@
       </div>
     </div>
     {% else %}
-    <div class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
+    <div id="source-{{ s.name }}" class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
       <div class="flex items-start justify-between mb-2">
         <div>
           <a href="/sources/{{ s.name }}" class="font-semibold text-slate-900 hover:text-indigo-600">{{ s.name }}</a>
@@ -183,7 +157,7 @@
         {% if s.last_update %}
           <div class="flex justify-between gap-2">
             <dt class="text-slate-500">Last update</dt>
-            <dd class="text-xs">{{ s.last_update.split('T')[0] }}</dd>
+            <dd class="text-xs" title="{{ s.last_update }}">{{ s.last_update[:16] | replace('T', ' ') }}</dd>
           </div>
         {% endif %}
         {% if s.graph %}
@@ -192,6 +166,7 @@
             <dd class="text-xs">{{ s.graph.nodes }} nodes, {{ s.graph.edges }} edges</dd>
           </div>
         {% endif %}
+        {% include "_serving_row.html" %}
       </dl>
     </div>
     {% endif %}

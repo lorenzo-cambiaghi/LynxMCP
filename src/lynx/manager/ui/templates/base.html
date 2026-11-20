@@ -4,12 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}LynxManager{% endblock %}</title>
+  <!-- htmx 2 drops 4xx/5xx responses by default. Every error this UI returns
+       is an HTML message meant to be read (a 409 naming the process that owns
+       an index, a 422 from the config validator), so swap them in. -->
+  <meta name="htmx-config" content='{"responseHandling": [{"code": "204", "swap": false}, {"code": "[2345]..", "swap": true}]}'>
   <script src="{{ request.url_for('static', path='tailwind.min.js') }}"></script>
   <script src="{{ request.url_for('static', path='htmx.min.js') }}"></script>
   <style>
     /* Subtle touches that aren't worth a full Tailwind config */
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .badge { @apply inline-block px-2 py-0.5 text-xs font-medium rounded; }
+    /* Plain CSS: the Tailwind runtime only expands @apply inside
+       <style type="text/tailwindcss">, so badges used to get no padding. */
+    .badge { display: inline-block; padding: 0.125rem 0.5rem; font-size: 0.75rem;
+             line-height: 1rem; font-weight: 500; border-radius: 0.25rem; }
     /* Stop FOUC on the side-nav active state */
     a[data-active="true"] { background-color: rgb(99 102 241 / 0.1); color: rgb(67 56 202); }
   </style>
@@ -24,7 +31,10 @@
       <span class="text-2xl">🐱</span>
       <div>
         <div class="font-bold text-slate-900">LynxManager</div>
-        <div class="text-xs text-slate-500">v{{ request.app.version }}</div>
+        <div class="text-xs text-slate-500"
+             title="Lynx {{ lynx_identity.version }}, code {{ lynx_identity.code }}, from {{ lynx_identity.path }}. The code hash changes with every edit of the sources; the dashboard compares it with the process serving each index.">
+          v{{ lynx_identity.version }} · <span class="font-mono">{{ lynx_identity.code }}</span>
+        </div>
       </div>
     </div>
     <nav class="px-2 py-3 space-y-1 text-sm">

@@ -39,36 +39,22 @@ def register(app) -> None:
             manager_error = app.state.manager_error or "Manager not initialized."
         else:
             from . import lock as lock_mod
+            from .app import serving_info
             for st in mgr.list_sources():
+                storage_path = Path(mgr.config.storage_path) / st["name"]
                 # Don't probe a corrupt store's SQLite — it's malformed and
                 # would raise. It's reported as corrupt, not locked.
                 if st.get("health") == "corrupt":
                     st["locked"] = False
                 else:
-                    storage_path = Path(mgr.config.storage_path) / st["name"]
                     st["locked"] = lock_mod.is_storage_locked(storage_path)
+                st["serving"] = serving_info(storage_path, st.get("owner") is True
+                                             and st.get("health", "ok") == "ok")
                 sources_data.append(st)
 
         # Global stats (best-effort — missing fields tolerated)
         total_chunks = sum((s.get("chunk_count") or 0) for s in sources_data)
         total_sources = len(sources_data)
-
-        # Lightweight doctor summary (top-level status only, no per-check
-        # detail rendering on the dashboard — separate page for that).
-        from .. import doctor as doc_mod
-        config_path = Path(app.state.config_path) if app.state.config_path else None
-        try:
-            doctor_results = doc_mod.run_all_checks(config_path)
-            worst = doc_mod._worst_status(doctor_results)
-            doctor_counts = {
-                "ok":    sum(1 for r in doctor_results if r.status == "ok"),
-                "warn":  sum(1 for r in doctor_results if r.status == "warn"),
-                "error": sum(1 for r in doctor_results if r.status == "error"),
-            }
-        except Exception:
-            worst = "warn"
-            doctor_counts = {"ok": 0, "warn": 0, "error": 0}
-            doctor_results = []
 
         # Feedback reports: what agents filed when the index couldn't answer
         # them. Read-only, local, and the one signal that tells the person
@@ -92,13 +78,34 @@ def register(app) -> None:
                 "sources": sources_data,
                 "total_chunks": total_chunks,
                 "total_sources": total_sources,
-                "doctor_counts": doctor_counts,
-                "doctor_worst": worst,
-                "doctor_results": [r.to_dict() for r in doctor_results],
                 "feedback": feedback,
                 "manager_error": manager_error,
                 "config_path": str(app.state.config_path) if app.state.config_path else None,
             },
+        )
+
+    @app.get("/partials/health", response_class=HTMLResponse)
+    def health_card(request: Request):
+        """The dashboard's health card, loaded after the page.
+
+        The doctor probes every index (up to 20 s each) and loads the lexical
+        corpus: run inline, it held the whole dashboard until it finished,
+        tens of seconds on a large index, to show three numbers. Now the
+        page comes at once and the card names what is not OK.
+        """
+        from .. import doctor as doc_mod
+        config_path = Path(app.state.config_path) if app.state.config_path else None
+        try:
+            results = doc_mod.run_all_checks(config_path)
+            worst = doc_mod._worst_status(results)
+            failed = None
+        except Exception as e:
+            results, worst, failed = [], "warn", f"{type(e).__name__}: {e}"
+        counts = {s: sum(1 for r in results if r.status == s) for s in ("ok", "warn", "error")}
+        problems = [r.to_dict() for r in results if r.status != "ok"]
+        return app.state.templates.TemplateResponse(
+            request, "_health_card.html",
+            {"counts": counts, "worst": worst, "problems": problems, "failed": failed},
         )
 
     # Phase 6: search playground — exercises all per-source tools the
@@ -226,8 +233,10 @@ def register(app) -> None:
             raise HTTPException(status_code=404, detail=f"source {name!r} not found")
         st = backend.status()
         from . import lock as lock_mod
+        from .app import serving_info
         storage_path = Path(mgr.config.storage_path) / name
         st["locked"] = lock_mod.is_storage_locked(storage_path)
+        st["serving"] = serving_info(storage_path, getattr(backend, "is_owner", True))
         return app.state.templates.TemplateResponse(
             request, "source_detail.html",
             {

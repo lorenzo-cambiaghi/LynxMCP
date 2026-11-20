@@ -32,8 +32,8 @@
 {% else %}
   <div class="space-y-2">
     {% for s in sources %}
-      <a href="/sources/{{ s.name }}"
-         class="block p-4 bg-white border border-slate-200 rounded hover:border-indigo-400 hover:shadow-sm transition">
+      <a href="{{ '/sources/' ~ s.name if (s.health or 'ok') == 'ok' else '/#source-' ~ s.name }}"
+         class="block p-4 bg-white border {{ 'border-slate-200' if (s.health or 'ok') == 'ok' else 'border-amber-300' }} rounded hover:border-indigo-400 hover:shadow-sm transition">
         <div class="flex items-center justify-between">
           <div>
             <div class="font-semibold text-slate-900">{{ s.name }}</div>
@@ -43,6 +43,9 @@
             </div>
           </div>
           <div class="flex items-center gap-2">
+            {% if (s.health or 'ok') != 'ok' %}
+              <span class="badge bg-amber-100 text-amber-800" title="{{ s.error }}">⚠ {{ s.health | replace('_', ' ') }}</span>
+            {% endif %}
             {% if s.locked %}
               <span class="badge bg-amber-100 text-amber-800" title="ChromaDB locked by another process">🔒 locked</span>
             {% endif %}

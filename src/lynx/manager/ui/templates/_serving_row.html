@@ -1,0 +1,28 @@
+{# Who keeps this index current, and on which code. `s.serving` comes from
+   app.serving_info(). The code hash, not the version number, tells an
+   editable checkout before and after a change apart. #}
+{% set sv = s.serving or {} %}
+<div class="flex justify-between gap-2 items-start">
+  <dt class="text-slate-500">Served by</dt>
+  <dd class="text-xs text-right">
+    {% if sv.who == "this UI" %}
+      <span>this UI</span>
+      <span class="ml-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono"
+            title="Lynx {{ sv.version }} from {{ sv.path }}">{{ sv.code }}</span>
+    {% elif sv.who == "another" %}
+      <span title="since {{ sv.since }}{% if sv.host %} on {{ sv.host }}{% endif %}">pid {{ sv.pid }}</span>
+      {% if sv.same_code %}
+        <span class="ml-1 px-1.5 py-0.5 rounded bg-green-100 text-green-800"
+              title="Runs the same code as this UI: Lynx {{ sv.version }}, code {{ sv.code }}, from {{ sv.path }}">✓ same code</span>
+      {% elif sv.code %}
+        <span class="ml-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+              title="Runs other code than this UI: Lynx {{ sv.version }}, code {{ sv.code }}, from {{ sv.path }}. Restart it to pick up the new code (scripts/restart-lynx.ps1 on Windows).">⚠ other code {{ sv.code }}</span>
+      {% else %}
+        <span class="ml-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+              title="That process predates the version report: it runs an older Lynx than this UI.">⚠ older Lynx</span>
+      {% endif %}
+    {% else %}
+      <span class="text-slate-500" title="No live process claims this index, so no watcher keeps it current. The next Lynx that opens it takes it over.">nobody (no watcher)</span>
+    {% endif %}
+  </dd>
+</div>

@@ -53,6 +53,7 @@
           <dd class="text-xs">{{ source.last_update }}</dd>
         </div>
       {% endif %}
+      {% with s = source %}{% include "_serving_row.html" %}{% endwith %}
       <div class="flex justify-between gap-3">
         <dt class="text-slate-500">Drift</dt>
         <dd class="text-xs">
