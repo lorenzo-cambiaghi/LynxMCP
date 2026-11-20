@@ -58,7 +58,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 
-from .chunking import chunk_file, CHUNKER_VERSION
+from .chunking import chunk_file, grammar_extensions, CHUNKER_VERSION
 from . import fs_scan
 
 
@@ -761,13 +761,40 @@ class CodebaseRAG:
             )
             return {}
 
-        return raw.get("files") or {}
+        files = raw.get("files") or {}
+        regrammared = self._grammar_changes(raw.get("grammars"))
+        if regrammared:
+            # A file of such an extension was cut by a grammar this install
+            # no longer has, or by the text splitter where a grammar now
+            # exists. Its content did not change, so only this marks it.
+            log(
+                f"[rag] {', '.join(sorted(regrammared))}: the grammar changed; "
+                f"those files are re-chunked in place."
+            )
+            files = {path: ({**entry, "sha256": None}
+                            if Path(path).suffix.lower() in regrammared else entry)
+                     for path, entry in files.items()}
+        return files
+
+    def _grammar_extensions(self) -> list:
+        """The source's extensions that this install parses with a grammar."""
+        return [e for e in grammar_extensions() if e in self.supported_extensions]
+
+    def _grammar_changes(self, stored) -> set:
+        """Extensions whose grammar appeared or went away since the cache was
+        written. A cache without the list predates it (1.10.0 and earlier),
+        when every grammar but GDScript was already there."""
+        live = set(self._grammar_extensions())
+        if stored is None:
+            stored = live - {".gd"}
+        return live ^ set(stored)
 
     def _save_file_hashes(self):
         """Persist the current in-memory hash cache + the matching snapshot."""
         payload = {
             "schema_version": FILE_HASHES_SCHEMA_VERSION,
             "config_snapshot": self._file_hashes_snapshot(),
+            "grammars": self._grammar_extensions(),
             "files": self._file_hashes,
         }
         try:

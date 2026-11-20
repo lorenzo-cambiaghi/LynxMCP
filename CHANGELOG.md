@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+A file whose extension gained a grammar kept the text chunks it was indexed
+with until its content changed, and `lynx build` did not help, because the
+SHA cache skips unchanged files. That is how Objective-C reached existing
+indexes in 1.6.0, against what its changelog entry said. The cache now
+records which extensions had a grammar, and when that list changes, the
+files of those extensions are re-chunked in place, and only those.
+
 ## 1.10.0 - 2026-11-20
 
 Upgrading from 1.9.0: the first start rebuilds every code graph once,

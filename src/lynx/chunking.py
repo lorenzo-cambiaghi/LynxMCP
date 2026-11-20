@@ -67,10 +67,10 @@ CHUNKER_VERSION = 5
 #       relative path and the symbol name instead of eight metadata lines.
 #       An index of version 4 is re-chunked in place, file by file, and
 #       answers throughout (see CodebaseRAG._load_file_hashes).
-# NOTE: purely-additive language support (new extensions / grammars, e.g. the
-# 1.6.0 batch Bash/SQL/Scala/Lua and Objective-C) does NOT bump this — existing
-# chunks are unchanged; the new grammar applies to new/edited files, and a
-# manual `lynx build --source <name>` reindexes existing ones on demand.
+# NOTE: a new language (Bash/SQL/Scala/Lua and Objective-C in 1.6.0, GDScript
+# later) does NOT bump this: chunks of the other languages are unchanged. The
+# SHA cache records `grammar_extensions()`, so the files of an extension that
+# gained (or lost) a grammar are re-chunked in place, and only those.
 
 # Soft cap on chunk size. Anything bigger gets split with SentenceSplitter so
 # huge auto-generated methods don't produce a single 50k-token chunk. ~8000
@@ -415,6 +415,14 @@ _EXT_TO_LANG: dict = {
     # this table; `language_for_path` upgrades it to objc when the file content
     # carries Objective-C markers (see `_looks_like_objc`).
 }
+
+
+def grammar_extensions() -> list:
+    """Extensions this install parses with a grammar; the rest go to the text
+    splitter. The SHA cache records the list, so a file whose extension
+    gains or loses a grammar is re-chunked even though its content did not
+    change (see CodebaseRAG._load_file_hashes)."""
+    return sorted(_EXT_TO_LANG)
 
 
 # Lazy parser cache — one Parser per language built on first use, then reused.
