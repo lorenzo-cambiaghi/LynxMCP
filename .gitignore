@@ -72,3 +72,9 @@ benchmarks/_*.log
 # Project: private release playbook (local paths, antivirus quirks,
 # credential handling). Useful to whoever publishes, not to whoever clones.
 /RELEASE_PLAYBOOK.md
+
+# Project: review reports and specs written for one batch of work. What they
+# asked for is in the code and the CHANGELOG; the reports stay local.
+/FIX_LYNX_*.md
+/TOKEN_AND_RETRIEVAL_OPTIMIZATION_PLAN.md
+/CORAL_V1_OPENAPI_SPEC.md
