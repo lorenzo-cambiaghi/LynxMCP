@@ -137,7 +137,11 @@ def render_rules_for_sources(
         lines.append("- `deep_search(queries, source=...)` — fallback for ambiguous queries.")
     understand = []
     if has("describe_symbol"):
-        understand.append("- `describe_symbol(symbol)` — definition + callers + callees + tests in one call.")
+        understand.append("- `describe_symbol(symbol)`: its code, callers, callees and tests in one "
+                          "call; for a class, its bases, subtypes and member signatures.")
+    if has("module_summary"):
+        understand.append("- `module_summary(file)`: every symbol of a file with its signature and "
+                          "doc line. Read it instead of opening a file you don't know.")
     if has("impact"):
         understand.append("- `impact(symbol)` — transitive blast radius of a change, plus the tests to re-run.")
     if has("repo_overview"):

@@ -15,6 +15,9 @@ Every tool takes `source`; leave it out to search all of them.
   implementations. In practice a score of about 0.6 or more has meant a
   real twin.
 - When you know the name: `find_definition`, `find_usages`, `describe_symbol`.
+  They bring the code with them, so there is no file to open afterwards.
+- Before opening a file you don't know, `module_summary` lists what it
+  defines, with signatures and doc lines.
 - Who calls it, and what breaks if it changes: `graph_query` (callers,
   subclasses, neighbors) and `impact`. Text search cannot see these.
 - Before calling a library API, search `<library-docs>`: the model's

@@ -259,7 +259,15 @@ def test_format_module_summary_graph_off():
 
     d = {"file": "x.py", "graph_enabled": False,
          "symbols": [], "imports": [], "dependent_files": []}
-    assert "needs the graph layer" in _format_module_summary("x.py", d)
+    assert "No file matches 'x.py'" in _format_module_summary("x.py", d)
+
+    # Without the graph the symbols still come, with their signatures; only
+    # the call-graph sections say what they would need.
+    d["symbols"] = [{"label": "f", "kind": "function_definition", "start_line": 3,
+                     "end_line": 9, "signature": "def f(a, b)", "doc": "Adds."}]
+    text = _format_module_summary("x.py", d)
+    assert "def f(a, b)" in text and "Adds." in text
+    assert "DEPENDED ON BY: (enable the graph layer" in text
 
 
 def test_format_repo_overview_sections():

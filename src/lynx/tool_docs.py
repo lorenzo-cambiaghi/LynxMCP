@@ -41,25 +41,24 @@ TOOL_DESCRIPTIONS = {
         "carry file:line."
     ),
     "find_definition": (
-        "Jump to where a symbol is defined, when you already know its name. "
-        "AST-precise when the graph layer is on, BM25 fallback otherwise; each "
-        "hit says which. Use `search` instead when you can only describe what "
-        "the code does, and describe_symbol when you also want the callers and "
-        "the tests in the same call."
+        "Jump to where a symbol is defined, when you already know its name; the "
+        "first match comes with its body, the others with their signature. "
+        "AST-precise with the graph layer, BM25 otherwise; each hit says which. "
+        "Use `search` when you can only describe the code, describe_symbol for "
+        "the callers and tests too."
     ),
     "find_usages": (
-        "Every use of a symbol: calls (from the graph when on) plus textual "
-        "references (generics, decorators, imports, docs), definition excluded. "
-        "Answers 'who uses X' at one hop; `impact` walks the chain further and "
-        "adds the tests."
+        "Every use of a symbol: calls and subtypes (from the graph when on) plus "
+        "textual references that contain the name as a word, with their lines; "
+        "definition excluded. Answers 'who uses X' at one hop; `impact` walks "
+        "the chain further and adds the tests."
     ),
     "find_tests_for": (
-        "List the tests that mention a symbol, searched under conventional test "
-        "paths (tests/, spec/, __tests__/, *_test.*, *.spec.*, *Test.cs, "
-        "*Tests.cs); test_path_pattern replaces them for another layout. Use it "
-        "when the tests are all you want, before or after a change; "
-        "describe_symbol returns the same tests bundled with the definition and "
-        "the callers, and impact returns them for a whole blast radius."
+        "The tests of a symbol: those that reach it through the call graph ([dN] "
+        "= N calls away, even if they never name it) and those that name it, "
+        "under conventional test paths (tests/, spec/, __tests__/, *_test.*, "
+        "*.spec.*, *Test.cs, *Tests.cs); test_path_pattern replaces them. "
+        "describe_symbol and impact include the same tests."
     ),
     "find_similar": (
         "Code semantically similar to a snippet you already have, dense search "
@@ -68,11 +67,10 @@ TOOL_DESCRIPTIONS = {
         "words instead. Snippets are cut at 2000 chars."
     ),
     "describe_symbol": (
-        "One-shot context for a symbol: definition, who calls it, what it calls, "
-        "and its tests, in a single call. The fastest way to understand a function "
-        "or class before changing it, and cheaper than find_definition, find_usages "
-        "and find_tests_for one after the other. Call data needs the graph layer; "
-        "definition and tests always work."
+        "One call to understand a symbol before changing it: its code, callers, "
+        "callees and tests; for a class, its bases, subtypes and member "
+        "signatures instead of the body. No read_file needed after. Calls and "
+        "types need the graph layer; definition and tests always work."
     ),
     "impact": (
         "Answer 'what breaks if I change this': everything that reaches a symbol "
@@ -84,10 +82,10 @@ TOOL_DESCRIPTIONS = {
         "graph layer."
     ),
     "module_summary": (
-        "A file as a unit: the symbols it defines, what it imports, and which files "
-        "depend on it (via the call graph). Read it before editing a file you don't "
-        "know; repo_overview does the same for the whole repository, and "
-        "describe_symbol for one symbol inside the file."
+        "A file as a unit: each symbol it defines with signature and doc line, "
+        "its imports and the files depending on it (those two need the graph). "
+        "Read it instead of opening a file you don't know; describe_symbol "
+        "covers one symbol in it."
     ),
     "repo_overview": (
         "Orientation for an unfamiliar codebase: languages by file count, "

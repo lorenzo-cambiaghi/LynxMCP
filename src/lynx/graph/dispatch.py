@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple, Optional
 
-from .._format import _format_edge_lines, _format_node_brief
+from .._format import EDGE_FAR_END, _format_edge_lines, _format_node_brief
 
 
 # Operations that are meaningless without a symbol to act on.
@@ -134,7 +134,7 @@ def _no_seed_hint(symbol: str) -> str:
 
 def _edges_result(manager, source, op, symbol, edges, header) -> GraphQueryResult:
     """Render an edge list, and explain an empty one."""
-    text = _format_edge_lines(edges, header)
+    text = _format_edge_lines(edges, header, far=EDGE_FAR_END.get(op))
     if edges:
         # Results exist, so the seed obviously resolved — say so rather than
         # leaving a null a JSON consumer has to special-case.
@@ -246,7 +246,7 @@ def query_graph(
         for g in ov["god_nodes"]:
             lines.append(f"  • {g['label']:40}  degree={g['degree']}  "
                          f"(in={g['in_degree']}, out={g['out_degree']})  "
-                         f"{g.get('file', '')}")
+                         f"{g.get('rel_path') or g.get('file', '')}")
         lines.append(f"\n--- Communities ({len(ov['communities'])}) ---")
         for c in ov["communities"][:10]:
             sample = ", ".join(c["members_sample"][:5])

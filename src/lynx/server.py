@@ -305,7 +305,11 @@ def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
         )
     lookups = [n for n in ("find_definition", "find_usages", "describe_symbol") if has(n)]
     if lookups:
-        parts.append(f"For an identifier you already know: {' / '.join(lookups)}. ")
+        parts.append(f"For an identifier you already know: {' / '.join(lookups)}; "
+                     "they return the code too. ")
+    if has("module_summary"):
+        parts.append("Before opening a file you don't know, `module_summary` "
+                     "gives its signatures. ")
     if has("deep_search"):
         parts.append("Escalate to `deep_search` only when `search` returns weak or empty results. ")
     structural = [n for n in ("graph_query", "impact", "describe_symbol") if has(n)]
@@ -697,10 +701,10 @@ def _is_codebase(backend) -> bool:
 
 def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
     """Register find_definition / find_usages / find_tests_for / find_similar /
-    describe_symbol / impact / repo_overview (+ search_diff when git is on) for
-    codebase sources. `module_summary` and `export_graph` are graph-only — they
-    return nothing useful without the call graph — so they're registered solely
-    when `has_graph` (consistent with how graph_query is gated).
+    describe_symbol / impact / module_summary / repo_overview (+ search_diff
+    when git is on) for codebase sources. `export_graph` is graph-only, so it
+    is registered solely when `has_graph` (consistent with how graph_query is
+    gated).
     """
     _desc_find_def = _tool_desc("find_definition")
 
@@ -817,25 +821,25 @@ def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
         except Exception as e:
             return f"Error: {e}"
 
-    # module_summary and export_graph produce nothing useful without the call
-    # graph, so register them only when it's available — consistent with how
-    # graph_query is gated, and keeps a non-graph codebase source uncluttered.
+    # module_summary reads a file's own chunks when the graph is off, so it
+    # works for every codebase source; the graph adds imports and dependents.
+    _desc_module = _tool_desc("module_summary")
+
+    @mcp.tool(name="module_summary", description=_desc_module, annotations=_ANN_READ)
+    def _module_summary(
+        file: Annotated[str, Field(description=_param("module_summary.file"))],
+        source: _SourceArg = None,
+        limit: Annotated[int, Field(description=_param("module_summary.limit"))] = 200,
+    ) -> str:
+        try:
+            src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
+            d = manager.module_summary(src, file, limit=limit)
+            return _format_module_summary(file, d)
+        except Exception as e:
+            return f"Error: {e}"
+
+    # export_graph draws the call graph, so it needs one.
     if has_graph:
-        _desc_module = _tool_desc("module_summary")
-
-        @mcp.tool(name="module_summary", description=_desc_module, annotations=_ANN_READ)
-        def _module_summary(
-            file: Annotated[str, Field(description=_param("module_summary.file"))],
-            source: _SourceArg = None,
-            limit: Annotated[int, Field(description=_param("module_summary.limit"))] = 200,
-        ) -> str:
-            try:
-                src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
-                d = manager.module_summary(src, file, limit=limit)
-                return _format_module_summary(file, d)
-            except Exception as e:
-                return f"Error: {e}"
-
         _desc_export_graph = _tool_desc("export_graph")
 
         @mcp.tool(name="export_graph", description=_desc_export_graph, annotations=_ANN_WRITE_FILE)

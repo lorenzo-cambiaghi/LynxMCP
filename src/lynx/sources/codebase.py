@@ -7,6 +7,7 @@ multi-source dispatcher.
 """
 from __future__ import annotations
 
+import functools
 import os
 import sys
 import threading
@@ -15,6 +16,21 @@ from pathlib import Path
 from typing import Any
 
 from .base import SourceBackend
+
+
+def _rel_paths(method):
+    """Give every result of `method` its path inside the source (`rel_path`,
+    and `from_rel_path` for a call site), next to the absolute one.
+
+    The tools print the relative path: the absolute one repeats the same
+    root on every line, a bare file name is ambiguous in a large tree. Done
+    on what the backend returns, so the MCP tools, the CLI, the web UI and
+    the HTTP API all get the same field, and JSON consumers keep `file`.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        return self._attach_rel(method(self, *args, **kwargs))
+    return wrapper
 
 
 class CodebaseBackend(SourceBackend):
@@ -405,6 +421,34 @@ class CodebaseBackend(SourceBackend):
         """Forwarded for the `get_rag_status` global tool."""
         return self.rag.needs_update()
 
+    def _attach_rel(self, obj):
+        """See `_rel_paths`. Walks result dicts, the nodes of graph edges
+        (`source` / `target` / `node`, a path's `nodes`) and nested lists."""
+        from ..fs_scan import to_rel_path
+        root = self.source_config.get("path")
+
+        def fix(item):
+            if isinstance(item, list):
+                for x in item:
+                    fix(x)
+                return
+            if not isinstance(item, dict):
+                return
+            f = item.get("file")
+            if isinstance(f, str) and f and "rel_path" not in item and os.path.isabs(f):
+                item["rel_path"] = to_rel_path(f, root)
+            ff = item.get("from_file")
+            if isinstance(ff, str) and ff and "from_rel_path" not in item:
+                item["from_rel_path"] = to_rel_path(ff, root)
+            for key in ("source", "target", "node", "nodes", "definition", "called_by",
+                        "calls", "superclasses", "subclasses", "tests", "callers",
+                        "symbols", "imports", "god_nodes"):
+                if isinstance(item.get(key), (dict, list)):
+                    fix(item[key])
+
+        fix(obj)
+        return obj
+
     # ------------------------------------------------------------------
     # Graph layer pass-through (only meaningful when graph.enabled=true)
     # ------------------------------------------------------------------
@@ -412,26 +456,32 @@ class CodebaseBackend(SourceBackend):
     # backend.graph is not None` before registering the graph tools, so
     # these methods are only invoked when the layer is active.
 
+    @_rel_paths
     def get_callers(self, symbol: str, limit: int = 50) -> list:
         from ..graph import get_callers as _q
         return _q(self.graph.graph, symbol, limit=limit)
 
+    @_rel_paths
     def get_callees(self, symbol: str, limit: int = 50) -> list:
         from ..graph import get_callees as _q
         return _q(self.graph.graph, symbol, limit=limit)
 
+    @_rel_paths
     def get_subclasses(self, symbol: str, limit: int = 50) -> list:
         from ..graph import get_subclasses as _q
         return _q(self.graph.graph, symbol, limit=limit)
 
+    @_rel_paths
     def get_superclasses(self, symbol: str, limit: int = 50) -> list:
         from ..graph import get_superclasses as _q
         return _q(self.graph.graph, symbol, limit=limit)
 
+    @_rel_paths
     def get_imports(self, file_or_symbol: str, limit: int = 100) -> list:
         from ..graph import get_imports as _q
         return _q(self.graph.graph, file_or_symbol, limit=limit)
 
+    @_rel_paths
     def get_neighbors(
         self,
         symbol: str,
@@ -443,10 +493,12 @@ class CodebaseBackend(SourceBackend):
         return _q(self.graph.graph, symbol,
                   relation_filter=relation_filter, depth=depth, limit=limit)
 
+    @_rel_paths
     def shortest_path(self, source: str, target: str, max_hops: int = 8):
         from ..graph import shortest_path as _q
         return _q(self.graph.graph, source, target, max_hops=max_hops)
 
+    @_rel_paths
     def architectural_overview(self, top_n_gods: int = 10, min_community_size: int = 3) -> dict:
         from ..graph import god_nodes, communities
         return {
@@ -471,20 +523,9 @@ class CodebaseBackend(SourceBackend):
     # but keeps the tools usable for users who haven't opted into the
     # graph layer yet.
 
-    def find_definition(self, symbol: str, limit: int = 10) -> list:
-        """Find where `symbol` is defined.
-
-        Primary: graph lookup (function/class nodes whose label matches
-        `symbol`). Returns the precise file + line range from the AST.
-
-        Fallback (graph off, or graph found nothing): BM25 sparse search
-        for the literal symbol name. Less precise but usually finds the
-        right file when the user gave an exact identifier.
-
-        Each result carries `source` ("graph" or "search_bm25") so the
-        AI client can communicate confidence to the user.
-        """
-        self._before_read()
+    def _definitions(self, symbol: str, limit: int) -> list:
+        """[(node id or None, result dict)] for `symbol`'s definitions: graph
+        nodes when the layer is on, chunks named after it otherwise."""
         out: list = []
         seen_keys: set = set()
 
@@ -500,7 +541,7 @@ class CodebaseBackend(SourceBackend):
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
-                out.append({
+                out.append((nid, {
                     "symbol": data.get("label", symbol),
                     "kind": data.get("kind"),
                     "file": data.get("file"),
@@ -508,29 +549,29 @@ class CodebaseBackend(SourceBackend):
                     "end_line": data.get("end_line"),
                     "lang_key": data.get("lang_key"),
                     "source": "graph",
-                })
+                }))
                 if len(out) >= limit:
                     return out
 
-        # Fallback path: BM25 textual search. Even when graph is
+        # Fallback path: BM25 over the chunks. Even when graph is
         # available, fire this if the primary returned nothing — could
         # be a symbol from a language with no graph rule (markdown,
-        # shaders, etc.) that the chunker still picked up.
+        # shaders, etc.) that the chunker still picked up. Chunks named
+        # after the symbol come first; a mention is the best left after.
         if not out:
             try:
-                hits = self.rag.search(symbol, top_k=limit, file_glob=None,
-                                       extensions=None, path_contains=None)
+                hits = self.rag.lexical_search(symbol, top_k=max(limit * 3, 10))
             except Exception:
                 hits = []
-            # If the RAG instance is in "sparse" mode this is already
-            # exact-match-biased. Otherwise let the hybrid score guide it.
-            for h in hits:
+            leaf = _leaf(symbol)
+            named = [h for h in hits if _leaf(h.get("symbol_name") or "") == leaf]
+            for h in named or hits:
                 key = (h.get("file_path") or h.get("file") or "",
                        h.get("symbol_name") or "")
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
-                out.append({
+                out.append((None, {
                     "symbol": h.get("symbol_name") or symbol,
                     "kind": h.get("symbol_kind"),
                     "file": h.get("file_path") or h.get("file"),
@@ -539,11 +580,53 @@ class CodebaseBackend(SourceBackend):
                     "lang_key": h.get("language"),
                     "score": h.get("score"),
                     "source": "search_bm25",
-                })
+                }))
                 if len(out) >= limit:
                     break
         return out
 
+    @staticmethod
+    def _with_code(results: list, files, *, bodies: int = 1) -> list:
+        """Attach the code: the body of the first `bodies` results, the
+        signature and doc line of the rest."""
+        from ..snippets import symbol_body, symbol_outline
+        for i, r in enumerate(results):
+            if i < bodies:
+                body, cut = symbol_body(files, r.get("file"), r.get("start_line"),
+                                        r.get("end_line"))
+                if body:
+                    r["body"], r["body_cut"] = body, cut
+                    continue
+            sig, doc = symbol_outline(files, r.get("file"), r.get("start_line"),
+                                      r.get("end_line"), r.get("kind") or "")
+            if sig:
+                r["signature"] = sig
+            if doc:
+                r["doc"] = doc
+        return results
+
+    @_rel_paths
+    def find_definition(self, symbol: str, limit: int = 10) -> list:
+        """Find where `symbol` is defined, with its code.
+
+        Primary: graph lookup (function/class nodes whose label matches
+        `symbol`). Returns the precise file + line range from the AST.
+
+        Fallback (graph off, or graph found nothing): BM25 sparse search
+        for the literal symbol name. Less precise but usually finds the
+        right file when the user gave an exact identifier.
+
+        Each result carries `source` ("graph" or "search_bm25") so the
+        AI client can communicate confidence to the user. The first one
+        carries its body (`body`, capped; `body_cut` lines left out), the
+        others their `signature` and `doc`, so the answer needs no read.
+        """
+        self._before_read()
+        from ..snippets import FileLines
+        results = [r for _nid, r in self._definitions(symbol, limit)]
+        return self._with_code(results, FileLines())
+
+    @_rel_paths
     def find_usages(self, symbol: str, limit: int = 50) -> list:
         """Find every place that uses `symbol` — calls AND non-call
         references (typeof, generics, decorators, imports, comments
@@ -551,68 +634,78 @@ class CodebaseBackend(SourceBackend):
 
         Strategy:
           1. If graph layer is on, start from `get_callers(symbol)` —
-             precise structural callers from the call graph.
-          2. Always also run a textual BM25 search for the symbol name
-             to catch non-call references the graph misses (generics,
-             type annotations, decorators, doc references, etc).
+             precise structural callers from the call graph — and, for a
+             type, the types that inherit from it.
+          2. Always also run a lexical (BM25) search for the name, and keep
+             only the chunks that contain it as a whole word: the hybrid
+             search used here before let in code that merely looked
+             similar. Each keeps the lines it appears on.
           3. Filter OUT chunks that ARE the definition of `symbol`
              (we want USES, not the definition itself).
-          4. Dedupe by (file, line range).
+          4. Drop a textual hit inside a function the graph already listed.
         """
         self._before_read()
         out: list = []
         seen_keys: set = set()
+        spans: list = []   # (file, start, end) already reported
 
-        # 1. Structural callers from the graph
+        def add(entry: dict) -> bool:
+            key = (_norm_path(entry.get("file")), entry.get("start_line") or 0)
+            if key in seen_keys:
+                return False
+            seen_keys.add(key)
+            spans.append((key[0], entry.get("start_line") or 0,
+                          entry.get("end_line") or entry.get("start_line") or 0))
+            out.append(entry)
+            return True
+
+        # 1. Structural callers (and subtypes) from the graph
         if self.graph is not None:
             try:
-                from ..graph import get_callers as _gc
-                for edge in _gc(self.graph.graph, symbol, limit=limit):
+                from ..graph import get_callers as _gc, get_subclasses as _gs
+                edges = [(e, "calls") for e in _gc(self.graph.graph, symbol, limit=limit)]
+                edges += [(e, "inherits") for e in _gs(self.graph.graph, symbol, limit=limit)]
+                for edge, relation in edges:
                     src = edge.get("source") or {}
-                    key = (src.get("file") or "", src.get("start_line") or 0)
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    out.append({
+                    entry = {
                         "symbol": src.get("label"),
                         "kind": src.get("kind"),
                         "file": src.get("file"),
                         "start_line": src.get("start_line"),
                         "end_line": src.get("end_line"),
-                        "edge_relation": "calls",
+                        "edge_relation": relation,
                         "source": "graph",
-                    })
+                    }
+                    if relation == "inherits" and edge.get("base_kind"):
+                        entry["base_kind"] = edge["base_kind"]
+                    add(entry)
                     if len(out) >= limit:
                         return out
             except Exception:
                 pass  # graph available but query failed — fall through to search
 
-        # 2. Textual search for non-call uses (always runs)
+        # 2. Lexical search for non-call uses, verified word by word
         try:
-            hits = self.rag.search(symbol, top_k=limit)
+            hits = self.rag.lexical_search(symbol, top_k=limit * 2)
         except Exception:
             hits = []
-        # Lowercase compare so "ApplyDamage" matches "applydamage" etc.
-        symbol_lower = symbol.lower()
+        leaf = _leaf(symbol)
         for h in hits:
-            sym_name = (h.get("symbol_name") or "").lower()
-            # Skip the chunk that IS the definition (single-symbol chunk with
-            # exact name match — the user wants USAGES, not the def).
-            if sym_name == symbol_lower and h.get("symbol_kind") in (
-                "function", "function_definition", "method_definition",
-                "method_declaration", "class", "class_definition", "class_declaration",
-            ):
+            if _is_definition_of(h, leaf):
                 continue
-            key = (h.get("file_path") or h.get("file") or "", h.get("start_line") or 0)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            out.append({
+            lines = _lines_mentioning(h, leaf)
+            if not lines:
+                continue                     # BM25 matched parts of the name only
+            path = _norm_path(h.get("file_path") or h.get("file"))
+            if any(f == path and s <= lines[0] <= e for f, s, e in spans):
+                continue                     # inside a caller already listed
+            add({
                 "symbol": h.get("symbol_name") or "",
                 "kind": h.get("symbol_kind"),
                 "file": h.get("file_path") or h.get("file"),
                 "start_line": h.get("start_line"),
                 "end_line": h.get("end_line"),
+                "match_lines": lines,
                 "score": h.get("score"),
                 "source": "search",
             })
@@ -630,17 +723,25 @@ class CodebaseBackend(SourceBackend):
         r"Test\.cs$|Tests\.cs$"
     )
 
+    @_rel_paths
     def find_tests_for(
         self,
         symbol: str,
         limit: int = 20,
         test_path_pattern: str | None = None,
     ) -> list:
-        """Find test chunks that exercise `symbol`.
+        """Find the tests that exercise `symbol`.
 
-        Over-fetches search results (`limit * 3`) then filters by a
-        regex on `file_path` that covers the common test conventions.
-        Caller can override `test_path_pattern` for custom layouts.
+        1. With the graph on: every test function that reaches `symbol`
+           through the call graph, up to four calls away. A test of
+           `HandleHit` that ends up in `ApplyDamage` never names it, so no
+           text search finds it; `depth` says how far it is.
+        2. The tests that name it: a lexical search among test files only
+           (the ranking happens there, not across the whole index), kept
+           when the name is in the chunk as a whole word.
+
+        Test files are told apart by a regex on the path covering the
+        common conventions; `test_path_pattern` replaces it.
         """
         self._before_read()
         import re
@@ -649,23 +750,54 @@ class CodebaseBackend(SourceBackend):
         # "Test.cs", "test.cs"). Matching case-sensitively would silently
         # drop tests on Linux/case-sensitive filesystems with unusual casing.
         rx = re.compile(pattern, re.IGNORECASE)
-        try:
-            hits = self.rag.search(symbol, top_k=limit * 3)
-        except Exception:
-            return []
+
+        def is_test(path) -> bool:
+            return bool(path) and bool(rx.search(str(path).replace("\\", "/")))
+
         out: list = []
+        spans: list = []
+        if self.graph is not None:
+            try:
+                from ..graph import transitive_callers as _tc
+                for c in _tc(self.graph.graph, symbol, max_depth=4, limit=500):
+                    node = c.get("node") or {}
+                    if node.get("kind") != "function" or not is_test(node.get("file")):
+                        continue
+                    out.append({
+                        "symbol": node.get("label") or "",
+                        "kind": node.get("kind"),
+                        "file": node.get("file"),
+                        "start_line": node.get("start_line"),
+                        "end_line": node.get("end_line"),
+                        "depth": c.get("depth"),
+                        "source": "graph",
+                    })
+                    spans.append((_norm_path(node.get("file")), node.get("start_line") or 0,
+                                  node.get("end_line") or 0))
+                    if len(out) >= limit:
+                        return out
+            except Exception:
+                pass
+
+        try:
+            hits = self.rag.lexical_search(symbol, top_k=limit * 3, path_filter=is_test)
+        except Exception:
+            return out
+        leaf = _leaf(symbol)
         for h in hits:
-            fp = h.get("file_path") or h.get("file") or ""
-            # Normalize Windows backslashes for the regex
-            fp_normalized = fp.replace("\\", "/")
-            if not rx.search(fp_normalized):
+            lines = _lines_mentioning(h, leaf)
+            if not lines:
+                continue
+            path = _norm_path(h.get("file_path") or h.get("file"))
+            if any(f == path and s <= lines[0] <= e for f, s, e in spans):
                 continue
             out.append({
                 "symbol": h.get("symbol_name") or "",
                 "kind": h.get("symbol_kind"),
-                "file": fp,
+                "file": h.get("file_path") or h.get("file"),
                 "start_line": h.get("start_line"),
                 "end_line": h.get("end_line"),
+                "match_lines": lines,
                 "score": h.get("score"),
                 "content": h.get("content"),
                 "source": "search+test_filter",
@@ -786,6 +918,7 @@ class CodebaseBackend(SourceBackend):
             "hits": hits,
         }
 
+    @_rel_paths
     def find_similar(self, snippet: str, top_k: int = 10) -> list:
         """Find chunks structurally / semantically similar to `snippet`.
 
@@ -838,6 +971,7 @@ class CodebaseBackend(SourceBackend):
                 break
         return out
 
+    @_rel_paths
     def describe_symbol(
         self,
         symbol: str,
@@ -845,33 +979,78 @@ class CodebaseBackend(SourceBackend):
         callers_limit: int = 10,
         callees_limit: int = 10,
         tests_limit: int = 5,
+        members_limit: int = 60,
+        subtypes_limit: int = 15,
     ) -> dict:
         """One-shot context for a symbol — for an AI orienting around it.
 
         Composes the cheap primitives into a single round-trip instead of
         the agent issuing find_definition + graph callers + graph callees +
-        find_tests_for separately:
-          - definition  (precise file+line, graph or BM25 fallback)
+        find_tests_for + read_file separately:
+          - definition  (precise file+line, graph or BM25 fallback; the first
+                         one with its body, the others with their signature)
           - called_by   (graph callers — empty when the graph layer is off)
           - calls       (graph callees — empty when the graph layer is off)
-          - tests       (tests that mention the symbol)
+          - tests       (tests that reach or name the symbol)
+        For a type, its blueprint instead of a body a thousand lines long:
+          - superclasses / subclasses (graph inheritance)
+          - members     (what it contains, each with its signature)
 
-        Definition + tests work without the graph; callers/callees need it.
+        Definition + tests work without the graph; the rest needs it.
         """
         self._before_read()
+        from ..snippets import FileLines, symbol_outline
+        files = FileLines()
+        defs = self._definitions(symbol, 3)
+        top_nid, top = defs[0] if defs else (None, None)
+        is_type = bool(top and top.get("kind") == "class")
+        definition = [r for _nid, r in defs]
+        # A type's body is its members, listed below with their signatures.
+        self._with_code(definition, files, bodies=0 if is_type else 1)
         result = {
             "symbol": symbol,
             "graph_enabled": self.graph is not None,
-            "definition": self.find_definition(symbol, limit=3),
+            "definition": definition,
+            "is_type": is_type,
             "called_by": [],
             "calls": [],
+            "superclasses": [],
+            "subclasses": [],
+            "members": [],
             "tests": self.find_tests_for(symbol, limit=tests_limit),
         }
         if self.graph is not None:
-            result["called_by"] = self.get_callers(symbol, limit=callers_limit)
-            result["calls"] = self.get_callees(symbol, limit=callees_limit)
+            # Seeded by the label the definition resolved to: `symbol` may be
+            # a fragment that matches a dozen names.
+            seed = top.get("symbol") if top else symbol
+            result["called_by"] = self.get_callers(seed, limit=callers_limit)
+            result["calls"] = self.get_callees(seed, limit=callees_limit)
+            if is_type:
+                result["superclasses"] = self.get_superclasses(seed, limit=subtypes_limit)
+                result["subclasses"] = self.get_subclasses(seed, limit=subtypes_limit)
+                if top_nid is not None:
+                    G = self.graph.graph
+                    members = []
+                    for _u, v, data in G.out_edges(top_nid, data=True):
+                        if data.get("relation") != "contains":
+                            continue
+                        node = G.nodes[v]
+                        members.append({
+                            "label": node.get("label", v),
+                            "kind": node.get("kind"),
+                            "start_line": node.get("start_line"),
+                            "end_line": node.get("end_line"),
+                        })
+                    members.sort(key=lambda m: m.get("start_line") or 0)
+                    for m in members[:members_limit]:
+                        sig, _doc = symbol_outline(files, top.get("file"), m.get("start_line"),
+                                                   m.get("end_line"), m.get("kind") or "")
+                        if sig:
+                            m["signature"] = sig
+                    result["members"] = members[:members_limit]
         return result
 
+    @_rel_paths
     def impact_of(
         self,
         symbol: str,
@@ -902,38 +1081,111 @@ class CodebaseBackend(SourceBackend):
             )
         return result
 
-    def module_summary(self, file_or_symbol: str, *, limit: int = 200) -> dict:
-        """High-level summary of a file: the public symbols it defines, what it
-        imports, and which other files depend on it (via reverse call edges).
+    # A fragment that names more files than this is not a module.
+    _MODULE_MAX_FILES = 5
 
-        Graph-powered — `graph_enabled` is False (with empty lists) when the
-        layer is off. Lets an AI grasp a unit without reading the whole file.
+    def _module_files(self, fragment: str) -> list:
+        """The indexed files `fragment` names (case-insensitive, either slash).
+        A file whose path ends with it beats one that merely contains it, so
+        `utils.py` is that file and not every `test_utils.py` too."""
+        needle = (fragment or "").lower().replace("\\", "/").strip("/")
+        if not needle:
+            return []
+        paths = sorted(self.rag.indexed_files())
+        hits = [p for p in paths if needle in p.lower().replace("\\", "/")]
+        exact = [p for p in hits
+                 if p.lower().replace("\\", "/").endswith("/" + needle)
+                 or p.lower().replace("\\", "/") == needle]
+        return exact or hits
+
+    @_rel_paths
+    def module_summary(self, file_or_symbol: str, *, limit: int = 200) -> dict:
+        """A file as a unit: the symbols it defines with their signatures and
+        doc lines, what it imports, and which other files depend on it.
+
+        Works without the graph layer too, from the file's own chunks; the
+        graph adds the resolved imports and the dependents. Lets an AI grasp
+        a unit without reading the whole file.
         """
         self._before_read()
+        from ..snippets import FileLines, symbol_outline
+        files = self._module_files(file_or_symbol)
         result = {
             "file": file_or_symbol,
             "graph_enabled": self.graph is not None,
+            "files": [],
             "symbols": [],
             "imports": [],
             "dependent_files": [],
         }
-        if self.graph is None:
+        if not files:
             return result
-        from ..graph import nodes_in_file, get_imports, get_callers
-        G = self.graph.graph
-        symbols = nodes_in_file(G, file_or_symbol, limit=limit)
-        result["symbols"] = symbols
-        result["imports"] = get_imports(G, file_or_symbol, limit=100)
-        # Dependent files: distinct files of everything that calls a symbol
-        # defined in this file (its own file excluded).
-        dependents: set = set()
+        truncated = len(files) > self._MODULE_MAX_FILES
+        files = files[:self._MODULE_MAX_FILES]
+        root = self.source_config.get("path")
+        from ..fs_scan import to_rel_path
+        result["files"] = [to_rel_path(f, root) for f in files] + (["..."] if truncated else [])
+        wanted = {_norm_path(f) for f in files}
+        lines = FileLines()
+
+        if self.graph is not None:
+            from ..graph import get_imports, get_callers
+            G = self.graph.graph
+            symbols = []
+            for _nid, data in G.nodes(data=True):
+                if data.get("kind") not in ("function", "class"):
+                    continue
+                if _norm_path(data.get("file")) not in wanted:
+                    continue
+                symbols.append({
+                    "label": data.get("label"),
+                    "kind": data.get("kind"),
+                    "file": data.get("file"),
+                    "start_line": data.get("start_line"),
+                    "end_line": data.get("end_line"),
+                })
+            symbols.sort(key=lambda s: (s.get("file") or "", s.get("start_line") or 0))
+            symbols = symbols[:limit]
+            imports = []
+            for f in files:
+                imports.extend(get_imports(G, f, limit=100))
+            result["imports"] = imports
+            # Dependent files: distinct files of everything that calls a symbol
+            # defined in this file (its own file excluded).
+            dependents: set = set()
+            for s in symbols:
+                for e in get_callers(G, s["label"], limit=50):
+                    caller_file = (e.get("source") or {}).get("file")
+                    if caller_file and _norm_path(caller_file) not in wanted:
+                        dependents.add(caller_file)
+            result["dependent_files"] = sorted(dependents)
+        else:
+            from ..chunking import chunk_file
+            symbols = []
+            for f in files:
+                text = lines.get(f)
+                if text is None:
+                    continue
+                seen = set()
+                for c in chunk_file(f, "\n".join(text)):
+                    name = (c.get("symbol_name") or "").split("#part")[0]
+                    if not name or name.startswith("<") or name in seen:
+                        continue
+                    seen.add(name)
+                    symbols.append({
+                        "label": name, "kind": c.get("symbol_kind"), "file": f,
+                        "start_line": c.get("start_line"), "end_line": c.get("end_line"),
+                    })
+            symbols = symbols[:limit]
+
         for s in symbols:
-            own_file = s.get("file")
-            for e in get_callers(G, s["label"], limit=50):
-                caller_file = (e.get("source") or {}).get("file")
-                if caller_file and caller_file != own_file:
-                    dependents.add(caller_file)
-        result["dependent_files"] = sorted(dependents)
+            sig, doc = symbol_outline(lines, s.get("file"), s.get("start_line"),
+                                      s.get("end_line"), s.get("kind") or "")
+            if sig:
+                s["signature"] = sig
+            if doc:
+                s["doc"] = doc
+        result["symbols"] = symbols
         return result
 
     def repo_overview(self) -> dict:
@@ -980,3 +1232,36 @@ class CodebaseBackend(SourceBackend):
             "content": content,
             "suggested_name": f"{mode}_{safe}.html",
         }
+
+
+def _norm_path(path) -> str:
+    """One spelling per file, for comparing paths from the graph and the index."""
+    return os.path.normcase(os.path.normpath(str(path))) if path else ""
+
+
+def _leaf(symbol: str) -> str:
+    """`Health.ApplyDamage` -> `applydamage`; `Foo#part2` -> `foo`."""
+    return (symbol or "").split("#part")[0].split(".")[-1].strip().lower()
+
+
+# Kinds of chunk that are no declaration of anything.
+_NOT_DECLARATIONS = frozenset({"module_header", "text_window", ""})
+
+
+def _is_definition_of(hit: dict, leaf: str) -> bool:
+    """True for the chunk that declares the symbol: its name ends with it."""
+    return ((hit.get("symbol_kind") or "") not in _NOT_DECLARATIONS
+            and _leaf(hit.get("symbol_name") or "") == leaf)
+
+
+def _lines_mentioning(hit: dict, leaf: str) -> list:
+    """The file lines of a chunk where `leaf` appears as a whole word
+    (case-insensitive): what makes a lexical hit a usage, not a chunk that
+    shares a word with the name."""
+    import re
+    if not leaf:
+        return []
+    rx = re.compile(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", re.IGNORECASE)
+    first = hit.get("start_line") or 1
+    return [first + i for i, line in enumerate((hit.get("content") or "").splitlines())
+            if rx.search(line)]

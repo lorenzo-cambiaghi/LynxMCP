@@ -182,7 +182,11 @@ def test_subclasses_and_superclasses(graph_mcp):
     out = tool.fn(operation="subclasses", symbol="Base")
     assert "Subclasses of 'Base'" in out
     assert "Derived" in out, "cross-file inheritance not resolved"
-    assert "inherits" in out
+    # One line per subclass, under the file it lives in; the queried base is
+    # named once, in the header.
+    lines = out.splitlines()
+    assert "[Base @ util.py" in lines[0]
+    assert lines[1].strip() == "main.py" and "Derived [class]" in lines[2]
 
     out = tool.fn(operation="superclasses", symbol="Derived")
     assert "Superclasses of 'Derived'" in out

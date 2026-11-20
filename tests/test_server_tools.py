@@ -142,11 +142,12 @@ def test_conditional_tools_skipped_without_capability():
 
 def test_codebase_without_graph_omits_graph_only_tools():
     # A codebase source WITHOUT the graph layer: the graph-only tools
-    # (graph_query, module_summary, export_graph) must NOT register; the
-    # search-backed comprehension tools still do.
+    # (graph_query, export_graph) must NOT register; the search-backed
+    # comprehension tools still do, module_summary included (it reads the
+    # file's own chunks when there is no graph).
     mgr = FakeManager({"code": FakeBackend(graph=None, git=False)})
     names = set(_tools(_register_everything(mgr)))
-    assert "module_summary" not in names
+    assert "module_summary" in names
     assert "export_graph" not in names
     assert "graph_query" not in names
     assert "search_diff" not in names          # git off

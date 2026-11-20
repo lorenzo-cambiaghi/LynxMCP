@@ -57,6 +57,9 @@ STANDARD_TOOLS: Tuple[str, ...] = CORE_TOOLS + (
     # Lynx has to duplicated code, and it used to be reachable only from the
     # command line or the full profile.
     "find_similar",
+    # A file as signatures and doc lines: what an agent reads instead of
+    # opening a file it does not know yet. Works without the graph.
+    "module_summary",
     "deep_search",
     "graph_query",
     "repo_overview",
@@ -87,7 +90,7 @@ _NEEDS_CODEBASE = frozenset({
     "describe_symbol", "impact", "repo_overview", "module_summary",
     "export_graph", "search_diff",
 })
-_NEEDS_GRAPH = frozenset({"graph_query", "module_summary", "export_graph"})
+_NEEDS_GRAPH = frozenset({"graph_query", "export_graph"})
 _NEEDS_GIT = frozenset({"search_diff"})
 
 

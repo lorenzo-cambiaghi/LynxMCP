@@ -91,6 +91,10 @@ def _stub_manager():
             },
         ]
     CodebaseRAG.search = stub_search
+    # find_definition / find_usages / find_tests_for read the lexical half only.
+    CodebaseRAG.lexical_search = (
+        lambda self, query, top_k, path_filter=None: stub_search(self, query, top_k))
+    CodebaseRAG.indexed_files = lambda self: []
 
 
 def _write_config(tmp: Path, code_dir: Path) -> Path:

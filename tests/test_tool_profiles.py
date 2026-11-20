@@ -85,7 +85,7 @@ def test_profiles_nest_and_full_is_everything():
     core, standard, full = (set(tp.PROFILES[p]) for p in ("core", "standard", "full"))
     assert core < standard < full
     assert full == set(tp.ALL_TOOLS)
-    assert (len(core), len(standard), len(full)) == (5, 11, 17)
+    assert (len(core), len(standard), len(full)) == (5, 12, 17)
     # The answer to "is this a duplicate?" belongs where agents can reach it.
     assert "find_similar" in standard
     assert tp.DEFAULT_PROFILE == "standard"
@@ -217,7 +217,11 @@ def test_config_tools_block(tmp_path):
 # 2026-10-12, standard 11,800 -> 12,400: find_similar joined the profile (12,099
 # measured). It is the tool that finds parallel implementations of a draft,
 # and agents of the default profile could not see it.
-_WIRE_BUDGET = {"core": 5_300, "standard": 12_400, "full": 16_800}
+# 2026-11-20, standard 12,400 -> 13,000: module_summary joined the profile
+# (12,925 measured; the tool itself is 830). It answers with a file's
+# signatures, which is what an agent reads instead of opening the whole file,
+# and it no longer needs the graph layer. core and full stayed in budget.
+_WIRE_BUDGET = {"core": 5_300, "standard": 13_000, "full": 16_800}
 _MAX_DESCRIPTION = 450
 
 

@@ -73,9 +73,24 @@ def _stub_rag(search_returns=None):
         # instance state. We mirror that here so the stub still works.
         return list(state["search_returns"])
 
+    def stub_lexical(self, query, top_k, path_filter=None):
+        # find_usages / find_tests_for / the find_definition fallback go
+        # through the lexical half only. The stub honors the path filter
+        # like the real ranking does (among those files, not cut first).
+        hits = list(state["search_returns"])
+        if path_filter is not None:
+            hits = [h for h in hits if path_filter(h.get("file_path") or "")]
+        return hits
+
+    def stub_indexed_files(self):
+        return sorted({os.path.join(root, f)
+                       for root, _d, fs in os.walk(self.codebase_path) for f in fs})
+
     CodebaseRAG.__init__ = stub_init
     CodebaseRAG.search = stub_search
     CodebaseRAG._search_once = stub_search_once
+    CodebaseRAG.lexical_search = stub_lexical
+    CodebaseRAG.indexed_files = stub_indexed_files
     CodebaseRAG.update = lambda self, force=False: None
     CodebaseRAG.update_file = lambda self, p: None
     CodebaseRAG.remove_file = lambda self, p: None
@@ -254,19 +269,27 @@ def main() -> int:
                 "id": "tA", "symbol_name": "test_service", "symbol_kind": "function_definition",
                 "file": "test_service.py", "file_path": "/proj/tests/test_service.py",
                 "start_line": 1, "end_line": 5, "score": 0.6,
-                "content": "def test_service(): ...",
+                "content": "def test_service():\n    assert anysymbol(1) == 2",
             },
             {
                 "id": "tB", "symbol_name": "Service.run", "symbol_kind": "function_definition",
                 "file": "service.py", "file_path": "/proj/src/service.py",
                 "start_line": 1, "end_line": 5, "score": 0.55,
-                "content": "def run(self): ...",
+                "content": "def run(self): return anysymbol(1)",
             },
             {
                 "id": "tC", "symbol_name": "spec_helper", "symbol_kind": "function_definition",
                 "file": "x.spec.js", "file_path": "/proj/x.spec.js",
                 "start_line": 1, "end_line": 5, "score": 0.5,
-                "content": "describe('helper', ...);",
+                "content": "describe('anysymbol', ...);",
+            },
+            {
+                # A test BM25 ranked for a piece of the name: it never says
+                # `anysymbol`, so it is no test of it.
+                "id": "tD", "symbol_name": "test_other", "symbol_kind": "function_definition",
+                "file": "test_other.py", "file_path": "/proj/tests/test_other.py",
+                "start_line": 1, "end_line": 3, "score": 0.4,
+                "content": "def test_other():\n    assert any_symbol_table()",
             },
         ]
         out = b.find_tests_for("anysymbol")
@@ -280,6 +303,9 @@ def main() -> int:
             return 6
         if not any("x.spec.js" in f for f in files):
             print(f"[test] FAIL [6/9]: .spec. file didn't match")
+            return 6
+        if any("test_other.py" in f for f in files):
+            print(f"[test] FAIL [6/9]: a test that never names the symbol came back")
             return 6
         print(f"[test] OK [6/9] find_tests_for: /tests/ + .spec. matched, non-tests excluded")
 
@@ -473,6 +499,74 @@ def main() -> int:
             print(f"[test] FAIL [16/16]: suggested_name missing/!.html: {res.get('suggested_name')}")
             return 16
         print(f"[test] OK [16/16] export_graph: self-contained symbol view rendered")
+
+        # ============================================================
+        # 17. find_tests_for graph-on: a test that reaches the symbol through
+        #     the call graph is found even though no text names it
+        # ============================================================
+        rag_state["search_returns"] = []
+        out = b.find_tests_for("helper")
+        indirect = [r for r in out if r.get("source") == "graph"]
+        if not any(r["symbol"].endswith("test_service") and r.get("depth") == 2 for r in indirect):
+            print(f"[test] FAIL [17]: test_service -> Service.run -> helper not found: {out}")
+            return 17
+        print(f"[test] OK [17] find_tests_for: indirect test found via the call graph at depth 2")
+
+        # ============================================================
+        # 18. find_usages: a lexical hit without the name as a word is dropped
+        # ============================================================
+        rag_state["search_returns"] = [
+            {"id": "u1", "symbol_name": "caller", "symbol_kind": "function_definition",
+             "file": "a.py", "file_path": "/x/a.py", "start_line": 10, "end_line": 12,
+             "content": "def caller():\n    return helper(2)\n"},
+            {"id": "u2", "symbol_name": "helpers_table", "symbol_kind": "function_definition",
+             "file": "b.py", "file_path": "/x/b.py", "start_line": 1, "end_line": 2,
+             "content": "def helpers_table():\n    return HELPERS"},
+        ]
+        out = b2.find_usages("helper")
+        names = [r["symbol"] for r in out]
+        if names != ["caller"]:
+            print(f"[test] FAIL [18]: expected only the real mention, got {names}")
+            return 18
+        if out[0].get("match_lines") != [11]:
+            print(f"[test] FAIL [18]: the mention is on line 11, got {out[0].get('match_lines')}")
+            return 18
+        print(f"[test] OK [18] find_usages: only chunks that contain the name, with its lines")
+
+        # ============================================================
+        # 19. describe_symbol: a function comes with its body, a class with
+        #     its members' signatures
+        # ============================================================
+        d = b.describe_symbol("helper")
+        top = d["definition"][0]
+        if "return x + 1" not in (top.get("body") or ""):
+            print(f"[test] FAIL [19]: helper's body missing: {top}")
+            return 19
+        d = b.describe_symbol("Service")
+        if not d.get("is_type"):
+            print(f"[test] FAIL [19]: Service should read as a type: {d}")
+            return 19
+        sigs = [m.get("signature") for m in d["members"]]
+        if "def run(self)" not in sigs:
+            print(f"[test] FAIL [19]: Service.run signature missing: {d['members']}")
+            return 19
+        if d["definition"][0].get("body"):
+            print(f"[test] FAIL [19]: a class answers with members, not its body")
+            return 19
+        print(f"[test] OK [19] describe_symbol: function body, class members with signatures")
+
+        # ============================================================
+        # 20. module_summary graph-off: signatures from the file's own chunks
+        # ============================================================
+        ms = b2.module_summary("service.py")
+        sigs = {s.get("label"): s.get("signature") for s in ms["symbols"]}
+        if sigs.get("Service.run") != "def run(self)":
+            print(f"[test] FAIL [20]: graph-off module_summary lacks Service.run: {ms}")
+            return 20
+        if ms["files"] != ["service.py"]:
+            print(f"[test] FAIL [20]: the file is shown relative to the source: {ms['files']}")
+            return 20
+        print(f"[test] OK [20] module_summary graph-off: symbols with signatures")
 
         print("\n[test] === SUCCESS: combined tools work as expected ===")
         return 0
