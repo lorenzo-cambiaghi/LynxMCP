@@ -37,7 +37,7 @@ it with `read_ndjson_auto('url')` (or, equivalently,
 
 | Endpoint | Rows |
 |---|---|
-| `GET /api/v1/search?q=...&source=...&top_k=...&format=ndjson` | `source, file, file_path, symbol, kind, language, start_line, end_line, score, content` |
+| `GET /api/v1/search?q=...&source=...&top_k=...&format=ndjson` | `source, file, file_path, rel_path, symbol, kind, language, start_line, end_line, score, content` |
 | `GET /api/v1/graph?operation=...&symbol=...&format=ndjson` | `relation, base_kind, confidence, module, from_symbol, from_file, …, to_symbol, to_file, …, call_site_file, call_site_line` |
 | `GET /api/v1/sources?format=ndjson` | `name, type, location, chunk_count, last_update` |
 

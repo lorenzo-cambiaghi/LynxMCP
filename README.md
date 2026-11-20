@@ -199,11 +199,17 @@ Claude Code defers MCP tools behind a tool search by default; `search` and `find
 
 Search and the code graph are served as NDJSON over a local HTTP API (`/api/v1`), and the MCP tools compose with any other MCP server your agent has. Everything below stays on your machine; only the other side of a join (GitHub, Jira, Sentry) touches an API.
 
-- [Coral](docs/CORAL.md): Lynx is a community source in Coral's registry, `lynx.search` plus six graph functions, so a behavioural question becomes a SQL table you join with live GitHub or Sentry data.
+- [Coral](docs/CORAL.md): Lynx serves an OpenAPI document of its API, so Coral 1.x adds it as a provider and its agents call search and the code graph as typed tools, in the same program as GitHub or Sentry. Coral 0.x gets them as SQL tables.
 - [DuckDB](docs/DUCKDB.md): `read_ndjson_auto('http://127.0.0.1:8765/api/v1/search?...')` is a table, no plugin and no daemon; join code relevance with git churn, error logs or ticket exports.
 - [Steampipe](integrations/steampipe/steampipe-plugin-lynx/): a plugin with `lynx_source`, `lynx_search` and `lynx_graph` tables that join per row, one search per row of another table; prebuilt macOS and Linux binaries on the [releases page](https://github.com/lorenzo-cambiaghi/LynxMCP/releases?q=steampipe).
 - [GitHub Action](integrations/github-action/): on every PR, a comment with the downstream callers and the semantically related code, indexed locally on the runner.
 - [MCP recipes](docs/MCP_RECIPES.md): agent patterns combining Lynx with GitHub, Sentry and Jira MCP servers (triage, PR impact, ticket to code).
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/coral_lynx_tools.png" alt="Lynx as a provider in Coral: graph.query, search.query, search.batch and sources.list, each with its approval policy" width="820">
+  <br>
+  <sub><b>Lynx in Coral</b>: give Coral the URL of <code>/api/v1/openapi.json</code> and it lists four tools. The three reads run without asking; the batch search waits for approval.</sub>
+</p>
 
 ## Documentation
 
@@ -212,7 +218,8 @@ Search and the code graph are served as NDJSON over a local HTTP API (`/api/v1`)
 | [Full guide](docs/GUIDE.md) | Configuration, all source types (codebase / webdoc / PDF), retrieval internals, tool profiles, troubleshooting |
 | [Manager UI](docs/GUIDE.md#lynxmanager-guided-setup-web-ui-diagnostics-new-in-v09) | Guided setup, playground, diagnostics |
 | [Outline mode](docs/OUTLINE.md) | Signatures instead of bodies: when to use it, measured data, chart |
-| [Coral](docs/CORAL.md) / [DuckDB](docs/DUCKDB.md) / [Steampipe](integrations/steampipe/steampipe-plugin-lynx/) | Code search and the code graph as SQL tables |
+| [Coral](docs/CORAL.md) | Code search and the code graph as typed tools in Coral programs |
+| [DuckDB](docs/DUCKDB.md) / [Steampipe](integrations/steampipe/steampipe-plugin-lynx/) | Code search and the code graph as SQL tables |
 | [Agent rules snippet](integrations/agent-rules/lynx-rules.md) | Paste into `AGENTS.md` / `CLAUDE.md` so agents search before writing code |
 | [MCP recipes](docs/MCP_RECIPES.md) | Combining Lynx with GitHub / Sentry / Jira MCP servers |
 | [PR impact analysis (GitHub Action)](integrations/github-action/) | Downstream callers and related code, commented on every PR |

@@ -26,6 +26,19 @@ suggests for a new source leave out Godot's `.import` and `.uid` sidecar
 files. `find_tests_for` takes a `test_*` file outside a test folder for a
 test (pytest, Godot's GUT).
 
+Coral 1.x can use Lynx again. Coral 1.0 dropped the SQL sources Lynx was
+one of and builds a provider from an OpenAPI document instead, so
+`GET /api/v1/openapi.json` now describes the `/api/v1` API: `search.query`,
+`search.batch`, `graph.query` and `sources.list` become typed tools in the
+programs Coral's agents run (`coral.providers.lynx.search.query`). The
+document covers `/api/v1` only, so the web UI's own routes are never offered
+as tools, and the JSON the routes return is unchanged. `docs/CORAL.md`
+describes the setup; the SQL manifest stays for Coral 0.x.
+
+`/api/v1` rows carry paths relative to the source root: `rel_path` on a
+search hit, `from_rel_path`, `to_rel_path` and `call_site_rel_path` on a
+graph edge.
+
 ### Fixed
 
 A file whose extension gained a grammar kept the text chunks it was indexed

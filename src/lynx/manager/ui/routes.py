@@ -13,9 +13,10 @@ from typing import Optional
 # treats `request: Request` as a query parameter and returns 422.
 from fastapi import Query, Request
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .app import _dispose_manager, _drop_manager, _get_manager
+from . import api_v1
 from ...outline import doc_of, signature_for
 
 # Rendering and the playground moved out — `render.py` holds the HTML
@@ -41,9 +42,9 @@ from .playground import (  # noqa: F401 - re-exported
 class BatchSearchRequest(BaseModel):
     """Body for POST /api/v1/search (multi-query). Module-level so FastAPI can
     resolve the annotation under `from __future__ import annotations`."""
-    queries: list[str]
-    source: Optional[str] = None
-    top_k: int = 8
+    queries: list[str] = Field(description="1 to 100 search queries.")
+    source: Optional[str] = Field(None, description="Source name; omitted = every source.")
+    top_k: int = Field(8, description="Hits per query, clamped to 1-50.")
 
 
 def _format_v1_hit(h: dict) -> dict:
@@ -52,6 +53,7 @@ def _format_v1_hit(h: dict) -> dict:
         "source": h.get("source", ""),
         "file": h.get("file", ""),
         "file_path": str(h.get("file_path", "")),
+        "rel_path": h.get("rel_path") or "",
         "symbol": h.get("symbol_name", ""),
         "kind": h.get("symbol_kind", ""),
         "language": h.get("language", ""),
@@ -95,14 +97,17 @@ def _format_v1_edge(e: dict) -> dict:
         "from_symbol": src.get("label", ""),
         "from_kind": src.get("kind") or "",
         "from_file": src.get("file") or "",
+        "from_rel_path": src.get("rel_path") or "",
         "from_start_line": src.get("start_line") or 0,
         "from_end_line": src.get("end_line") or 0,
         "to_symbol": tgt.get("label", ""),
         "to_kind": tgt.get("kind") or "",
         "to_file": tgt.get("file") or "",
+        "to_rel_path": tgt.get("rel_path") or "",
         "to_start_line": tgt.get("start_line") or 0,
         "to_end_line": tgt.get("end_line") or 0,
         "call_site_file": e.get("from_file") or "",
+        "call_site_rel_path": e.get("from_rel_path") or "",
         "call_site_line": e.get("from_line") or 0,
     }
 
@@ -164,13 +169,33 @@ def register(app) -> None:
     # endpoints above remain UI-internal and may change freely.
     # ------------------------------------------------------------------
 
-    @app.get("/api/v1/search")
+    # `format=ndjson` stays out of the OpenAPI document: an agent always gets
+    # JSON, while DuckDB and jq keep asking for NDJSON by hand.
+    _FORMAT = Query("json", alias="format", include_in_schema=False)
+
+    @app.get(
+        "/api/v1/search",
+        # Not plain "search": that would be both a tool and the namespace of
+        # search.batch, and Coral files a lone segment under "Other".
+        operation_id="search.query",
+        summary="Search code, docs and PDFs",
+        description=(
+            "Hybrid search (BM25 and embeddings) over one source, or over every "
+            "source when `source` is omitted, fused by rank. Each hit is a whole "
+            "function, class or doc section with its file, line range and "
+            "qualified symbol. `view=outline` returns the signature and the first "
+            "doc line instead of the body, about 2.4 times smaller: triage the "
+            "hits, then read a body by `file_path` and its lines."
+        ),
+        responses={200: {"model": api_v1.SearchResponse}},
+    )
     def api_v1_search(
-        q: str,
-        source: Optional[str] = None,
-        top_k: int = 8,
-        view: str = "full",
-        fmt: str = Query("json", alias="format"),
+        q: str = Query(description="What to look for, in plain words or identifiers."),
+        source: Optional[str] = Query(None, description="Source name (see sources.list); omitted = every source."),
+        top_k: int = Query(8, description="Number of hits, clamped to 1-50."),
+        view: str = Query("full", description="`full` with bodies, `outline` with signatures.",
+                          json_schema_extra={"enum": list(api_v1.SEARCH_VIEWS)}),
+        fmt: str = _FORMAT,
     ):
         """Hybrid search as plain JSON rows.
 
@@ -205,7 +230,17 @@ def register(app) -> None:
             results = [_to_outline(r) for r in results]
         return _rows_payload(results, fmt)
 
-    @app.post("/api/v1/search")
+    @app.post(
+        "/api/v1/search",
+        operation_id="search.batch",
+        summary="Run several searches in one call",
+        description=(
+            "Embeds every query in one model call and returns one entry per "
+            "query, in order. The batch is atomic: when one query fails, the "
+            "call fails. Up to 100 queries."
+        ),
+        responses={200: {"model": api_v1.BatchSearchResponse}},
+    )
     def api_v1_search_batch(body: BatchSearchRequest):
         """Batch search: embed many queries in ONE model call.
 
@@ -252,15 +287,31 @@ def register(app) -> None:
         ]
         return {"results": results}
 
-    @app.get("/api/v1/graph")
+    @app.get(
+        "/api/v1/graph",
+        operation_id="graph.query",
+        summary="Query the code graph",
+        description=(
+            "Edges of the code graph around `symbol`: `callers` (who calls it), "
+            "`callees` (what it calls), `subclasses`, `superclasses`, `imports` "
+            "(what a file imports) and `neighbors` (both directions, `depth` "
+            "hops, optionally one `relation`). Matching is case-insensitive and "
+            "an exact name wins over partial ones. Needs a source with the graph "
+            "layer; `source` can be omitted when only one has it."
+        ),
+        responses={200: {"model": api_v1.GraphEdgesResponse}},
+    )
     def api_v1_graph(
-        operation: str,
-        symbol: str,
-        source: Optional[str] = None,
-        relation: Optional[str] = None,
-        depth: int = 1,
-        limit: int = 50,
-        fmt: str = Query("json", alias="format"),
+        # A plain str with the values listed in the schema: an unknown
+        # operation still gets the 400 below, not FastAPI's 422.
+        operation: str = Query(description="What to ask the graph.",
+                               json_schema_extra={"enum": list(api_v1.GRAPH_OPERATIONS)}),
+        symbol: str = Query(description="Symbol name, e.g. `ApplyDamage` or `Player.take_damage`."),
+        source: Optional[str] = Query(None, description="Source name; omitted when only one source has the graph."),
+        relation: Optional[str] = Query(None, description="For `neighbors`: only `calls`, `inherits`, `imports` or `contains`."),
+        depth: int = Query(1, description="For `neighbors`: hops, clamped to 1-6."),
+        limit: int = Query(50, description="Number of edges, clamped to 1-200."),
+        fmt: str = _FORMAT,
     ):
         """Code knowledge-graph edges as plain JSON rows.
 
@@ -340,8 +391,17 @@ def register(app) -> None:
             raise HTTPException(status_code=400, detail=str(e))
         return _rows_payload([_format_v1_edge(e) for e in edges], fmt)
 
-    @app.get("/api/v1/sources")
-    def api_v1_sources(fmt: str = Query("json", alias="format")):
+    @app.get(
+        "/api/v1/sources",
+        operation_id="sources.list",
+        summary="List the configured sources",
+        description=(
+            "Every source Lynx serves, with its type, location, chunk count and "
+            "last update. Its `name` is the `source` argument of search and graph."
+        ),
+        responses={200: {"model": api_v1.SourcesResponse}},
+    )
+    def api_v1_sources(fmt: str = _FORMAT):
         """Configured sources as plain JSON rows (`format=ndjson` supported)."""
         mgr = _get_manager(app)
         if mgr is None:
@@ -360,6 +420,16 @@ def register(app) -> None:
             for st in mgr.list_sources()
         ]
         return _rows_payload(rows, fmt, "sources")
+
+    @app.get("/api/v1/openapi.json", include_in_schema=False)
+    def api_v1_openapi(request: Request):
+        """The OpenAPI document of /api/v1, for Coral 1.x and other OpenAPI
+        clients. Its server is the address this request reached."""
+        from ... import __version__
+        return api_v1.build_openapi(
+            app.routes, version=__version__ or "0",
+            server_url=str(request.base_url).rstrip("/"),
+        )
 
     @app.get("/api/sources/{name}/status")
     def api_source_status(name: str):
