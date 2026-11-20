@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # Distribution name is `lynx-mcp` (the bare `lynx` name on PyPI belongs to an
 # unrelated 2014 config library). The import package and the CLI stay `lynx`.
 name = "lynx-mcp"
-version = "1.9.0"
+version = "1.10.0"
 description = "LynxMCP: 100% local MCP server for the code questions grep can't answer. Call graph and blast radius, hybrid BM25 + dense code search on ONNX Runtime, library docs and PDFs as sources. No cloud, no PyTorch."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -60,6 +60,13 @@ dependencies = [
     # of a project whose promise is "100% local, no data egress".
     "llama-index-core",
     "llama-index-vector-stores-chroma",
+    # Below 3.10: from 3.10 nltk refuses to open any file with more than one
+    # hard link. uv installs packages as hard links into its cache, so after
+    # `uv tool install` the sentence splitter could not read the stopwords
+    # llama-index ships, every build failed, and the source was reported as a
+    # corrupt index. pip and pipx copy files and never saw it. Lift once Lynx
+    # points nltk at a copy of that data with a single link.
+    "nltk>=3.9.3,<3.10",
     # The embedding model and the optional reranker run on ONNX Runtime with
     # the Rust tokenizer (`lynx/embeddings.py`, `lynx/reranker.py`). No
     # PyTorch: on Linux the default torch wheel alone pulls the CUDA libraries,
