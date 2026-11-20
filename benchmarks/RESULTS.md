@@ -1,18 +1,18 @@
 # Lynx retrieval benchmark — Django 5.2
 
-Target: `django/` package of [django 5.2](https://github.com/django/django.git): 883 files, 157,865 lines, 10,027 indexed chunks (one-time index build: 587s on CPU; incremental afterwards via SHA cache).
+Target: `django/` package of [django 5.2](https://github.com/django/django.git): 883 files, 157,865 lines, 10,976 indexed chunks (one-time index build: 587s on CPU for the 10,027 chunks of the previous chunker; incremental afterwards via SHA cache).
 
 20 natural-language tasks with known ground-truth files. Both pipelines return a ranked file list; see `run_benchmark.py` for the exact methodology (the grep baseline is deliberately generous).
 
 | Metric | Agentic grep (simulated) | Lynx hybrid search |
 |---|---|---|
-| hit@5 (ground truth in top 5) | 95% | 85% |
-| hit@1 (top result is correct) | 45% | 55% |
-| MRR | 0.64 | 0.67 |
-| median tool output (tokens) | 2,853 | 1,725 |
-| median tokens **to answer** (incl. required follow-up read) | 4,150 | 1,725 |
+| hit@5 (ground truth in top 5) | 95% | 100% |
+| hit@1 (top result is correct) | 45% | 60% |
+| MRR | 0.64 | 0.77 |
+| median tool output (tokens) | 2,853 | 1,577 |
+| median tokens **to answer** (incl. required follow-up read) | 4,150 | 1,577 |
 | tool round-trips to reach code | 2 (grep, then read file) | 1 (chunks included) |
-| median latency / query | 0.019s | 0.055s |
+| median latency / query | 0.027s | 0.094s |
 
 Notes:
 - Lynx tool output already CONTAINS the relevant code chunks with file:line.
@@ -70,20 +70,20 @@ the whole conversation re-billed in input tokens, every time.
 | 3 | logic that decides whether saving a model instance performs an INSERT  | 1 | 1 |
 | 4 | how conflicting migrations on the same app are detected | 3 | 1 |
 | 5 | where the CSRF token from the request is compared against the stored s | 1 | 1 |
-| 6 | how a case insensitive contains filter is turned into a SQL LIKE expre | — | — |
+| 6 | how a case insensitive contains filter is turned into a SQL LIKE expre | — | 1 |
 | 7 | template engine logic that resolves a dotted variable name against dic | 1 | 1 |
 | 8 | where signed values are validated and their signature checked for tamp | 2 | 1 |
-| 9 | how the development server restarts itself when a source file changes | 2 | 4 |
+| 9 | how the development server restarts itself when a source file changes | 2 | 3 |
 | 10 | where the password reset token is generated and checked for expiry | 3 | 2 |
-| 11 | middleware that caches whole responses per URL and serves them on late | 4 | 3 |
-| 12 | logic that streams large uploaded files to a temporary file on disk in | 2 | 1 |
+| 11 | middleware that caches whole responses per URL and serves them on late | 4 | 1 |
+| 12 | logic that streams large uploaded files to a temporary file on disk in | 2 | 2 |
 | 13 | implementation of prefetching related objects to avoid N plus one quer | 1 | 1 |
-| 14 | how an incoming request path is matched against the configured URL pat | 2 | — |
-| 15 | where session data is serialized signed and loaded back from the sessi | 4 | 4 |
+| 14 | how an incoming request path is matched against the configured URL pat | 2 | 2 |
+| 15 | where session data is serialized signed and loaded back from the sessi | 4 | 3 |
 | 16 | how datetimes are converted to the currently active timezone | 1 | 1 |
 | 17 | where bulk inserts are split into batches before hitting the database | 1 | 1 |
 | 18 | middleware that protects against clickjacking by setting the X-Frame-O | 3 | 1 |
-| 19 | how static files are located across the installed applications | 4 | — |
+| 19 | how static files are located across the installed applications | 4 | 4 |
 | 20 | logic that detects which model changes need new migrations to be gener | 1 | 2 |
 
 ## Structural queries: class relations (where grep dies)

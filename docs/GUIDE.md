@@ -124,13 +124,13 @@ layer enabled for the source.
 
 | Tool | What it answers |
 |---|---|
-| `find_definition(symbol)` | Where is X defined? (AST-precise with the graph, BM25 fallback otherwise.) |
-| `find_usages(symbol)` | Every use of X: calls and non-call references (generics, decorators, docs). |
-| `find_tests_for(symbol)` | Which tests exercise X? |
+| `find_definition(symbol)` | Where is X defined? The first match comes with its body, the others with their signature. (AST-precise with the graph, BM25 fallback otherwise.) |
+| `find_usages(symbol)` | Every use of X: calls, subtypes, and the textual references that contain the name as a word, with their lines. |
+| `find_tests_for(symbol)` | Which tests exercise X? With the graph, also the tests that reach X through other calls without naming it, marked `[dN]`. |
 | `find_similar(snippet)` | Does code like this already exist? (pure semantic) |
-| `describe_symbol(symbol)` | One-shot context for X: definition + callers + callees + tests, in a single call. |
+| `describe_symbol(symbol)` | One-shot context for X: its code + callers + callees + tests, in a single call. For a class: its bases, subtypes and the signatures of its members instead of the body. |
 | `impact(symbol)` *(graph)* | Blast radius: everything that reaches X transitively through the call graph (with hop distance) + the tests to re-run. |
-| `module_summary(file)` *(graph)* | A file as a unit: the symbols it defines, what it imports, and which files depend on it. |
+| `module_summary(file)` | A file as a unit: each symbol it defines with its signature and doc line; with the graph, also what it imports and which files depend on it. |
 | `repo_overview()` | Orientation map: detected languages, frameworks, manifests, likely entry points, and build/test/run commands. A pure filesystem scan, no graph needed. Call it once when you land in an unfamiliar repo. |
 | `export_graph(target, mode?)` *(graph)* | Render a shareable, offline graph view as a single self-contained file: a symbol's blast radius (`mode=symbol`) or a file hub (`mode=module`). Writes to `reports_path` (default `<storage>/reports`). Also available as a CLI: `lynx graph export --symbol … \| --module …`. |
 | `search_diff(query, base?)` | Search only files changed vs a base branch, built for code review. (needs `git_integration`) |
@@ -140,10 +140,16 @@ Every one of these is also a command: replace the underscores with hyphens
 same answer, rendered by the same code. See
 [Command-line interface](#command-line-interface).
 
-`module_summary` and `export_graph` produce nothing useful without the call
-graph, so, like `graph_query`, they are registered only when the graph layer
-is on. `export_graph` is the one tool here that *writes* (a report file); the
-rest are read-only.
+`export_graph` draws the call graph, so, like `graph_query`, it is
+registered only when the graph layer is on. It is also the one tool here
+that *writes* (a report file); the rest are read-only. `module_summary`
+works without the graph from the file's own chunks.
+
+Paths in every answer are relative to the source root
+(`Assets/Scripts/Combat/Bullet.cs`): a bare file name is ambiguous in a
+large tree, and an absolute one repeats the same prefix on every line. The
+JSON of the HTTP API keeps the absolute `file` / `file_path` and adds
+`rel_path` next to them.
 
 ## Why it exists
 
@@ -879,8 +885,8 @@ update_source_index    feedback
 
 Plus, when a codebase source is present: `find_definition`,
 `find_usages`, `find_tests_for`, `find_similar`, `describe_symbol`,
-`impact`, `repo_overview`, `search_diff`, and the graph-only
-`graph_query`, `module_summary`, `export_graph` when that source has
+`impact`, `module_summary`, `repo_overview`, `search_diff`, and the
+graph-only `graph_query` and `export_graph` when that source has
 `graph.enabled=true`. Each tool takes a
 `source` argument (omit it to fan out across all sources); the handshake
 `instructions` describe every configured source so the AI client picks the
@@ -1673,7 +1679,7 @@ layers the tools in three profiles:
 | Profile | Tools | Size of `tools/list` |
 |---|---|---|
 | `core` | search, describe_symbol, find_usages, impact, feedback | 5.2k characters, about 1,300 tokens |
-| `standard` (default) | core + find_definition, find_similar, deep_search, graph_query, repo_overview, search_diff | 12.2k characters, about 3,050 tokens |
+| `standard` (default) | core + find_definition, find_similar, module_summary, deep_search, graph_query, repo_overview, search_diff | 12.9k characters, about 3,250 tokens |
 | `full` | all 17 | 16.7k characters, about 4,150 tokens |
 
 Measured with two codebase sources, graph and git enabled. Before the
@@ -1690,6 +1696,19 @@ environment. The command line wins, then the variable, then the file:
 lynx serve --profile full
 LYNX_TOOL_PROFILE=core lynx serve
 ```
+
+One config can describe every repository you work on, each as a source.
+A session opens every index in its config, which costs memory and start-up
+time once the list is long, so a project's MCP entry can name the sources
+it needs and leave the rest closed:
+
+```bash
+lynx serve --config ~/lynx/config.json --source game --source engine-docs
+```
+
+An unknown name stops the server with the list of the known ones. Several
+sessions can open the same source at once: the first one owns the index and
+runs its watcher, the others read it and pick its writes up.
 
 A profile is a ceiling, not a promise: `graph_query` still needs a source
 with the graph layer, `search_diff` a source with git integration. The
@@ -1846,14 +1865,16 @@ Sample call inside the AI client:
 
 ```
 graph_query("callers")("ApplyDamage")
-→ Callers of 'ApplyDamage' in 'myproject':
-    • HealthSystem.OnHit      [function] @ src/Health/HealthSystem.cs:L88-103
-        --calls [resolved]--> IDamageable.ApplyDamage  [function] @ src/Damage/IDamageable.cs:L7
-          at src/Health/HealthSystem.cs:L94
-    • BulletImpact.Process    [function] @ src/Combat/BulletImpact.cs:L42-61
-        --calls [resolved]--> IDamageable.ApplyDamage  [function] @ src/Damage/IDamageable.cs:L7
-          at src/Combat/BulletImpact.cs:L55
+→ Callers of 'ApplyDamage' in 'myproject' (2):  [IDamageable.ApplyDamage @ src/Damage/IDamageable.cs:L7]
+    src/Health/HealthSystem.cs
+      • HealthSystem.OnHit [function] L88-103 call at L94
+    src/Combat/BulletImpact.cs
+      • BulletImpact.Process [function] L42-61 call at L55
 ```
+
+The symbol the query resolved to is named once, in the header, and each
+caller takes one line under its file. An edge is resolved unless it says
+`(ambiguous)`.
 
 See [Graph layer (opt-in)](#graph-layer-opt-in) for the build pipeline,
 cross-file resolution policy, inheritance edges, and costs.
@@ -1865,11 +1886,11 @@ mix graph + search to answer questions a single tool can't:
 
 | Tool | Answers | Uses graph? |
 |---|---|---|
-| `find_definition(symbol)` | "Where is X defined?" | Yes when enabled (precise file+line from AST); BM25 fallback otherwise. |
-| `find_usages(symbol)` | "Who uses X?": calls AND non-call refs (typeof, generics, decorators, doc mentions). | Yes when enabled (`get_callers` for structural callers); always also runs textual search to catch the rest. Deduped. |
-| `find_tests_for(symbol, test_path_pattern?)` | "Are there tests for X?" | No graph; search + regex filter on standard test paths (`/tests/`, `_test.py`, `.spec.js`, `*Test.cs`, ...). |
+| `find_definition(symbol)` | "Where is X defined?", with the body of the first match and the signature of the others. | Yes when enabled (precise file+line from AST); BM25 fallback otherwise. |
+| `find_usages(symbol)` | "Who uses X?": calls, subtypes AND non-call refs (typeof, generics, decorators, doc mentions). | Yes when enabled (`get_callers`, `get_subclasses`); always also runs a lexical search, keeping only the chunks that contain the name as a whole word, with the lines it is on. Deduped against the graph. |
+| `find_tests_for(symbol, test_path_pattern?)` | "Are there tests for X?" | With the graph, every test function that reaches X within four calls (`[dN]`), even when it never names X; then a lexical search ranked among the test files only (`/tests/`, `_test.py`, `.spec.js`, `*Test.cs`, ...). |
 | `find_similar(snippet, top_k?)` | "Is there code similar to this?": semantic match on the snippet's embedding. | No graph; pure dense (BM25 ignored). Filters out byte-identical chunks. |
-| `describe_symbol(symbol)` | "Give me the full picture of X": definition + callers + callees + tests, in a single call. | Callers/callees use the graph when enabled; definition + tests always work. |
+| `describe_symbol(symbol)` | "Give me the full picture of X": its code + callers + callees + tests, in a single call; for a class, bases, subtypes and member signatures instead of a body that can run to a thousand lines. | Callers/callees and the type sections use the graph when enabled; definition + tests always work. |
 | `impact(symbol, max_depth?)` | "If I change X, what could break and what do I re-run?": transitive callers + the tests that cover X. | Transitive callers need the graph; tests resolve via search regardless. |
 | `repo_overview()` | "What is this repo and where do I start?": languages, frameworks, manifests, entry points, build/test/run commands. | No graph; pure filesystem scan. Call once when landing in an unfamiliar repo. |
 
@@ -1879,12 +1900,13 @@ One more tool depends on `git_integration.enabled=true`:
 |---|---|
 | `search_diff(query, base?, top_k?)` | "Search only in files I changed vs `main` (or whatever `base`)." Auto-detects `main` / `master` / `develop`; pass `base=` to override. Returns `{base, modified_files, hits}`. Made for code review. |
 
-Two more are registered only when the graph layer is enabled for the
-source (they produce nothing useful without the call graph):
+`module_summary` works for every codebase source; the graph adds two of
+its sections. `export_graph` is registered only when the graph layer is
+enabled for the source:
 
 | Tool | Answers |
 |---|---|
-| `module_summary(file, limit?)` | "Summarize this file": the public symbols it defines, what it imports, and which files depend on it. |
+| `module_summary(file, limit?)` | "Summarize this file": every symbol it defines with its signature and doc line, what it imports and which files depend on it (those two need the graph). Read it instead of opening a file you don't know. |
 | `export_graph(target, mode?, depth?, out?)` | Renders a shareable, offline graph view to a single self-contained file: a symbol's blast radius (`mode="symbol"`) or a file hub (`mode="module"`). Writes the file to `reports_path` (default `<storage>/reports`). Also a CLI: `lynx graph export --symbol … \| --module …`. This tool writes a file (not read-only). |
 
 Sample call inside the AI client:

@@ -4,13 +4,33 @@
 
 Upgrading from 1.9.0: the first start rebuilds every code graph once,
 because node IDs changed (see Fixed). That is about 17 seconds for a
-source of 3,500 C# files, spent while `lynx serve` already answers. The
-search index is untouched. Every start now also checks each codebase source
+source of 3,500 C# files, spent while `lynx serve` already answers. Every
+start now also checks each codebase source
 for files changed while no Lynx was running, in the background. The default
 `standard` profile loads one more tool, `find_similar`, for about 220 more
 tokens of definitions per session.
 
+The chunker moves to version 5 (see Changed), so the first start after this
+upgrade embeds every codebase source again, in the background. It replaces
+one file at a time and the source keeps answering throughout. Count about 15
+to 20 chunks a second on a CPU: close to an hour for a source of 50,000
+chunks, a few minutes for a small one. The code graph is rebuilt once too.
+The `standard` profile also loads `module_summary`, for about 210 more tokens
+of definitions.
+
 ### Added
+
+`lynx serve --source NAME`, repeatable, serves only those sources of the
+config. One config can list every repository you work on while each project's
+MCP entry opens just the indexes it needs; before, every session opened all
+of them. An unknown name stops the server with the list of known ones.
+
+The web UI says which code runs where. The sidebar shows the version and a
+hash of the code, and every source card has a "Served by" row: this UI, or
+the pid of the process that owns the index, with a badge saying whether it
+runs the same code or other code. An editable checkout reports the same
+version number before and after its code changes, which is why the number
+alone never answered "is the MCP server still on the old code?".
 
 `ignored_globs` per codebase source, next to `ignored_path_fragments`:
 file-name or relative-path patterns to leave out, such as
@@ -45,6 +65,66 @@ with today's tool names and the real score scale. The template in the guide
 still listed tool names that had not existed since before 1.0.
 
 ### Changed
+
+Search finds more of what it is asked for. Three changes to what goes into
+the index, measured on the benchmark repositories with hybrid search, top 5,
+against the same index built the old way:
+
+| | hit@5 | hit@1 | MRR |
+|---|---|---|---|
+| Django (20 tasks) | 85% to 100% | 55% to 60% | 0.67 to 0.77 |
+| Json.NET (15 tasks) | 73% to 73% | 47% to 67% | 0.58 to 0.70 |
+| Guava (15 tasks) | 80% to 87% | 60% to 67% | 0.70 to 0.74 |
+
+The embedding model used to read eight lines of bookkeeping above every
+chunk: the absolute path, which repeats the same prefix on every chunk of a
+source, the chunker's name, the line numbers. About 60 of its 512 tokens. It
+now reads the path inside the source and the symbol's name, and the code
+gets the rest. That change alone took Django to 95% at hit@5 and Json.NET
+to 87%. A chunk now also starts at the doc comment written above its
+declaration (`///` XML docs, Javadoc and JSDoc, `//` in Go and Rust), which
+tree-sitter keeps next to the node and the chunker dropped. And every class,
+struct or interface gets a chunk of its own with its doc comment, its
+declaration and its fields: class docstrings, Javadoc on types and the
+fields of a Django model were in no chunk at all. On Json.NET the doc
+comments cost two tasks at hit@5 against the cleaner embedding alone, and
+won one at hit@1; on Guava, where nearly every method has Javadoc, they won
+two at hit@5. Putting the symbol name and the path into the lexical index
+as well was measured again and left out, as in October: Django fell from
+100% to 90% at hit@5.
+
+The answers cost fewer tokens. Paths are written relative to the source
+root, where `search` used to print a bare file name (ambiguous in a large
+tree, so the agent went looking with glob) and the graph tools an absolute
+path on every line. A graph answer names the queried symbol once and lists
+each caller, callee or subclass on one line under its file, instead of three
+lines per edge. On Django: callers of `get_prep_value` 6,043 to 1,965
+characters, subclasses of `Field` 18,984 to 3,425, an `impact` 2,396 to
+1,484. `search` cuts a body past 4,000 characters (1% of chunks are longer)
+and says which lines are left, and once an answer holds 16,000 characters of
+code the remaining hits come as outlines, still ranked and cited. The 20
+Django benchmark queries at `top_k=8` came back 23% shorter in total, the
+largest answer half as long. The HTTP API keeps the absolute `file` and
+`file_path` and adds `rel_path`.
+
+`find_definition`, `describe_symbol` and `module_summary` bring the code with
+them, so the next step is no longer a `read_file`. `find_definition` returns
+the body of the first match and the signature of the others.
+`describe_symbol` returns the body of a function; for a class, its bases,
+its subtypes and the signature of each member, instead of a body that can
+run to a thousand lines. `module_summary` lists every symbol of a file with
+its signature and doc line, works without the graph layer (from the file's
+own chunks), and joins the `standard` profile.
+
+`find_usages` and `find_tests_for` no longer return code that only looks
+like the name. They asked the hybrid search, whose dense half brings back
+similar code, and kept every hit; now they ask the lexical half and keep a
+chunk only when it contains the name as a whole word, with the lines it is
+on. `find_usages` also lists the subtypes of a type. `find_tests_for` walks
+the call graph up to four calls back, so a test of `HandleHit` that ends up
+in `ApplyDamage` comes out as `[d2]` though it never names it, and it ranks
+the textual matches among the test files only, instead of filtering the top
+of a search over the whole source.
 
 `lynx build`, the Build button in the web UI and `update_source_index` no
 longer throw the code graph away. They bring it up to date the way they
@@ -84,6 +164,28 @@ watcher indexed files inside dot directories such as `.claude/` that every
 build then removed again.
 
 ### Fixed
+
+A chunker upgrade no longer empties the index while it rebuilds. The
+collection was deleted and filled again from scratch, and since every start
+now catches up with the disk, the first start after an upgrade left a large
+source with no results until the last file was embedded again. When only the
+chunker version changed, the stored vectors are still valid; each file's
+chunks are now replaced in place, one file at a time.
+
+In the web UI, error messages never appeared. htmx 2 drops 4xx and 5xx
+responses unless told otherwise, so the 409 naming the process that owns an
+index, the config validator's 422 and every playground error left the page
+unchanged. Saving the config did nothing at all: the request went out empty
+and its 400 was dropped too. The dashboard ran the whole doctor, with an
+integrity probe per index and a full load of each lexical index, before
+showing anything; the health card now loads after the page and names the
+checks that are not OK. Badges had no padding, resetting an index did not ask
+first, and a source that failed to load linked to a page that answered with
+a JSON 404.
+
+The TypeScript header chunk copied every exported class whole, so their code
+was indexed twice. In Ruby, the `class` keyword was taken for a class and
+came out as a chunk of its own.
 
 On Windows, `lynx serve` could take minutes to open its indexes, and the first
 tool calls of a session came back saying Lynx was still loading. The MCP

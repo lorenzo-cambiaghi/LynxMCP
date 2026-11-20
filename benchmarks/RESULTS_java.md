@@ -1,18 +1,18 @@
 # Lynx retrieval benchmark — Guava
 
-Target: `guava/src/com/google/common` of [Guava master](https://github.com/google/guava.git): 606 files, 180,517 lines, 12,901 indexed chunks (one-time index build: 525s on CPU).
+Target: `guava/src/com/google/common` of [Guava master](https://github.com/google/guava.git): 606 files, 180,517 lines, 14,189 indexed chunks (one-time index build: 525s on CPU for the 12,901 chunks of the previous chunker).
 
 15 natural-language tasks with known ground-truth files. Both pipelines return a ranked file list; see `run_benchmark.py` for the exact methodology (the grep baseline is deliberately generous).
 
 | Metric | Agentic grep (simulated) | Lynx hybrid search |
 |---|---|---|
-| hit@5 (ground truth in top 5) | 93% | 80% |
-| hit@1 (top result is correct) | 73% | 60% |
-| MRR | 0.81 | 0.70 |
-| median tool output (tokens) | 3,991 | 807 |
-| median tokens **to answer** (incl. required follow-up read) | 5,892 | 807 |
+| hit@5 (ground truth in top 5) | 93% | 87% |
+| hit@1 (top result is correct) | 73% | 67% |
+| MRR | 0.81 | 0.74 |
+| median tool output (tokens) | 3,991 | 1,293 |
+| median tokens **to answer** (incl. required follow-up read) | 5,892 | 1,293 |
 | tool round-trips to reach code | 2 (grep, then read file) | 1 (chunks included) |
-| median latency / query | 0.022s | 0.051s |
+| median latency / query | 0.031s | 0.115s |
 
 Notes:
 - Lynx tool output already CONTAINS the relevant code chunks with file:line.
@@ -66,17 +66,17 @@ the whole conversation re-billed in input tokens, every time.
 | # | Task | grep rank | Lynx rank |
 |---|---|---|---|
 | 1 | limiting the rate of operations by handing out permits smoothed over t | 1 | 1 |
-| 2 | an in-memory cache that loads missing values and evicts entries by siz | 1 | 1 |
+| 2 | an in-memory cache that loads missing values and evicts entries by siz | 1 | 4 |
 | 3 | splitting a string on a separator, optionally trimming and dropping em | 1 | 1 |
-| 4 | joining a sequence of values into one string with a separator | 2 | 2 |
-| 5 | a probabilistic set membership test that can have false positives but  | 3 | — |
-| 6 | mapping a hash value to one of n buckets so that adding a bucket moves | 1 | 2 |
+| 4 | joining a sequence of values into one string with a separator | 2 | — |
+| 5 | a probabilistic set membership test that can have false positives but  | 3 | 2 |
+| 6 | mapping a hash value to one of n buckets so that adding a bucket moves | 1 | 1 |
 | 7 | argument checks that throw an exception when a precondition is not met | 1 | 1 |
 | 8 | measuring elapsed time with start, stop and read of the duration | 1 | 1 |
 | 9 | a map that also lets you look up keys by their value | — | — |
-| 10 | walking the nodes of a graph in breadth first or depth first order | 1 | 2 |
+| 10 | walking the nodes of a graph in breadth first or depth first order | 1 | 1 |
 | 11 | computing percentiles or quantiles of a collection of numbers | 1 | 1 |
 | 12 | percent encoding a string so it is safe inside a url | 3 | 1 |
-| 13 | dispatching posted events to all registered subscriber methods | 1 | — |
+| 13 | dispatching posted events to all registered subscriber methods | 1 | 3 |
 | 14 | configuring a cache's maximum size and expiration before building it | 1 | 1 |
 | 15 | building an immutable list and copying elements into it | 1 | 1 |

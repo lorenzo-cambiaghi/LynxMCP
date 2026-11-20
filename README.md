@@ -19,10 +19,10 @@ Each row is measured; the numbers come from the [benchmarks](#benchmarks-reprodu
 |---|---|---|
 | "What inherits from `Field`?" (Django, 100 classes over 4 levels) | 101 grep rounds, one per discovered class | 4 `graph_query` calls, `file:line` on every edge |
 | "What breaks if I change `ApplyDamage`?" | the textual mentions of the name | `impact`: every transitive caller with its hop distance, plus the tests to re-run |
-| "Where do we validate session tokens?" on C# (Json.NET) | hit@1 33% | hit@1 47% |
+| "Where do we validate session tokens?" on C# (Json.NET) | hit@1 33% | hit@1 67% |
 | "How does this API behave in the version we ship?" | the model's memory | the docs you indexed, cited with the page they came from |
 
-Where grep is better, this page says so. On Guava, whose class names document themselves (`BloomFilter`, `RateLimiter`), grep ranks higher: hit@1 73% against 60%. On a repository that fits in the agent's context, the built-in tools are fine. Lynx pays off on large codebases, on framework docs your model has gone stale on, and on repeated sessions where re-exploring from scratch is waste.
+Where grep is better, this page says so. On Guava, whose class names document themselves (`BloomFilter`, `RateLimiter`), grep ranks higher: hit@1 73% against 67%. On a repository that fits in the agent's context, the built-in tools are fine. Lynx pays off on large codebases, on framework docs your model has gone stale on, and on repeated sessions where re-exploring from scratch is waste.
 
 ## Quickstart
 
@@ -60,20 +60,20 @@ The server answers the MCP handshake in about a second and opens the indexes in 
 
 ## The tools your AI gets
 
-The tool set is fixed: it does not grow with the number of sources. It is also layered, because every tool definition rides in your client's context on every turn. Three profiles: `core` (5 tools, about 1,300 tokens of definitions), `standard` (11 tools, about 3,050 tokens, the default) and `full` (17 tools, about 4,150 tokens). Set `tools.profile` in config.json or pass `lynx serve --profile full`; `tools.include` adds a single tool to a profile. Tools take a `source` argument where relevant.
+The tool set is fixed: it does not grow with the number of sources. It is also layered, because every tool definition rides in your client's context on every turn. Three profiles: `core` (5 tools, about 1,300 tokens of definitions), `standard` (12 tools, about 3,250 tokens, the default) and `full` (17 tools, about 4,150 tokens). Set `tools.profile` in config.json or pass `lynx serve --profile full`; `tools.include` adds a single tool to a profile. Tools take a `source` argument where relevant.
 
 | Tool | Profile | What it answers |
 |------|---------|-----------------|
 | `search(query, source?, outline?)` | core | Primary hybrid search. Omit `source` to search every source at once (RRF-fused). `outline=true` returns signatures only, for cheap triage. |
 | `deep_search(queries, source?)` | standard | Escalation: tries multiple query phrasings until one passes a quality threshold. |
 | `graph_query(operation, symbol?)` | standard | `callers`, `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `status`. |
-| `find_definition(symbol)` | standard | Where is X defined? (AST-precise when the graph is on, BM25 fallback otherwise.) |
-| `find_usages(symbol)` | core | Every use of X: calls *and* non-call references (generics, decorators, docs). |
-| `find_tests_for(symbol)` | full | Are there tests for X? |
+| `find_definition(symbol)` | standard | Where is X defined? The first match comes with its body, the others with their signature. (AST-precise when the graph is on, BM25 fallback otherwise.) |
+| `find_usages(symbol)` | core | Every use of X: calls, subtypes *and* the textual references that contain the name, with their lines. |
+| `find_tests_for(symbol)` | full | Are there tests for X? Includes the tests that reach X through the call graph without ever naming it. |
 | `find_similar(snippet)` | standard | Is my draft a duplicate? The parallel implementations of a snippet. |
-| `describe_symbol(symbol)` | core | One-shot context for X: definition, who calls it, what it calls, its tests, in a single call. |
+| `describe_symbol(symbol)` | core | One-shot context for X: its code, who calls it, what it calls, its tests; for a class, its bases, subtypes and member signatures. |
 | `impact(symbol)` | core | Blast radius: everything that reaches X *transitively* through the call graph (with hop distance), plus the tests to re-run. |
-| `module_summary(file)` | full | A file as a unit: the symbols it defines, what it imports, and which files depend on it. *(graph)* |
+| `module_summary(file)` | standard | A file as a unit: each symbol it defines with its signature and doc line, what it imports, which files depend on it (those two need the graph). |
 | `repo_overview()` | standard | "What is this and where do I start": detected languages, frameworks, entry points, and build/test/run commands. |
 | `export_graph(target, mode?)` | full | Render a shareable, offline graph view (a symbol's blast radius or a file hub) as a single self-contained file. *(graph)* |
 | `search_diff(query, base?)` | standard | Search only the files changed vs a base branch. Built for code review. |
@@ -144,13 +144,13 @@ Three codebases, three languages, behavioural questions with known ground-truth 
 | grep / Lynx | Django 5.2 (Python) | Json.NET (C#) | Guava (Java) |
 |---|---|---|---|
 | corpus | 883 files, 158k lines, 20 questions | 240 files, 69k lines, 15 questions | 606 files, 181k lines, 15 questions |
-| hit@5 | **95%** / 85% | 67% / **73%** | **93%** / 80% |
-| hit@1 | 45% / **55%** | 33% / **47%** | **73%** / 60% |
-| MRR | 0.64 / **0.67** | 0.47 / **0.58** | **0.81** / 0.70 |
-| median tokens to answer | 4,150 / **1,725** | 6,590 / **1,540** | 5,892 / **807** |
+| hit@5 | 95% / **100%** | 67% / **73%** | **93%** / 87% |
+| hit@1 | 45% / **60%** | 33% / **67%** | **73%** / 67% |
+| MRR | 0.64 / **0.77** | 0.47 / **0.70** | **0.81** / 0.74 |
+| median tokens to answer | 4,150 / **1,577** | 6,590 / **1,152** | 5,892 / **1,293** |
 | tool round-trips before the code is in context | 2+ / **1** | 2+ / **1** | 2+ / **1** |
 
-Ranking swings with how self-documenting the code is: Lynx ahead on C#, where PascalCase identifiers and sparse comments starve a lexical baseline; mixed on Python, ahead at hit@1 and behind at hit@5 in Django's docstring-rich code; behind on Guava. The token cost does not swing. It drops 58% to 86% every time, because Lynx hands back the whole function with `file:line`, symbol and score in one call, where grep returns match lines and then needs a read.
+Ranking still depends on how self-documenting the code is. Lynx is ahead on Json.NET, where PascalCase identifiers and sparse comments starve a lexical baseline, and on Django at hit@5 and hit@1 alike. On Guava, whose class names say what each class does, grep still ranks higher. The token cost does not swing. It drops 62% to 83% every time, because Lynx hands back the whole function with `file:line`, symbol and score in one call, where grep returns match lines and then needs a read.
 
 The structural gap is of a different kind. "What inherits from `Field`?" over Django's 100-class hierarchy takes grep 101 rounds, one per discovered class, each a full model inference over the growing context; `graph_query` answers it in 4 calls from resolved inheritance edges, same recall, `file:line` on every edge.
 
@@ -174,14 +174,14 @@ python benchmarks/run_benchmark.py --tasks benchmarks/tasks_guava.json \
 
 ## What it costs, in tokens and in money
 
-Per retrieval, the saving is the measured delta above: 2,400 to 5,100 fewer tokens to get the answer into context. Per session, the tool definitions cost 1,300 tokens (`core`), 2,800 (`standard`) or 4,150 (`full`), so a session has paid for its tool list after the first or second retrieval. `outline` triage cuts the search step by another 2.4x on broad queries ([measured](docs/OUTLINE.md)).
+Per retrieval, the saving is the measured delta above: 2,600 to 5,400 fewer tokens to get the answer into context. Per session, the tool definitions cost 1,300 tokens (`core`), 3,250 (`standard`) or 4,150 (`full`), so a session has paid for its tool list after the first or second retrieval. `outline` triage cuts the search step by another 2.4x on broad queries ([measured](docs/OUTLINE.md)).
 
 In money, for 25 engineers making 60 retrievals a day (31,500 a month), the yearly API bill Lynx removes, as a range across the three codebases:
 
 | Flagship model (input $/1M) | Measured floor | With the saved round trip |
 |---|---:|---:|
-| Claude Fable 5 ($10) | $9,200 to $19,200 | $16,700 to $26,800 |
-| GPT-5.5, Claude Opus 4.8 ($5) | $4,600 to $9,600 | $8,400 to $13,400 |
+| Claude Fable 5 ($10) | $9,700 to $20,600 | $17,300 to $28,100 |
+| GPT-5.5, Claude Opus 4.8 ($5) | $4,900 to $10,300 | $8,600 to $14,100 |
 
 The floor counts only the smaller tool output, no assumptions. The second column adds the one grep round trip Lynx removes, whose 20k-token context is re-read from the prompt cache at a tenth of the input price; that discount is the single modelled assumption, and it is a knob. Run it for your own team, prices and codebase: `python benchmarks/savings_calculator.py --devs N`, or the interactive [savings calculator](benchmarks/savings_calculator.html) (presets in [`pricing.json`](benchmarks/pricing.json) and [`measured.json`](benchmarks/measured.json), yours to edit).
 

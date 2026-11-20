@@ -1,18 +1,18 @@
 # Lynx retrieval benchmark — Json.NET (Newtonsoft.Json)
 
-Target: `Src/Newtonsoft.Json` of [Json.NET (Newtonsoft.Json) master](https://github.com/JamesNK/Newtonsoft.Json.git): 240 files, 69,132 lines, 3,724 indexed chunks (one-time index build: 186s on CPU).
+Target: `Src/Newtonsoft.Json` of [Json.NET (Newtonsoft.Json) master](https://github.com/JamesNK/Newtonsoft.Json.git): 240 files, 69,132 lines, 3,932 indexed chunks (one-time index build: 186s on CPU for the 3,724 chunks of the previous chunker).
 
 15 natural-language tasks with known ground-truth files. Both pipelines return a ranked file list; see `run_benchmark.py` for the exact methodology (the grep baseline is deliberately generous).
 
 | Metric | Agentic grep (simulated) | Lynx hybrid search |
 |---|---|---|
 | hit@5 (ground truth in top 5) | 67% | 73% |
-| hit@1 (top result is correct) | 33% | 47% |
-| MRR | 0.47 | 0.58 |
-| median tool output (tokens) | 4,900 | 1,540 |
-| median tokens **to answer** (incl. required follow-up read) | 6,590 | 1,540 |
+| hit@1 (top result is correct) | 33% | 67% |
+| MRR | 0.47 | 0.70 |
+| median tool output (tokens) | 4,900 | 1,152 |
+| median tokens **to answer** (incl. required follow-up read) | 6,590 | 1,152 |
 | tool round-trips to reach code | 2 (grep, then read file) | 1 (chunks included) |
-| median latency / query | 0.01s | 0.027s |
+| median latency / query | 0.027s | 0.078s |
 
 Notes:
 - Lynx tool output already CONTAINS the relevant code chunks with file:line.
@@ -67,16 +67,16 @@ the whole conversation re-billed in input tokens, every time.
 |---|---|---|---|
 | 1 | where circular references between objects are detected so serializatio | 1 | 1 |
 | 2 | how a type's members are inspected to build the contract metadata used | 2 | 1 |
-| 3 | reading json one token at a time from a text stream, handling string e | 1 | — |
+| 3 | reading json one token at a time from a text stream, handling string e | 1 | 1 |
 | 4 | writing json to a text output with proper escaping of quotes and contr | 2 | 1 |
-| 5 | turning incoming json back into objects, choosing a constructor and po | — | 1 |
+| 5 | turning incoming json back into objects, choosing a constructor and po | — | — |
 | 6 | selecting tokens from a document with a path expression like store boo | 2 | — |
 | 7 | converting an enumeration value to and from its text name during conve | — | 1 |
-| 8 | deep merging the contents of one json object into another | 1 | 2 |
+| 8 | deep merging the contents of one json object into another | 1 | — |
 | 9 | validating a json document against a schema while it is being read | 1 | 1 |
-| 10 | parsing and formatting date and time values in iso 8601 format | — | 4 |
-| 11 | resolving a type name string back to the concrete type for polymorphic | — | — |
-| 12 | reading the binary bson wire format into json tokens | 1 | 2 |
+| 10 | parsing and formatting date and time values in iso 8601 format | — | 1 |
+| 11 | resolving a type name string back to the concrete type for polymorphic | — | 1 |
+| 12 | reading the binary bson wire format into json tokens | 1 | 1 |
 | 13 | the naming strategy that lowercases the first character of property na | 4 | 2 |
 | 14 | converting primitive values between types such as string to number wit | — | — |
 | 15 | generating a json schema document from a type's structure | 3 | 1 |
