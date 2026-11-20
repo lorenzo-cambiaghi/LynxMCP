@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.11.0 - 2026-11-20
 
 Upgrading from 1.10.0: on a source that lists `.gd`, the first start
 re-chunks its GDScript files, in place and in the background. Nothing else
-is re-embedded.
+is re-embedded. The code graph is rebuilt once, because its extractor
+changed: about 17 seconds for a source of 3,500 C# files, while `lynx serve`
+already answers.
 
 ### Added
 
