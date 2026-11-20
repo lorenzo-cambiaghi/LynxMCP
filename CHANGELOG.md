@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 - 2026-11-20
 
 Upgrading from 1.9.0: the first start rebuilds every code graph once,
 because node IDs changed (see Fixed). That is about 17 seconds for a
@@ -164,6 +164,14 @@ watcher indexed files inside dot directories such as `.claude/` that every
 build then removed again.
 
 ### Fixed
+
+A fresh install with uv could not index anything. nltk 3.10, which
+llama-index pulls in, refuses to open a file with more than one hard link,
+and uv installs packages as hard links into its cache: the sentence splitter
+failed on the stopwords llama-index ships, every build stopped there, and
+the source came up as a corrupt index. `uv tool install lynx-mcp` and the
+Windows and macOS installers, which run uv, were affected; pip and pipx copy
+the files and were not. nltk is now held below 3.10.
 
 A chunker upgrade no longer empties the index while it rebuilds. The
 collection was deleted and filled again from scratch, and since every start
