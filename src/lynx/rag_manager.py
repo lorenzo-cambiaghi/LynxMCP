@@ -48,7 +48,7 @@ def log(msg):
 
 import re
 from llama_index.core import VectorStoreIndex
-from llama_index.core.schema import TextNode
+from llama_index.core.schema import MetadataMode, TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 from llama_index.core import Settings
@@ -193,6 +193,25 @@ def _identity_of(meta: dict) -> set:
     stem = os.path.splitext(meta.get("file") or "")[0]
     terms.update(s for s in _IDENT_SPLIT.split(stem.lower()) if s)
     return terms
+
+
+# What the embedding model reads above the code. LlamaIndex prepends every
+# metadata key unless told otherwise, so each vector used to start with eight
+# lines of bookkeeping: the absolute path (the same prefix on every chunk of
+# a source), the chunker name, the line numbers. About 60 of BGE-small's 512
+# tokens, which pushed the tail of a long method out of the window and made
+# chunks of one source look alike. The path inside the source and the
+# symbol's name do carry meaning (`urls/resolvers.py`, `URLResolver.resolve`).
+_EMBEDDED_KEYS = ("rel_path", "symbol_name")
+
+
+def _not_embedded(metadata: dict) -> list:
+    """The metadata keys left out of a chunk's embedding text. A synthetic
+    name (`<header>`, `<chunk3>`) says nothing, so it is left out too."""
+    keep = set(_EMBEDDED_KEYS)
+    if str(metadata.get("symbol_name") or "").startswith("<"):
+        keep.discard("symbol_name")
+    return [k for k in metadata if k not in keep]
 
 
 def _normalize_extension(ext: str) -> str:
@@ -721,6 +740,21 @@ class CodebaseRAG:
         stored_snapshot = raw.get("config_snapshot") or {}
         live_snapshot = self._file_hashes_snapshot()
         if stored_snapshot != live_snapshot:
+            differ = {k for k in set(stored_snapshot) | set(live_snapshot)
+                      if stored_snapshot.get(k) != live_snapshot.get(k)}
+            if differ == {"chunker_version"}:
+                # Same model, same collection: the stored vectors are still
+                # valid, only cut the old way. Every file reads as changed and
+                # is replaced in place, one at a time, so the index answers
+                # throughout instead of being wiped for the whole rebuild (an
+                # hour on a 50,000-chunk source).
+                log(
+                    f"[rag] chunker {stored_snapshot.get('chunker_version')} -> "
+                    f"{live_snapshot.get('chunker_version')}: every file is "
+                    f"re-chunked in place; the index stays searchable meanwhile."
+                )
+                return {path: {**entry, "sha256": None}
+                        for path, entry in (raw.get("files") or {}).items()}
             log(
                 "[rag] file_hashes.json config snapshot disagrees with live "
                 "config; cache is invalid, will rebuild from scratch."
@@ -792,11 +826,13 @@ class CodebaseRAG:
             return []
 
         chunks = chunk_file(abs_path, content)
+        rel_path = fs_scan.to_rel_path(abs_path, self._root())
         nodes = []
         for c in chunks:
             metadata = {
                 "file_path": c["file_path"],
                 "file_name": c["file_name"],
+                "rel_path": rel_path,
                 "symbol_name": c.get("symbol_name", ""),
                 "symbol_kind": c.get("symbol_kind", ""),
                 "language": c.get("language", "text"),
@@ -804,7 +840,11 @@ class CodebaseRAG:
                 "start_line": c.get("start_line", 1),
                 "end_line": c.get("end_line", 1),
             }
-            nodes.append(TextNode(text=c["text"], metadata=metadata))
+            nodes.append(TextNode(
+                text=c["text"], metadata=metadata,
+                excluded_embed_metadata_keys=_not_embedded(metadata),
+                excluded_llm_metadata_keys=list(metadata),
+            ))
         return nodes
 
     def _reset_collection(self):
@@ -923,9 +963,10 @@ class CodebaseRAG:
             log("[rag] Index already in sync with disk; no work to do.")
             return VectorStoreIndex.from_vector_store(vector_store=self.vector_store)
 
-        # Drop chunks for files that need re-indexing or removal.
-        for abs_path in changed:
-            self._delete_file_chunks(abs_path)
+        # Drop the chunks of files gone from disk. A changed file loses its
+        # old chunks right before its new ones go in (below), not all of them
+        # up front: when every file changed, as after a chunker upgrade, the
+        # index would otherwise sit empty until the last file was re-embedded.
         for abs_path in removed:
             self._delete_file_chunks(abs_path)
             self._forget_file_hash(abs_path)
@@ -939,10 +980,13 @@ class CodebaseRAG:
         if files_to_index:
             chunks_before = self._collection_count()
             total_nodes = 0
+            dropped = 0    # old chunks of changed files, deleted in the loop
             indexed = {}   # abs_path -> chunk count actually inserted
             failed = []    # insert raised: nothing of this file is in the index
             for abs_path in files_to_index:
                 nodes = self._build_nodes_for_file(abs_path)
+                if abs_path in changed:
+                    dropped += self._delete_file_chunks(abs_path) or 0
                 if not nodes:
                     # Legitimately empty (no chunks produced): record it below
                     # with chunks=0 so we don't re-chunk it on every rebuild,
@@ -967,7 +1011,7 @@ class CodebaseRAG:
             # file deletes its chunks first, so a partial success can't
             # duplicate).
             chunks_after = self._collection_count()
-            grew = (chunks_after - chunks_before) if None not in (
+            grew = (chunks_after - chunks_before + dropped) if None not in (
                 chunks_before, chunks_after) else None
             if total_nodes and grew is not None and grew != total_nodes:
                 log(f"[rag] REFUSING to record {len(indexed)} file(s) as indexed: "
@@ -1287,6 +1331,10 @@ class CodebaseRAG:
         effective = "dense" if (mode == "hybrid" and self._bm25_error) else mode
         for r in results:
             r["mode_effective"] = effective
+            # The path inside the source, which is what the tools print: a
+            # bare file name is ambiguous, an absolute one repeats the root.
+            r["rel_path"] = fs_scan.to_rel_path(r.get("file_path") or r.get("file"),
+                                                self._root())
         return results
 
     def deep_search(
@@ -1490,6 +1538,39 @@ class CodebaseRAG:
     # 5,000 indexed files: 100-230 ms per query up to 3,000 names.
     _MAX_SCOPE_FILES = 3000
 
+    def lexical_search(self, query: str, top_k: int, *, path_filter=None) -> list:
+        """BM25 alone, ranked among the files `path_filter(path)` accepts when
+        one is given (the tests, say), not cut to `top_k` first.
+
+        For lookups by exact name: find_usages and find_tests_for asked the
+        hybrid search before, whose dense half returns code that only looks
+        like the name, and every such hit was a usage that wasn't one.
+        """
+        self.refresh_if_stale()
+        self._ensure_bm25()
+        files = None
+        if path_filter is not None:
+            if self._bm25_okapi is None:
+                return []
+            files = {p for p in self._bm25_files
+                     if p not in self._bm25_excluded and path_filter(p)}
+            if not files:
+                return []
+        hits = [r for r in self._bm25_lookup(query, top_k, files=files)
+                if not self._out_of_scope(r.get("file_path", ""))]
+        for r in hits:
+            r["rel_path"] = fs_scan.to_rel_path(r.get("file_path"), self._root())
+        return hits
+
+    def _root(self):
+        """The source root results are shown relative to (None for an
+        instance a test assembled by hand)."""
+        return getattr(self, "codebase_path", None)
+
+    def indexed_files(self) -> list:
+        """Every file the index holds chunks of, as stored (absolute)."""
+        return list(self._file_hashes)
+
     def _file_scope(self, file_glob, extensions, path_contains, paths):
         """The indexed files a filtered search may answer from.
 
@@ -1590,7 +1671,9 @@ class CodebaseRAG:
                 "language": r.metadata.get("language", ""),
                 "start_line": r.metadata.get("start_line", 0),
                 "end_line": r.metadata.get("end_line", 0),
-                "content": r.get_content(),
+                # The code alone, whatever LlamaIndex would prepend for an
+                # embedding or a prompt.
+                "content": r.node.get_content(metadata_mode=MetadataMode.NONE),
                 "score": r.score,
             }
             for r in results

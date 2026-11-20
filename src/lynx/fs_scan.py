@@ -27,6 +27,24 @@ from pathlib import Path
 from typing import Iterable
 
 
+def to_rel_path(path, root) -> str:
+    """`path` relative to `root`, with forward slashes: what the tools show
+    and what the embedding model reads. A path outside the root (another
+    drive, a `..` escape) or a missing root gives the path unchanged, with
+    forward slashes too, so the result is always something to open."""
+    text = str(path or "")
+    if not text:
+        return ""
+    if root:
+        try:
+            rel = os.path.relpath(text, str(root))
+        except ValueError:            # another drive
+            rel = ""
+        if rel and rel != "." and not rel.startswith(".."):
+            return rel.replace("\\", "/")
+    return text.replace("\\", "/")
+
+
 def normalize_extensions(extensions: Iterable[str]) -> frozenset:
     """Lowercased, leading-dot extension set."""
     return frozenset(

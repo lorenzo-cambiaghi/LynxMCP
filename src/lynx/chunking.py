@@ -54,7 +54,7 @@ import tree_sitter_typescript as ts_ts
 # CRITICAL drift and the user is prompted to rebuild). Bump whenever the
 # chunking logic changes the boundaries / metadata in a backwards-incompatible
 # way.
-CHUNKER_VERSION = 4
+CHUNKER_VERSION = 5
 # History:
 #   1 — SentenceSplitter only (pre-M3 era)
 #   2 — tree-sitter + fallback, naive _extract_name (took first identifier)
@@ -62,6 +62,11 @@ CHUNKER_VERSION = 4
 #       declarations correctly report the method name (not the return type).
 #   4 — added Ruby/PHP/Kotlin/Swift; exposed parse_file() helper so the new
 #       graph layer can reuse the AST instead of re-parsing every file.
+#   5 — a chunk starts at the doc comment above its declaration; a type gets
+#       a skeleton chunk (doc, header, fields); the embedding text carries the
+#       relative path and the symbol name instead of eight metadata lines.
+#       An index of version 4 is re-chunked in place, file by file, and
+#       answers throughout (see CodebaseRAG._load_file_hashes).
 # NOTE: purely-additive language support (new extensions / grammars, e.g. the
 # 1.6.0 batch Bash/SQL/Scala/Lua and Objective-C) does NOT bump this — existing
 # chunks are unchanged; the new grammar applies to new/edited files, and a
@@ -485,14 +490,108 @@ def _extract_name(node, name_node_types: list) -> Optional[str]:
     return None
 
 
+def _is_comment(node) -> bool:
+    """Comment node types differ per grammar: `comment`, `line_comment`,
+    `block_comment`, `multiline_comment`, ..."""
+    return node.type == "comment" or node.type.endswith("_comment")
+
+
+# Nodes that wrap a declaration without being one, so the comment above them
+# documents the declaration inside: `/** doc */ export function f() {}`.
+_DECLARATION_WRAPPERS = frozenset({"export_statement", "ambient_declaration"})
+
+# Containers that group code without describing it: no skeleton chunk.
+_NAMESPACE_TYPES = frozenset({
+    "namespace_declaration", "file_scoped_namespace_declaration",
+    "namespace_definition", "module", "internal_module", "mod_item",
+})
+
+
+def _last_row(node) -> int:
+    """The last row a node really occupies. A Rust `///` line comment ends at
+    column 0 of the next row, which would otherwise read as no gap at all."""
+    row, col = node.end_point
+    return row - 1 if col == 0 and row > node.start_point[0] else row
+
+
+def _leading_comment_start(node) -> tuple:
+    """(start_byte, start_row) of `node` widened to the comment block right
+    above it: `///` XML docs, `/** */` Javadoc and JSDoc, Go and Rust `//`.
+
+    Tree-sitter puts those comments next to the declaration, not inside it,
+    so slicing the node alone drops the one natural-language description the
+    code has. The block stops at a blank line, so a file banner or an
+    unrelated note further up stays out, and at a comment that trails the
+    previous statement on its own row (`int x; // count`).
+    """
+    anchor = node
+    while (anchor.prev_named_sibling is None and anchor.parent is not None
+           and anchor.parent.type in _DECLARATION_WRAPPERS):
+        anchor = anchor.parent
+    start_byte, start_row = node.start_byte, node.start_point[0]
+    top_row = anchor.start_point[0]
+    prev = anchor.prev_sibling
+    while prev is not None and _is_comment(prev):
+        if _last_row(prev) < top_row - 1:
+            break                               # a blank line in between
+        before = prev.prev_sibling
+        if (before is not None and not _is_comment(before)
+                and _last_row(before) >= prev.start_point[0]):
+            break                               # trails the previous statement
+        start_byte, start_row = prev.start_byte, prev.start_point[0]
+        top_row = start_row
+        prev = before
+    return start_byte, start_row
+
+
+def _type_skeleton(node, source: bytes, rules: dict, start_byte: int) -> str:
+    """What a type says about itself, without its members' bodies: the doc
+    comment above it, the declaration up to the body, the class docstring
+    and the fields. Members that become chunks of their own are left out,
+    so nothing is indexed twice.
+
+    Empty when the declaration carries nothing beyond its header (a bare
+    `namespace Foo {`): such a chunk would add noise, not meaning.
+    """
+    if node.type in _NAMESPACE_TYPES:
+        return ""
+    skip = rules["chunk_types"] | rules["container_types"]
+    body = node.child_by_field_name("body")
+    if body is None:
+        named = [c for c in node.children if c.is_named]
+        body = named[-1] if named else None
+    if body is None or body.type in skip or body.start_byte <= node.start_byte:
+        return ""
+    members = []
+    for child in body.children:
+        if not child.is_named or _is_comment(child) or child.type in skip:
+            continue
+        # A wrapper holding a member that is chunked on its own
+        # (`export function`, a decorated method) is that member.
+        if any(c.type in skip for c in child.children if c.is_named):
+            continue
+        text = _node_text(source, child).strip()
+        if text:
+            members.append(text)
+    has_doc = start_byte < node.start_byte
+    if not members and not has_doc:
+        return ""
+    header = source[start_byte:body.start_byte].decode("utf-8", errors="replace").rstrip()
+    if _node_text(source, body).startswith("{"):
+        header += " {"
+    return "\n".join([header] + ["    " + m for m in members])
+
+
 def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
     """Recursively walk `node`, returning a list of chunk dicts.
 
     The traversal rules:
       - When we hit a chunk_types node: emit it as a chunk (do NOT recurse
-        into it — nested chunks would over-fragment things like JS closures).
-      - When we hit a container_types node: do NOT emit the whole container;
-        recurse into it, prefixing the container's name to nested chunk names.
+        into it — nested chunks would over-fragment things like JS closures),
+        together with the doc comment right above it.
+      - When we hit a container_types node: recurse into it, prefixing the
+        container's name to nested chunk names, and emit the container's
+        skeleton (doc comment, declaration, fields) as a chunk of its own.
       - Anything else: keep walking down (covers wrapper nodes like
         decorated_definition, modifiers, etc.).
     """
@@ -502,29 +601,45 @@ def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
     name_node_types = rules["name_node_types"]
 
     for child in node.children:
+        if not child.is_named:
+            # Keywords and punctuation. Ruby's `class` keyword has the same
+            # type as the class node and used to come out as a chunk.
+            continue
         if child.type in chunk_types:
             name = _extract_name(child, name_node_types) or "<anonymous>"
             full_name = ".".join(container_path + [name]) if container_path else name
+            start_byte, start_row = _leading_comment_start(child)
             chunks.append({
-                "text": _node_text(source, child),
+                "text": source[start_byte:child.end_byte].decode("utf-8", errors="replace"),
                 "symbol_name": full_name,
                 "symbol_kind": child.type,
-                "start_line": child.start_point[0] + 1,
+                "start_line": start_row + 1,
                 "end_line": child.end_point[0] + 1,
             })
         elif child.type in container_types:
             container_name = _extract_name(child, name_node_types) or "<container>"
+            qualified = ".".join(container_path + [container_name])
+            start_byte, start_row = _leading_comment_start(child)
             inner = _walk(child, source, rules, container_path + [container_name])
             if inner:
+                skeleton = _type_skeleton(child, source, rules, start_byte)
+                if skeleton:
+                    chunks.append({
+                        "text": skeleton,
+                        "symbol_name": qualified,
+                        "symbol_kind": child.type,
+                        "start_line": start_row + 1,
+                        "end_line": child.end_point[0] + 1,
+                    })
                 chunks.extend(inner)
             else:
                 # Empty / abstract container with no chunkable members — emit
                 # the container itself so its declaration isn't lost.
                 chunks.append({
-                    "text": _node_text(source, child),
-                    "symbol_name": ".".join(container_path + [container_name]),
+                    "text": source[start_byte:child.end_byte].decode("utf-8", errors="replace"),
+                    "symbol_name": qualified,
                     "symbol_kind": child.type,
-                    "start_line": child.start_point[0] + 1,
+                    "start_line": start_row + 1,
                     "end_line": child.end_point[0] + 1,
                 })
         else:
@@ -549,7 +664,12 @@ def _collect_header_text(root, source: bytes, rules: dict) -> str:
             continue
         # Skip comments — they're attached to whatever they precede in our
         # rendering, no need to make them a standalone chunk.
-        if child.type in ("comment", "block_comment", "line_comment"):
+        if _is_comment(child):
+            continue
+        # `export class K {...}` is the class, which has chunks of its own;
+        # copying it here put every exported TypeScript class in the header.
+        if child.type in _DECLARATION_WRAPPERS and any(
+                c.type in skip for c in child.children if c.is_named):
             continue
         text = _node_text(source, child).strip()
         if text:

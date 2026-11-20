@@ -248,6 +248,42 @@ def main() -> int:
             return 7
         print("[test] OK [7/7] no-op save short-circuited; SHA and timestamp untouched")
 
+        # ============================================================
+        # 8. A chunker upgrade re-chunks in place: the index never empties
+        # ============================================================
+        print("[test] [8] older chunker_version in the cache, rebuild, watch the count...")
+        full = rag.vector_store._collection.count()
+        envelope = _load_hash_envelope(storage_dir)
+        envelope["config_snapshot"]["chunker_version"] -= 1
+        fh_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        del rag
+        gc.collect()
+        rag = _make_rag()
+        if len(rag._file_hashes) != 3:
+            print(f"[test] FAIL [8]: the cache was dropped instead of kept as changed")
+            return 8
+        counts = []
+        build_nodes = rag._build_nodes_for_file
+
+        def watching(abs_path, _orig=build_nodes):
+            counts.append(rag.vector_store._collection.count())
+            return _orig(abs_path)
+
+        rag._build_nodes_for_file = watching
+        rag.update(force=True)
+        if not counts or min(counts) == 0:
+            print(f"[test] FAIL [8]: the index emptied during the rebuild: {counts}")
+            return 8
+        if rag.vector_store._collection.count() != full:
+            print(f"[test] FAIL [8]: {rag.vector_store._collection.count()} chunks "
+                  f"after the re-chunk, {full} before")
+            return 8
+        envelope = _load_hash_envelope(storage_dir)
+        if any(not e.get("sha256") for e in envelope["files"].values()):
+            print(f"[test] FAIL [8]: some files left without a hash after the rebuild")
+            return 8
+        print(f"[test] OK [8] chunker upgrade re-chunked in place (count stayed >= {min(counts)})")
+
         print("\n[test] === SUCCESS: SHA-based incremental indexing works as expected ===")
         return 0
 
