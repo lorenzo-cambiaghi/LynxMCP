@@ -13,15 +13,18 @@ classes, each with the `##` doc comment and any annotation (`@rpc`) on the
 lines above it. A script is a class, as in Godot: its functions are named
 after its `class_name`, or after the file when it has none
 (`Player.take_damage`, `enemy.attack`), and the code graph has a class node
-for it. Its `extends` is an inheritance edge, whether it
-names a class or a script path, and `preload` / `load` of a constant path
-count as imports. The grammar has wheels for Windows x64, Linux x86_64 and
-macOS on Apple silicon, so it is installed on those three; elsewhere `.gd`
-files are still indexed, as text.
+for it. Its `extends` is an inheritance edge, whether it names a class or a
+script path; a script that declares `class_name BaseEnemy` in
+`enemy_base.gd` answers to both names. `preload` / `load` of a constant
+path count as imports. The grammar has wheels for Windows x64, Linux x86_64
+and macOS on Apple silicon, so it is installed on those three; elsewhere
+`.gd` files are still indexed, as text.
 
-`repo_overview` recognizes a Godot project (`project.godot`) and lists
-GDScript among the languages. The extensions the web UI suggests for a new
-source leave out Godot's `.import` and `.uid` sidecar files.
+`repo_overview` recognizes a Godot project (`project.godot`, listed among
+the manifests) and GDScript among the languages. The extensions the web UI
+suggests for a new source leave out Godot's `.import` and `.uid` sidecar
+files. `find_tests_for` takes a `test_*` file outside a test folder for a
+test (pytest, Godot's GUT).
 
 ### Fixed
 

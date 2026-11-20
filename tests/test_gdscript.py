@@ -260,3 +260,69 @@ def test_an_annotation_on_its_own_line_belongs_to_the_function_below():
 def test_a_call_inside_a_lambda_counts_for_the_function_around_it():
     _r, _labels, edges = _graph("spawner.gd", SPAWNER)
     assert ("Spawner.spawn", "Spawner.build", "calls") in edges
+
+
+BASE_ENEMY = textwrap.dedent('''\
+    class_name BaseEnemy
+    extends Node2D
+
+    func attack():
+    \tpass
+    ''')
+
+
+def _inherits(layer) -> set:
+    g = layer.graph
+    label = {nid: d.get("label") for nid, d in g.nodes(data=True)}
+    return {(label[u], label[v]) for u, v, d in g.edges(data=True)
+            if d.get("relation") == "inherits"}
+
+
+@grammar
+def test_extends_by_path_finds_a_script_with_another_class_name(tmp_path):
+    # `extends "res://enemies/enemy_base.gd"` names the file; the script in
+    # it declared `class_name BaseEnemy`. The edge must survive an edit of
+    # either file and a reload from disk.
+    from lynx.graph import GraphLayer
+    root = tmp_path / "game"
+    (root / "enemies").mkdir(parents=True)
+    base = root / "enemies" / "enemy_base.gd"
+    boss = root / "enemies" / "boss.gd"
+    base.write_text(BASE_ENEMY, encoding="utf-8")
+    boss.write_text(BOSS.replace("enemy.gd", "enemy_base.gd"), encoding="utf-8")
+
+    def layer():
+        return GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root,
+                          supported_extensions=[".gd"])
+
+    first = layer()
+    first.rebuild(force=True)
+    assert ("boss", "BaseEnemy") in _inherits(first)
+    base.write_text(BASE_ENEMY + "\nfunc retreat():\n\tpass\n", encoding="utf-8")
+    assert first.update_file(str(base))
+    assert ("boss", "BaseEnemy") in _inherits(first)
+    boss.write_text(boss.read_text(encoding="utf-8") + "\nfunc taunt():\n\tpass\n",
+                    encoding="utf-8")
+    assert first.update_file(str(boss))
+    assert ("boss", "BaseEnemy") in _inherits(first)
+    assert ("boss", "BaseEnemy") in _inherits(layer())
+
+
+def test_a_godot_project_is_recognized(tmp_path):
+    from lynx.overview import build_overview
+    (tmp_path / "project.godot").write_text("[application]\n", encoding="utf-8")
+    (tmp_path / "player.gd").write_text(ENEMY, encoding="utf-8")
+    ov = build_overview(tmp_path)
+    assert "project.godot" in ov["manifests"]
+    assert "Godot" in ov["frameworks"]
+
+
+def test_test_files_named_test_underscore_are_tests():
+    import re
+    from lynx.sources.codebase import CodebaseBackend
+    rx = re.compile(CodebaseBackend._DEFAULT_TEST_PATH_PATTERN, re.IGNORECASE)
+    for path in ("addons/gut_tests/test_player.gd", "test_player.gd",
+                 "app/test_views.py", "tests/unit/x.py"):
+        assert rx.search(path), path
+    for path in ("src/latest.py", "src/contest_entry.gd", "src/testing.py"):
+        assert not rx.search(path), path

@@ -720,6 +720,8 @@ class CodebaseBackend(SourceBackend):
     _DEFAULT_TEST_PATH_PATTERN = (
         r"(^|/)(test|tests|spec|__tests__)/|"
         r"_test\.|\.test\.|\.spec\.|"
+        # pytest outside tests/, Godot GUT: test_player.gd
+        r"(^|/)test_[^/]*$|"
         r"Test\.cs$|Tests\.cs$"
     )
 

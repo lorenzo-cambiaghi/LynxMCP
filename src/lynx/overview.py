@@ -47,6 +47,7 @@ _MANIFESTS = {
     "build.gradle.kts": "java-gradle", "Gemfile": "ruby",
     "composer.json": "php", "Makefile": "make", "CMakeLists.txt": "cmake",
     "Dockerfile": "docker", "*.csproj": "dotnet", "*.sln": "dotnet",
+    "project.godot": "godot",
 }
 
 

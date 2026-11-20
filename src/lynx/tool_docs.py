@@ -56,7 +56,7 @@ TOOL_DESCRIPTIONS = {
     "find_tests_for": (
         "The tests of a symbol: those that reach it through the call graph ([dN] "
         "= N calls away, even if they never name it) and those that name it, "
-        "under conventional test paths (tests/, spec/, __tests__/, *_test.*, "
+        "under conventional test paths (tests/, spec/, __tests__/, test_*, *_test.*, "
         "*.spec.*, *Test.cs, *Tests.cs); test_path_pattern replaces them. "
         "describe_symbol and impact include the same tests."
     ),

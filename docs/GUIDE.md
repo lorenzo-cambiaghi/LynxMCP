@@ -2311,8 +2311,8 @@ since neither has classes.
 In GDScript each script is a class node, and its `extends` is an inheritance
 edge, whether it names a class (`extends CharacterBody2D`) or a script path
 (`extends "res://enemies/enemy.gd"`, which resolves to the script `enemy`). A
-script declared with `class_name` but extended by path does not resolve, since
-the path names the file and the class goes by another name. GDScript has no
+script that declares `class_name BaseEnemy` in `enemy_base.gd` answers to both
+names, so an `extends` by path finds it too. GDScript has no
 import statement: `preload` and `load` of a constant path, at the top of a
 script, and an `extends` by path count as its imports.
 SQL is chunked and searched but has no graph rule: its DDL has no

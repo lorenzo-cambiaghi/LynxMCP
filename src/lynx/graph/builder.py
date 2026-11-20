@@ -106,6 +106,20 @@ def extractor_fingerprint() -> str:
     return digest.hexdigest()[:16]
 
 
+def _index_keys(node: "dict | None") -> set:
+    """The names a symbol is found by across files: the leaf of its label
+    ("Greeter.hello" -> "hello") and any alias the extractor gave it. A
+    GDScript script declared `class_name BaseEnemy` in `enemy_base.gd` is
+    also `enemy_base`, the name an `extends "res://.../enemy_base.gd"` uses."""
+    if not node or node.get("kind") not in ("function", "class"):
+        return set()
+    keys = {a.lower() for a in node.get("aliases") or () if a}
+    leaf = node.get("label", "").split(".")[-1].lower()
+    if leaf:
+        keys.add(leaf)
+    return keys
+
+
 # SHA-256 read buffer (1 MiB — same value as rag_manager).
 _HASH_READ_CHUNK_BYTES = 1 << 20
 
@@ -401,13 +415,10 @@ class GraphLayer:
         self._graph.add_node(nid, **attrs)
         # Index symbol for cross-file lookup. Use the leaf (last
         # qualified segment) so "Greeter.hello" is findable as "hello".
-        if node["kind"] in ("function", "class"):
-            label = node.get("label", "")
-            leaf = label.split(".")[-1].lower()
-            if leaf:
-                self._symbol_index.setdefault(leaf, [])
-                if nid not in self._symbol_index[leaf]:
-                    self._symbol_index[leaf].append(nid)
+        for key in _index_keys(node):
+            self._symbol_index.setdefault(key, [])
+            if nid not in self._symbol_index[key]:
+                self._symbol_index[key].append(nid)
 
     def _add_edge_inplace(self, edge: dict, register_external: bool = False) -> None:
         u = edge["source"]
@@ -447,14 +458,12 @@ class GraphLayer:
         }
         # Drop edges touching those nodes (DiGraph drops them with the node).
         for nid in affected:
-            label = self._nodes_by_id[nid].get("label", "")
-            leaf = label.split(".")[-1].lower()
-            if leaf:
-                touched_names.add(leaf)
-            if leaf in self._symbol_index:
-                self._symbol_index[leaf] = [x for x in self._symbol_index[leaf] if x != nid]
-                if not self._symbol_index[leaf]:
-                    del self._symbol_index[leaf]
+            for key in _index_keys(self._nodes_by_id[nid]):
+                touched_names.add(key)
+                if key in self._symbol_index:
+                    self._symbol_index[key] = [x for x in self._symbol_index[key] if x != nid]
+                    if not self._symbol_index[key]:
+                        del self._symbol_index[key]
             self._graph.remove_node(nid)
             del self._nodes_by_id[nid]
         # A stub nobody imports any more would not exist in a graph built from
@@ -587,9 +596,7 @@ class GraphLayer:
             if d.get("confidence") not in ("resolved", "ambiguous"):
                 continue
             if only_target_names is not None:
-                tgt = self._nodes_by_id.get(v)
-                leaf = (tgt.get("label", "").split(".")[-1].lower()) if tgt else ""
-                if leaf not in only_target_names:
+                if not _index_keys(self._nodes_by_id.get(v)) & only_target_names:
                     continue
             to_drop.append((u, v))
         for u, v in to_drop:
@@ -824,10 +831,7 @@ class GraphLayer:
                 for n in res["nodes"]:
                     self._add_node_inplace(n)
                     # New/changed symbols defined here are also affected names.
-                    if n.get("kind") in ("function", "class"):
-                        leaf = (n.get("label", "").split(".")[-1].lower())
-                        if leaf:
-                            affected_names.add(leaf)
+                    affected_names |= _index_keys(n)
                 for e in res["edges"]:
                     self._add_edge_inplace(e, register_external=True)
                 if res["raw_calls"]:

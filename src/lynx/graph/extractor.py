@@ -1654,6 +1654,11 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
             "end_line": tree.root_node.end_point[0] + 1,
             "lang_key": lang_key,
         })
+        # Declared `class_name BaseEnemy` in enemy_base.gd, the script is
+        # still `enemy_base` to an `extends "res://.../enemy_base.gd"`.
+        stem = Path(abs_path_norm).stem
+        if stem and stem.lower() != script_path[0].lower():
+            nodes[-1]["aliases"] = [stem]
         local_index[script_path[0].lower()] = script_id
         if rules.inheritance_handler is not None:
             rules.inheritance_handler(
