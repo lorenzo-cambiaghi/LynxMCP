@@ -42,26 +42,21 @@ quality, we're considering documenting a vetted step-up preset
 
 ## On the radar (additive, lower-risk)
 
-### Coral community source: merged, the graph functions are next
-Lynx is an official community source in Coral's
-[`sources/community/`](https://github.com/withcoral/coral/tree/main/sources/community/lynx)
-directory (PR [#1297](https://github.com/withcoral/coral/pull/1297), merged
-June 2026): `coral source add --file sources/community/lynx/manifest.yaml`
-gives Coral users `lynx.search` without leaving the registry. The manifest
-kept in this repo ([`integrations/coral/manifest.yaml`](integrations/coral/manifest.yaml))
-goes further, with six graph functions (`lynx.callers`, `callees`, `subclasses`,
-`superclasses`, `imports`, `neighbors`) over `/api/v1/graph`. A
-follow-up PR bringing them to the registry is staged, not yet opened.
-
 ### More language parsers
 Lynx ships tree-sitter grammars for 19+ languages today (Python, TypeScript,
 JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift, Bash, SQL,
-Scala, Lua, Objective-C, GDScript). Adding more is cheap and additive: each grammar is a small wheel
-bundled in the install, no runtime download. Demand decides what comes next
-(Elixir, Zig and HTML/CSS are candidates); open an issue with the language you need and it
-moves up. A few (notably Dart and R) are on hold: their community tree-sitter
-grammars don't currently expose a usable parser for our chunker, so they wait
-until that changes upstream.
+Scala, Lua, Objective-C, GDScript). Each grammar is a small wheel bundled in
+the install, with no runtime download, and adding one is usually a matter of
+declaring which node types are functions and classes. Demand decides what
+comes next; open an issue with the language you need and it moves up.
+
+- Zig and HTML/CSS are candidates. Elixir and HCL take more work: every
+  construct is the same node type (`call`, `block`), so they need a rule that
+  reads the first identifier.
+- Dart and R are on hold: their community grammars don't expose a parser
+  usable with the current tree-sitter.
+- A grammar without wheels for every platform is installed only where it has
+  them, and elsewhere its files are indexed as text. GDScript is the first.
 
 ## Non-goals
 
