@@ -173,8 +173,8 @@ The spec talks to Lynx's stable local JSON API (additive-only within v1):
   returns `{"results": [{"query": ..., "hits": [...]}, ...]}`. It embeds all
   queries in one model call, so it is faster than N single calls. Meant for
   external multi-query consumers, such as an agent fanning one question across
-  the rows of another source. Coral can't use it: it calls the single-query
-  `GET` per row.
+  the rows of another source. Coral 0.x can't use it: it calls the
+  single-query `GET` per row. In Coral 1.x it is the `search.batch` tool.
 - `GET /api/v1/graph?operation=...&symbol=...&source=...&limit=...`: the code
   knowledge graph as flat JSON rows (`from_*` to `to_*` with `relation`).
   Operations: `callers`, `callees`, `subclasses`, `superclasses`, `imports`,
