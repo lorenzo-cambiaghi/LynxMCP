@@ -104,6 +104,12 @@ dependencies = [
     "tree-sitter-scala",
     "tree-sitter-lua",
     "tree-sitter-objc",
+    # GDScript ships wheels for these three platforms only. Elsewhere pip
+    # would compile it from source and fail without a C compiler, taking the
+    # whole install down with it, so there it is skipped and `.gd` files are
+    # indexed as text. On musl Linux (Alpine) the marker still matches and
+    # pip builds from the sdist, which needs gcc.
+    "tree-sitter-gdscript>=6.1; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'darwin' and platform_machine == 'arm64')",
     # Pure-Python graph library used by the opt-in graph layer (call graph +
     # import graph + community detection). Small (~2MB), no native code.
     "networkx>=3.0",

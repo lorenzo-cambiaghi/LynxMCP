@@ -15,7 +15,7 @@
       "supported_extensions": [
         ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".cs",
         ".cpp", ".c", ".h", ".hpp", ".go", ".rs", ".rb", ".php",
-        ".kt", ".swift", ".sh", ".bash", ".sql", ".scala", ".sc", ".lua",
+        ".kt", ".swift", ".sh", ".bash", ".sql", ".scala", ".sc", ".lua", ".gd",
         ".md", ".txt", ".json", ".yaml", ".yml"
       ],
       "ignored_path_fragments": [

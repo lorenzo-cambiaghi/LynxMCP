@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+Upgrading from 1.10.0: on a source that lists `.gd`, the first start
+re-chunks its GDScript files, in place and in the background. Nothing else
+is re-embedded.
+
+### Added
+
+GDScript. `.gd` files are chunked as functions, `_init`, enums and inner
+classes, each with the `##` doc comment and any annotation (`@rpc`) on the
+lines above it. A script is a class, as in Godot: its functions are named
+after its `class_name`, or after the file when it has none
+(`Player.take_damage`, `enemy.attack`), and the code graph has a class node
+for it. Its `extends` is an inheritance edge, whether it
+names a class or a script path, and `preload` / `load` of a constant path
+count as imports. The grammar has wheels for Windows x64, Linux x86_64 and
+macOS on Apple silicon, so it is installed on those three; elsewhere `.gd`
+files are still indexed, as text.
+
+`repo_overview` recognizes a Godot project (`project.godot`) and lists
+GDScript among the languages. The extensions the web UI suggests for a new
+source leave out Godot's `.import` and `.uid` sidecar files.
+
 ### Fixed
 
 A file whose extension gained a grammar kept the text chunks it was indexed

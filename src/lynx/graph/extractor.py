@@ -29,10 +29,10 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
-from ..chunking import parse_file
+from ..chunking import parse_file, script_class_path
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,9 @@ class LangGraphRules:
     # don't wrap the callee in an accessor node — instead the method name is
     # a direct field on the call node itself. List those call types here.
     direct_member_call_types: frozenset = frozenset()
-    direct_member_call_field: str = "name"
+    # None: the call node has no name field and the method name is its
+    # first identifier child (GDScript `attribute_call`, `base_call`).
+    direct_member_call_field: Optional[str] = "name"
 
     # When walking a function body, do NOT recurse into nested chunks of
     # these types — nested function definitions are independent callers.
@@ -1018,6 +1020,84 @@ def _handle_objc_inheritance(container_node, source: bytes,
 # (markdown, shaders, JSON, SQL) are simply skipped by `extract_file`.
 
 
+def _gdscript_res_stem(string_node, source: bytes) -> Optional[str]:
+    """`"res://enemies/enemy.gd"` -> `enemy`: the name a script without
+    `class_name` goes by (see chunking.gdscript_script_class)."""
+    raw = _text(string_node, source).strip().strip("\"'")
+    return PurePosixPath(raw).stem or None
+
+
+def _gdscript_base(extends_node, source: bytes) -> Optional[str]:
+    """The base an `extends` names: `Node2D`, `Base.Inner` (-> `Inner`), or
+    a script path."""
+    for c in extends_node.children:
+        if not c.is_named:
+            continue
+        if c.type == "string":
+            return _gdscript_res_stem(c, source)
+        if c.type == "type":
+            inner = [n for n in c.children if n.is_named]
+            c = inner[0] if inner else c
+        return _innermost_identifier(c, source)
+    return None
+
+
+def _handle_gdscript_inheritance(container_node, source: bytes,
+                                 container_id: str, file_path: str,
+                                 raw_inherits: list) -> None:
+    """GDScript: `class Inner extends Base:`, or for the script itself an
+    `extends` line at the top (alone or after `class_name X`)."""
+    if container_node.type == "class_definition":
+        ext = container_node.child_by_field_name("extends")
+    else:
+        ext = None
+        for c in container_node.children:
+            if c.type == "extends_statement":
+                ext = c
+                break
+            if c.type == "class_name_statement" and c.child_by_field_name("extends"):
+                ext = c.child_by_field_name("extends")
+                break
+    if ext is None:
+        return
+    base = _gdscript_base(ext, source)
+    if base:
+        raw_inherits.append({
+            "child": container_id,
+            "base_name": base,
+            "base_kind": "extends",
+            "file": file_path,
+            "line": ext.start_point[0] + 1,
+        })
+
+
+def _handle_gdscript_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
+    """GDScript has no import statement. A file depends on another through
+    `preload("res://...")` / `load(...)`, usually in a top-level const, and
+    through `extends "res://..."`."""
+    target = None
+    if node.type == "extends_statement":
+        target = next((c for c in node.children if c.type == "string"), None)
+    elif node.type == "call":
+        callee = next((c for c in node.children if c.is_named), None)
+        if callee is None or callee.type != "identifier" \
+                or _text(callee, source) not in ("preload", "load"):
+            return
+        args = node.child_by_field_name("arguments")
+        if args is not None:
+            target = next((c for c in args.children if c.type == "string"), None)
+    if target is None:
+        return
+    raw = _text(target, source).strip().strip("\"'")
+    if raw:
+        edges.append({
+            "source": file_id,
+            "target": _make_id(raw),
+            "relation": "imports",
+            "module": raw,
+        })
+
+
 GRAPH_RULES: dict = {
     "python": LangGraphRules(
         container_types=frozenset({"class_definition"}),
@@ -1271,6 +1351,25 @@ GRAPH_RULES: dict = {
         call_accessor_field="name",
         function_boundary_types=frozenset({"function_definition"}),
     ),
+    "gdscript": LangGraphRules(
+        # The script is a class as well (`script_class` in the chunker rules).
+        container_types=frozenset({"class_definition"}),
+        function_types=frozenset({"function_definition", "constructor_definition"}),
+        import_types=frozenset({"call", "extends_statement"}),
+        # `foo()` is a `call` whose callee is its first child (no field);
+        # `obj.foo()` ends in an `attribute_call`, `.foo()` (Godot 3 super
+        # call) is a `base_call`. Both name the method in their identifier.
+        call_types=frozenset({"call", "attribute_call", "base_call"}),
+        direct_member_call_types=frozenset({"attribute_call", "base_call"}),
+        direct_member_call_field=None,
+        # A lambda is anonymous: its calls count for the function around
+        # it, as in Python.
+        function_boundary_types=frozenset({
+            "function_definition", "constructor_definition",
+        }),
+        import_handler=_handle_gdscript_import,
+        inheritance_handler=_handle_gdscript_inheritance,
+    ),
 }
 
 
@@ -1295,7 +1394,11 @@ def _extract_callee(call_node, rules: LangGraphRules, source: bytes) -> "Optiona
     # direct field (PHP member_call_expression / scoped_call_expression).
     # We treat these as member calls without descending into an accessor.
     if call_node.type in rules.direct_member_call_types:
-        name_node = call_node.child_by_field_name(rules.direct_member_call_field)
+        if rules.direct_member_call_field is None:
+            name_node = next((c for c in call_node.children
+                              if c.type == "identifier"), None)
+        else:
+            name_node = call_node.child_by_field_name(rules.direct_member_call_field)
         if name_node is not None:
             name = _text(name_node, source).strip()
             return (name, True) if name else None
@@ -1403,10 +1506,14 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
 def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: str,
                        file_id: str, id_stem: str, container_path: list,
                        nodes: list, edges: list, local_index: dict,
-                       function_bodies: list, raw_inherits: list) -> None:
+                       function_bodies: list, raw_inherits: list,
+                       default_names: Optional[dict] = None) -> None:
     """First pass: collect class/function nodes, contains edges, imports,
     inheritance, and a list of (function_id, body_node) pairs for the call walker.
+    `default_names` names declarations the grammar leaves unnamed, by node
+    type (GDScript `func _init`).
     """
+    default_names = default_names or {}
     for child in node.children:
         if child.type in rules.import_types:
             if rules.import_handler is not None:
@@ -1416,7 +1523,8 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
             # also be considered as a call within a function body (it isn't
             # at the top level, but the recursive descent handles that).
         if child.type in rules.function_types:
-            name = _name_of(child, source) or "<anonymous>"
+            name = (_name_of(child, source) or default_names.get(child.type)
+                    or "<anonymous>")
             qualified = ".".join(container_path + [name]) if container_path else name
             node_id = _make_id(id_stem, qualified)
             nodes.append({
@@ -1470,7 +1578,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
             _walk_declarations(
                 child, rules, source, file_path, file_id, id_stem,
                 container_path + [cname], nodes, edges, local_index,
-                function_bodies, raw_inherits,
+                function_bodies, raw_inherits, default_names,
             )
             continue
         # Generic recursion for wrapper nodes (decorated_definition,
@@ -1479,7 +1587,7 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         _walk_declarations(
             child, rules, source, file_path, file_id, id_stem,
             container_path, nodes, edges, local_index, function_bodies,
-            raw_inherits,
+            raw_inherits, default_names,
         )
 
 
@@ -1530,11 +1638,34 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
         "lang_key": lang_key,
     })
 
+    # A language whose files are classes (GDScript): the script is a class
+    # node, its top-level functions are its methods, and its `extends` is
+    # its base. Named as the chunker names it, so both layers agree.
+    script_path = script_class_path(tree.root_node, source, _chunk_rules, abs_path_norm)
+    if script_path:
+        script_id = _make_id(id_stem, script_path[0])
+        nodes.append({
+            "id": script_id,
+            "label": script_path[0],
+            "kind": "class",
+            "subkind": "script",
+            "file": abs_path_norm,
+            "start_line": 1,
+            "end_line": tree.root_node.end_point[0] + 1,
+            "lang_key": lang_key,
+        })
+        local_index[script_path[0].lower()] = script_id
+        if rules.inheritance_handler is not None:
+            rules.inheritance_handler(
+                tree.root_node, source, script_id, abs_path_norm, raw_inherits,
+            )
+
     _walk_declarations(
         tree.root_node, rules, source, abs_path_norm, file_id, id_stem,
-        container_path=[], nodes=nodes, edges=edges,
+        container_path=script_path, nodes=nodes, edges=edges,
         local_index=local_index, function_bodies=function_bodies,
         raw_inherits=raw_inherits,
+        default_names=_chunk_rules.get("default_names"),
     )
 
     # Fill in lang_key on every node we created.

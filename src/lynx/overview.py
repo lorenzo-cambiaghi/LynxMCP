@@ -35,7 +35,7 @@ _EXT_LANG = {
     ".swift": "Swift", ".m": "Objective-C", ".c": "C", ".h": "C/C++ header",
     ".cpp": "C++", ".cc": "C++", ".hpp": "C++", ".scala": "Scala",
     ".sc": "Scala", ".lua": "Lua", ".sh": "Shell", ".bash": "Shell",
-    ".sql": "SQL",
+    ".sql": "SQL", ".gd": "GDScript",
 }
 
 # Manifest filename -> the ecosystem it signals.
@@ -154,6 +154,8 @@ def _detect_frameworks(root: Path, files: list, manifests: list) -> list:
     # Unity: a csproj project with an Assets/ dir is a Unity project.
     if (root / "Assets").is_dir() and any(p.suffix == ".csproj" for p in files):
         frameworks.add("Unity")
+    if (root / "project.godot").is_file():
+        frameworks.add("Godot")
 
     return sorted(frameworks)
 
@@ -173,6 +175,7 @@ _ENTRY_HINTS = [
     ("server.js", "Node server entrypoint"),
     ("server.ts", "Node/TS server entrypoint"),
     ("Main.java", "Java main"),
+    ("project.godot", "Godot project; its main scene is `run/main_scene`"),
 ]
 
 

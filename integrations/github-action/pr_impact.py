@@ -32,13 +32,14 @@ CODE_EXT = {
     ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cs", ".cpp", ".cc",
     ".cxx", ".hpp", ".hxx", ".c", ".h", ".go", ".rs", ".java", ".rb",
     ".php", ".kt", ".kts", ".swift", ".sh", ".bash", ".sql", ".scala",
-    ".sc", ".lua", ".m", ".mm",
+    ".sc", ".lua", ".m", ".mm", ".gd",
 }
 
 # Best-effort declaration patterns across the languages Lynx chunks; we capture
 # the declared *name*, which Lynx then resolves fuzzily.
 _DECL_PATTERNS = [
     re.compile(r"\bclass\s+([A-Za-z_]\w*)"),
+    re.compile(r"\bclass_name\s+([A-Za-z_]\w*)"),   # GDScript
     re.compile(r"\b(?:struct|interface|trait|enum|object|protocol)\s+([A-Za-z_]\w*)"),
     re.compile(r"\bdef\s+([A-Za-z_]\w*)"),
     re.compile(r"\bfunc(?:tion)?\s+([A-Za-z_]\w*)"),

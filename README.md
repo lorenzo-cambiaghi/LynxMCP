@@ -113,7 +113,7 @@ flowchart LR
     class RES,GT out;
 ```
 
-- Tree-sitter parses 18+ languages (19 grammars, counting TSX) and indexes whole functions and classes, not arbitrary text windows.
+- Tree-sitter parses 19+ languages (20 grammars, counting TSX) and indexes whole functions and classes, not arbitrary text windows.
 - Retrieval is hybrid: dense embeddings plus code-tokenized BM25, fused with RRF, with an optional cross-encoder reranker.
 - The code knowledge graph (opt-in) records who calls what, inheritance and imports, and answers "what breaks if I change this?" with the actual blast radius.
 - Sources can be codebases, public docs sites (fetched once, on demand; JS-rendered SPAs via optional headless Chromium) and PDFs, searched side by side.

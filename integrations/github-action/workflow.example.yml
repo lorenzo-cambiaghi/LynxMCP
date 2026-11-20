@@ -61,7 +61,7 @@ jobs:
                 "name": "repo",
                 "type": "codebase",
                 "path": ".",
-                "supported_extensions": [".py",".ts",".tsx",".js",".jsx",".go",".rs",".java",".rb",".php",".kt",".swift",".cs",".cpp",".c",".h",".scala",".lua",".sh",".sql",".m",".mm"],
+                "supported_extensions": [".py",".ts",".tsx",".js",".jsx",".go",".rs",".java",".rb",".php",".kt",".swift",".cs",".cpp",".c",".h",".scala",".lua",".sh",".sql",".m",".mm",".gd"],
                 "graph": { "enabled": true }
               }
             ]

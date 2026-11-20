@@ -2088,7 +2088,7 @@ AI can read as is.
 
 The chunker uses tree-sitter. Each grammar ships in its own pip package, so
 there are no runtime downloads and no network calls (the "100% local"
-guarantee holds). Supported out of the box: 18+ languages, 19 tree-sitter
+guarantee holds). Supported out of the box: 19+ languages, 20 tree-sitter
 grammars counting TSX. That is every row below plus a `.tsx` grammar
 distinct from `.ts`. The code graph covers all of them except SQL.
 
@@ -2112,6 +2112,11 @@ distinct from `.ts`. The code graph covers all of them except SQL.
 | `.sql` | SQL | `CREATE` table / function / view / procedure / trigger / index (named by the object reference) |
 | `.scala`, `.sc` | Scala | def, val, var, type (qualified by object / class / trait) |
 | `.lua` | Lua | functions, incl. `M.f` (dot) and `T:m` (method) forms |
+| `.gd` | GDScript | functions, `_init`, enums, inner classes; a script is a class, so its functions are qualified by its `class_name`, or by the file name when it has none (`Player.take_damage`, `enemy.attack`) |
+
+The GDScript grammar has wheels for Windows x64, Linux x86_64 and macOS on
+Apple silicon only, so it is installed there and nowhere else. On other
+platforms `.gd` files are indexed with the text splitter below.
 
 For anything else (`.md`, `.txt`, `.json`, `.yaml`, `.hlsl`, `.shader`,
 `.compute`, `.cginc`, …) Lynx falls back to a sentence-window splitter, the
@@ -2298,10 +2303,18 @@ it in sync the same way it does the RAG index.
 
 The graph extractor reuses the chunker's tree-sitter parsers. Languages with
 a graph rule: C#, Python, TypeScript/TSX, JavaScript, C/C++, Objective-C, Go,
-Rust, Java, Ruby, PHP, Kotlin, Swift, Scala, Lua, Bash. Scala and
+Rust, Java, Ruby, PHP, Kotlin, Swift, Scala, Lua, Bash, GDScript. Scala and
 Objective-C also add inheritance edges (Scala `extends` / `with`; Objective-C
 superclass + adopted protocols). For Lua and Bash it is the call graph only,
 since neither has classes.
+
+In GDScript each script is a class node, and its `extends` is an inheritance
+edge, whether it names a class (`extends CharacterBody2D`) or a script path
+(`extends "res://enemies/enemy.gd"`, which resolves to the script `enemy`). A
+script declared with `class_name` but extended by path does not resolve, since
+the path names the file and the class goes by another name. GDScript has no
+import statement: `preload` and `load` of a constant path, at the top of a
+script, and an `extends` by path count as its imports.
 SQL is chunked and searched but has no graph rule: its DDL has no
 call/inheritance/import structure to extract. Other unsupported file types
 (markdown, shaders, JSON) are skipped silently. They don't contribute to the
@@ -2454,7 +2467,7 @@ Graph layer (opt-in, `graph: { enabled: true }`):
 ```
 
 Both layers parse the source files with the same tree-sitter parsers
-(18+ languages / 19 grammars, sharing the parser cache; the graph covers
+(19+ languages / 20 grammars, sharing the parser cache; the graph covers
 all but SQL), and the same file watcher keeps both in sync (~2s after each
 save). The graph layer is backward compatible: leave it off and nothing
 changes.
@@ -2582,7 +2595,7 @@ lynx/
 │       │                      + graph layer pass-through
 │       ├── rag_manager.py     CodebaseRAG: hybrid retrieval, drift, BM25, deep_search,
 │       │                      per-file SHA-256 incremental cache
-│       ├── chunking.py        AST-aware chunker (tree-sitter, 18+ languages / 19 grammars +
+│       ├── chunking.py        AST-aware chunker (tree-sitter, 19+ languages / 20 grammars +
 │       │                      SentenceSplitter fallback) with CHUNKER_VERSION,
 │       │                      exposes `parse_file()` shared with graph layer
 │       ├── config.py          v2 config loader with per-type validation
@@ -2671,7 +2684,7 @@ lynx/
   is the explicit `webdoc` fetch, which the user triggers themselves.
   There is no implicit egress for `codebase` sources.
 - **AST chunking, not token windows.** Code is split at function / method /
-  class boundaries via tree-sitter (18+ languages / 19 grammars supported); other text falls
+  class boundaries via tree-sitter (19+ languages / 20 grammars supported); other text falls
   back to the legacy sentence-window splitter. Each chunk carries a
   qualified `symbol_name` and a 1-based `start_line`/`end_line` range so the
   AI can cite precisely (`Container.cs:L555-580`). Bumping `CHUNKER_VERSION`

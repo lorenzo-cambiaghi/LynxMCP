@@ -45,6 +45,14 @@ import tree_sitter_sql as ts_sql
 import tree_sitter_swift as ts_sw
 import tree_sitter_typescript as ts_ts
 
+try:
+    # Wheels exist for Windows x64, Linux x86_64 and macOS arm64 only, so
+    # pyproject.toml installs it on those platforms. Elsewhere `.gd` files
+    # are indexed as text, like any extension without a grammar.
+    import tree_sitter_gdscript as ts_gd
+except ImportError:
+    ts_gd = None
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -379,6 +387,40 @@ _LANG_RULES: dict = {
 }
 
 
+def gdscript_script_class(root, source: bytes, abs_path: str) -> Optional[str]:
+    """The class a GDScript file declares. A script is a class: its
+    functions are methods, and `extends` at the top is its base. A script
+    with `class_name Player` is the class `Player`; one without is known by
+    its path in Godot, so it takes the file stem."""
+    for child in root.children:
+        if child.type == "class_name_statement":
+            name = child.child_by_field_name("name")
+            if name is not None and _node_text(source, name).strip():
+                return _node_text(source, name).strip()
+    return Path(abs_path).stem or None
+
+
+if ts_gd is not None:
+    _LANG_RULES["gdscript"] = {
+        "parser_factory": lambda: _ts_language(ts_gd.language),
+        # Inner classes (`class Foo extends Bar:`). The script itself is a
+        # class too, named by `script_class` below.
+        "container_types": {"class_definition"},
+        "chunk_types": {
+            "function_definition",
+            "constructor_definition",
+            "enum_definition",
+        },
+        "name_node_types": ["name"],
+        # `func _init()` has no name field: `_init` is a keyword token.
+        "default_names": {"constructor_definition": "_init"},
+        # `@rpc` or `@warning_ignore(...)` on the line above a `func` is a
+        # sibling node in this grammar, not part of the function.
+        "prelude_types": frozenset({"annotation"}),
+        "script_class": gdscript_script_class,
+    }
+
+
 # Map file extensions to language keys above.
 _EXT_TO_LANG: dict = {
     ".cs":   "c_sharp",
@@ -415,6 +457,8 @@ _EXT_TO_LANG: dict = {
     # this table; `language_for_path` upgrades it to objc when the file content
     # carries Objective-C markers (see `_looks_like_objc`).
 }
+if "gdscript" in _LANG_RULES:
+    _EXT_TO_LANG[".gd"] = "gdscript"
 
 
 def grammar_extensions() -> list:
@@ -522,15 +566,20 @@ def _last_row(node) -> int:
     return row - 1 if col == 0 and row > node.start_point[0] else row
 
 
-def _leading_comment_start(node) -> tuple:
+def _leading_comment_start(node, prelude: frozenset = frozenset()) -> tuple:
     """(start_byte, start_row) of `node` widened to the comment block right
-    above it: `///` XML docs, `/** */` Javadoc and JSDoc, Go and Rust `//`.
+    above it: `///` XML docs, `/** */` Javadoc and JSDoc, Go and Rust `//`,
+    GDScript `##`.
 
     Tree-sitter puts those comments next to the declaration, not inside it,
     so slicing the node alone drops the one natural-language description the
     code has. The block stops at a blank line, so a file banner or an
     unrelated note further up stays out, and at a comment that trails the
     previous statement on its own row (`int x; // count`).
+
+    `prelude` lists node types that belong to the declaration below them
+    though the grammar makes them siblings: a GDScript annotation on its own
+    line (`@rpc` above `func`), with the doc comment above it.
     """
     anchor = node
     while (anchor.prev_named_sibling is None and anchor.parent is not None
@@ -539,17 +588,36 @@ def _leading_comment_start(node) -> tuple:
     start_byte, start_row = node.start_byte, node.start_point[0]
     top_row = anchor.start_point[0]
     prev = anchor.prev_sibling
-    while prev is not None and _is_comment(prev):
+    while prev is not None and (_is_comment(prev) or prev.type in prelude):
         if _last_row(prev) < top_row - 1:
             break                               # a blank line in between
         before = prev.prev_sibling
         if (before is not None and not _is_comment(before)
+                and before.type not in prelude
                 and _last_row(before) >= prev.start_point[0]):
             break                               # trails the previous statement
         start_byte, start_row = prev.start_byte, prev.start_point[0]
         top_row = start_row
         prev = before
     return start_byte, start_row
+
+
+def _is_attached_prelude(node, rules: dict) -> bool:
+    """True for a prelude node (see `_leading_comment_start`) that the
+    declaration below it takes into its chunk, so the header or the type
+    skeleton must not repeat it."""
+    prelude = rules.get("prelude_types", frozenset())
+    if node.type not in prelude:
+        return False
+    declarations = rules["chunk_types"] | rules["container_types"]
+    current, following = node, node.next_sibling
+    while following is not None and following.start_point[0] <= _last_row(current) + 1:
+        if following.type in declarations:
+            return True
+        if not (_is_comment(following) or following.type in prelude):
+            return False
+        current, following = following, following.next_sibling
+    return False
 
 
 def _type_skeleton(node, source: bytes, rules: dict, start_byte: int) -> str:
@@ -572,7 +640,8 @@ def _type_skeleton(node, source: bytes, rules: dict, start_byte: int) -> str:
         return ""
     members = []
     for child in body.children:
-        if not child.is_named or _is_comment(child) or child.type in skip:
+        if (not child.is_named or _is_comment(child) or child.type in skip
+                or _is_attached_prelude(child, rules)):
             continue
         # A wrapper holding a member that is chunked on its own
         # (`export function`, a decorated method) is that member.
@@ -607,6 +676,8 @@ def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
     container_types = rules["container_types"]
     chunk_types = rules["chunk_types"]
     name_node_types = rules["name_node_types"]
+    default_names = rules.get("default_names", {})
+    prelude = rules.get("prelude_types", frozenset())
 
     for child in node.children:
         if not child.is_named:
@@ -614,9 +685,10 @@ def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
             # type as the class node and used to come out as a chunk.
             continue
         if child.type in chunk_types:
-            name = _extract_name(child, name_node_types) or "<anonymous>"
+            name = (_extract_name(child, name_node_types)
+                    or default_names.get(child.type) or "<anonymous>")
             full_name = ".".join(container_path + [name]) if container_path else name
-            start_byte, start_row = _leading_comment_start(child)
+            start_byte, start_row = _leading_comment_start(child, prelude)
             chunks.append({
                 "text": source[start_byte:child.end_byte].decode("utf-8", errors="replace"),
                 "symbol_name": full_name,
@@ -627,7 +699,7 @@ def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
         elif child.type in container_types:
             container_name = _extract_name(child, name_node_types) or "<container>"
             qualified = ".".join(container_path + [container_name])
-            start_byte, start_row = _leading_comment_start(child)
+            start_byte, start_row = _leading_comment_start(child, prelude)
             inner = _walk(child, source, rules, container_path + [container_name])
             if inner:
                 skeleton = _type_skeleton(child, source, rules, start_byte)
@@ -672,7 +744,7 @@ def _collect_header_text(root, source: bytes, rules: dict) -> str:
             continue
         # Skip comments — they're attached to whatever they precede in our
         # rendering, no need to make them a standalone chunk.
-        if _is_comment(child):
+        if _is_comment(child) or _is_attached_prelude(child, rules):
             continue
         # `export class K {...}` is the class, which has chunks of its own;
         # copying it here put every exported TypeScript class in the header.
@@ -763,6 +835,15 @@ def parse_file(abs_path: str, content: str) -> "Optional[tuple]":
     return tree, lang_key, rules
 
 
+def script_class_path(root, source: bytes, rules: dict, abs_path: str) -> list:
+    """The container every top-level symbol of the file sits in: `[name]`
+    for a language whose files are classes (GDScript), `[]` elsewhere. The
+    graph layer uses it too, so chunk names and graph labels agree."""
+    hook = rules.get("script_class")
+    name = hook(root, source, abs_path) if hook is not None else None
+    return [name] if name else []
+
+
 def chunk_file(abs_path: str, content: str) -> list:
     """Chunk one file. Returns a list of chunk dicts ready to embed.
 
@@ -803,7 +884,8 @@ def chunk_file(abs_path: str, content: str) -> list:
 
     tree, lang_key, rules = parsed
     source = content.encode("utf-8")
-    chunks = _walk(tree.root_node, source, rules, container_path=[])
+    chunks = _walk(tree.root_node, source, rules,
+                   container_path=script_class_path(tree.root_node, source, rules, abs_path))
 
     # Header chunk: imports / using / top-level statements.
     header_text = _collect_header_text(tree.root_node, source, rules)

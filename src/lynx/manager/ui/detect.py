@@ -24,7 +24,9 @@ _IGNORED_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__",
     ".idea", ".vscode", "dist", "build", "target", ".next", "obj",
 }
-_IGNORED_EXTS = {".pyc", ".so", ".dylib", ".dll", ".class", ".o"}
+# `.import` and `.uid` are Godot's per-asset and per-script sidecar files:
+# as many as the scripts, and nothing to search in them.
+_IGNORED_EXTS = {".pyc", ".so", ".dylib", ".dll", ".class", ".o", ".import", ".uid"}
 
 
 def detect_extensions(folder: Path, top_n: int = 10) -> list:

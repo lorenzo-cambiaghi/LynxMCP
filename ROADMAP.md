@@ -54,9 +54,9 @@ goes further, with six graph functions (`lynx.callers`, `callees`, `subclasses`,
 follow-up PR bringing them to the registry is staged, not yet opened.
 
 ### More language parsers
-Lynx ships tree-sitter grammars for 18+ languages today (Python, TypeScript,
+Lynx ships tree-sitter grammars for 19+ languages today (Python, TypeScript,
 JavaScript, C#, C, C++, Go, Rust, Java, Ruby, PHP, Kotlin, Swift, Bash, SQL,
-Scala, Lua, Objective-C). Adding more is cheap and additive: each grammar is a small wheel
+Scala, Lua, Objective-C, GDScript). Adding more is cheap and additive: each grammar is a small wheel
 bundled in the install, no runtime download. Demand decides what comes next
 (Elixir, Zig and HTML/CSS are candidates); open an issue with the language you need and it
 moves up. A few (notably Dart and R) are on hold: their community tree-sitter
