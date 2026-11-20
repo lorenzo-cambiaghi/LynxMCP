@@ -114,11 +114,17 @@ def doc_of(content: str, language: str = "") -> str:
     return ""
 
 
+# A decorator or attribute line between a doc comment and its declaration:
+# `@rpc("any_peer")`, `@Override`, `[Command]`, `#[inline]`.
+_ANNOTATION_LINE = re.compile(r"^\s*(?:@\w|#\[|\[[^\]]*\]\s*$)")
+
+
 def doc_above(lines: list, index: int) -> str:
     """The doc line of the comment block ending right above `lines[index]`
     (0-based): what `doc_of` would read had the chunk started there. Used
     where a symbol's lines come from the graph, which points at the
-    declaration itself."""
+    declaration itself. Decorator and attribute lines in between are stepped
+    over, as `snippets._lead_in` does, and never read as the doc."""
     j = index
     while j > 0:
         prev = lines[j - 1]
@@ -126,13 +132,14 @@ def doc_above(lines: list, index: int) -> str:
         if not stripped:
             break
         if (_LINE_COMMENT.match(prev) or stripped.startswith(("/*", "*", "*/"))
-                or stripped.endswith("*/")):
+                or stripped.endswith("*/") or _ANNOTATION_LINE.match(prev)):
             j -= 1
             continue
         break
-    if j == index:
+    comment = [line for line in lines[j:index] if not _ANNOTATION_LINE.match(line)]
+    if not comment:
         return ""
-    return _first_doc_line("\n".join(lines[j:index]))
+    return _first_doc_line("\n".join(comment))
 
 
 def _preview_line(content: str) -> str:

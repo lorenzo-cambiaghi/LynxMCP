@@ -140,3 +140,17 @@ def test_embedding_text_carries_path_and_name_not_bookkeeping(tmp_path):
     assert method.get_content(metadata_mode=MetadataMode.NONE) == method.text
     header = next(n for n in nodes if n.metadata["symbol_name"] == "<header>")
     assert "symbol_name" not in header.get_content(metadata_mode=MetadataMode.EMBED)
+
+
+def test_doc_above_steps_over_decorators_and_attributes():
+    from lynx.outline import doc_above
+
+    gd = ["## Fires the weapon.", '@rpc("any_peer")', "func fire():", "\tpass"]
+    assert doc_above(gd, 2) == "Fires the weapon."
+    cs = ["/// <summary>Opens the door.</summary>", "[Command]", "[Obsolete]",
+          "public void Open() {}"]
+    assert doc_above(cs, 3) == "Opens the door."
+    rust = ["/// Adds one.", "#[inline]", "fn inc(x: u8) -> u8 { x + 1 }"]
+    assert doc_above(rust, 2) == "Adds one."
+    # An attribute alone is not a doc.
+    assert doc_above(["[Command]", "public void Open() {}"], 1) == ""

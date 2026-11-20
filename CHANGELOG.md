@@ -32,6 +32,14 @@ indexes in 1.6.0, against what its changelog entry said. The cache now
 records which extensions had a grammar, and when that list changes, the
 files of those extensions are re-chunked in place, and only those.
 
+`describe_symbol` and `module_summary` lost the doc comment of a symbol with
+a decorator or an attribute between the comment and the declaration
+(`@rpc`, `@Override`, `[Command]`, `#[inline]`). Search results had it.
+
+`search` switched to outlines too early when long chunks came first: its
+16,000-character budget counted each chunk whole instead of the 4,000
+characters it shows.
+
 ## 1.10.0 - 2026-11-20
 
 Upgrading from 1.9.0: the first start rebuilds every code graph once,

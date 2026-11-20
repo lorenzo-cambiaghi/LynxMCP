@@ -127,7 +127,8 @@ def _render_results(results) -> str:
             out.append(_format_one_outline(i, res))
             continue
         block = _format_one_result(i, res)
-        used += len(res.get("content") or "")
+        # What the answer holds, not the chunk: an 8,000-char chunk shows 4,000.
+        used += len(_capped(res.get("content") or "", RESULT_BODY_CHARS)[0])
         out.append(block)
     return "".join(out)
 

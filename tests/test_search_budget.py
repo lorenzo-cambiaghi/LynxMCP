@@ -31,3 +31,15 @@ def test_past_the_budget_the_rest_comes_as_outlines():
     # Every hit is still ranked and cited.
     for i in range(1, 9):
         assert f"--- {i}. src/f{i}.py" in text
+
+
+def test_the_budget_counts_the_code_shown_not_the_whole_chunk():
+    # An 8,000-char chunk shows at most 4,000 chars. Counted whole, two of
+    # them already spent the 16,000 budget and the third came as an outline.
+    from lynx._format import RESULT_BODY_CHARS, RESPONSE_BODY_CHARS, _format_search_results
+
+    assert 4 * RESULT_BODY_CHARS >= RESPONSE_BODY_CHARS > 2 * RESULT_BODY_CHARS
+    hits = [_hit(i, RESULT_BODY_CHARS * 2) for i in range(1, 8)]
+    text = _format_search_results("q", hits, "source 'x'", "")
+    assert text.count("more lines, cut at") >= 4
+    assert "Output budget" in text
