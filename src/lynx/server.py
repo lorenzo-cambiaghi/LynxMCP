@@ -994,7 +994,28 @@ def _slim_tool_schemas(mcp) -> None:
             fm.wrap_output = False
 
 
-def run_server(config_path=None, profile: str | None = None):
+def only_sources(config, names):
+    """`config` restricted to the sources `names` lists, in that order.
+
+    Lets one config describe every repository while each project's MCP entry
+    serves only its own (`lynx serve --source game --source engine-docs`):
+    the session opens those indexes and no other, and a tool's `source`
+    argument can be left out when one source remains. An unknown name stops
+    the server with the list of known ones, since a typo would otherwise
+    serve nothing at all.
+    """
+    if not names:
+        return config
+    import dataclasses
+    wanted = list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+    unknown = [n for n in wanted if n not in config.sources]
+    if unknown:
+        raise ValueError(
+            f"unknown source(s) {unknown}; the config has: {sorted(config.sources)}")
+    return dataclasses.replace(config, sources={n: config.sources[n] for n in wanted})
+
+
+def run_server(config_path=None, profile: str | None = None, sources=None):
     """Boot the MCP server. Blocks until the client disconnects.
 
     The handshake does not wait for the indexes. Everything it needs (which
@@ -1005,6 +1026,11 @@ def run_server(config_path=None, profile: str | None = None):
     arrives before the indexes are open waits a bounded time, then answers
     with the loading state and asks to be retried (see `startup.py`)."""
     config = load_config(config_path=config_path)
+    try:
+        config = only_sources(config, sources)
+    except ValueError as e:
+        print(f"[server] FATAL: --source: {e}", file=sys.stderr)
+        sys.exit(2)
     try:
         profile_name = resolve_profile(config, profile)
     except ToolProfileError as e:

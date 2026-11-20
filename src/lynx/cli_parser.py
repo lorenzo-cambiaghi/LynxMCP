@@ -207,8 +207,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_serve.add_argument("--config", "-c", metavar="PATH")
     sp_serve.add_argument(
         "--profile", choices=["core", "standard", "full"],
-        help="Which tools to expose: core (5), standard (11, default) or full "
+        help="Which tools to expose: core (5), standard (12, default) or full "
              "(17). Overrides LYNX_TOOL_PROFILE and tools.profile in config.json.",
+    )
+    sp_serve.add_argument(
+        "--source", "-s", metavar="NAME", action="append", dest="sources",
+        help="Serve only this source of the config (repeatable). One config can "
+             "list every repository; each project's MCP entry names the sources "
+             "it needs, and only those indexes are opened.",
     )
 
     sp_build = sub.add_parser(

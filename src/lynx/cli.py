@@ -201,6 +201,7 @@ def _cmd_serve(args) -> int:
     run_server(
         config_path=getattr(args, "config", None),
         profile=getattr(args, "profile", None),
+        sources=getattr(args, "sources", None),
     )
     return 0
 
