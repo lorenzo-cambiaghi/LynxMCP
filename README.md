@@ -56,6 +56,8 @@ Then register Lynx in your MCP client. Claude Code is shown; the [full guide](do
 }
 ```
 
+One config can hold all your repositories, each as a source. A session opens every index in its config, so a project's entry can name only the sources it needs: add `"--source", "game"` to `args`, once per source. Several sessions can share a source; the first one owns the index and the others read it ([details](docs/GUIDE.md#tool-profiles)).
+
 The server answers the MCP handshake in about a second and opens the indexes in the background; a call that arrives earlier gets the loading state back and is retried. If you would rather skip the terminal, there are [double-click installers](https://github.com/lorenzo-cambiaghi/LynxMCP/releases) for macOS and Windows.
 
 ## The tools your AI gets
