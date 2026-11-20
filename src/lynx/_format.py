@@ -259,9 +259,15 @@ def _by_file(items, path_of) -> list:
     return list(groups.items())
 
 
+# How sure the graph is of an edge: `extracted` (both ends in one file) and
+# `resolved` (one cross-file candidate) are the norm; only the rest is worth
+# a word on every line.
+_SURE_EDGES = frozenset({"resolved", "extracted"})
+
+
 def _conf_tag(conf) -> str:
-    """Only the exception is spelled out: an edge is resolved unless it says so."""
-    return f" ({conf})" if conf and conf != "resolved" else ""
+    """Only the exception is spelled out: an edge is certain unless it says so."""
+    return f" ({conf})" if conf and conf not in _SURE_EDGES else ""
 
 
 # Which end of an edge a one-directional operation is about: the callers of
