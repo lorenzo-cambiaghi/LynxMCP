@@ -59,6 +59,7 @@ import json
 from datetime import datetime
 
 from .chunking import chunk_file, grammar_extensions, CHUNKER_VERSION
+from .file_kinds import is_secondary
 from . import fs_scan
 
 
@@ -136,12 +137,23 @@ def read_collection_rows(collection, include=("documents", "metadatas")) -> dict
     return rows
 
 
+def lexical_tokens(content: str, file_path: str, symbol_name: str) -> list:
+    """A chunk's BM25 document: its body, then the last folders and name of
+    its file and its symbol name. The body alone missed a question in plain
+    words that names the file ("label overlays") whenever the body did not
+    repeat it. Measured (lynx-zombie-bench E17, E18): MRR +0.01 to +0.05 on
+    every query set, for no index change."""
+    tail = (file_path or "").replace("\\", "/").split("/")[-4:]
+    named = " ".join(tail) + " " + (symbol_name or "").replace("#", " ")
+    return _tokenize_code(content or "") + _tokenize_code(named)
+
+
 def lexical_corpus(rows: dict) -> tuple:
     """Tokenized BM25 documents and the display metadata, keyed by chunk id."""
     docs: dict = {}
     meta: dict = {}
     for cid, (content, m) in rows.items():
-        docs[cid] = _tokenize_code(content or "")
+        docs[cid] = lexical_tokens(content or "", m.get("file_path", ""), m.get("symbol_name", ""))
         meta[cid] = {
             "file": m.get("file_name", "unknown"),
             "file_path": m.get("file_path", ""),
@@ -376,6 +388,7 @@ class CodebaseRAG:
         search_mode: str = "hybrid",
         rrf_k: int = 60,
         candidate_pool_size: int = 30,
+        secondary_weight: float = 0.5,
         reranker_config=None,  # RerankerConfig | None — optional cross-encoder rerank
         ignored_path_fragments=(),
         ignored_globs=(),
@@ -418,6 +431,9 @@ class CodebaseRAG:
         self.search_mode = search_mode
         self.rrf_k = int(rrf_k)
         self.candidate_pool_size = int(candidate_pool_size)
+        # Tests, data and docs rank after the code they describe: their fused
+        # score is multiplied by this (1.0 turns it off). See file_kinds.py.
+        self.secondary_weight = float(secondary_weight)
 
         # Optional cross-encoder reranker. We hold the config so search()
         # knows top_n_before_rerank; the actual Reranker object is
@@ -1322,6 +1338,7 @@ class CodebaseRAG:
                                             fallback_n=self._widened_pool(pool, scope))
             sparse_hits = self._bm25_lookup(query, pool, files=scope)
             results = self._rrf_fuse([dense_hits, sparse_hits], k=self.rrf_k, top_k=pool)
+            results = self._rank_code_first(results)
 
         if has_filters:
             results = [
@@ -1863,7 +1880,8 @@ class CodebaseRAG:
                 continue
             meta = getattr(n, "metadata", None) or {}
             content = getattr(n, "text", "") or ""
-            self._bm25_docs[cid] = _tokenize_code(content)
+            self._bm25_docs[cid] = lexical_tokens(content, meta.get("file_path", ""),
+                                                  meta.get("symbol_name", ""))
             self._bm25_meta[cid] = {
                 "file": meta.get("file_name", "unknown"),
                 "file_path": meta.get("file_path", ""),
@@ -1934,6 +1952,27 @@ class CodebaseRAG:
                 "content": meta.get("content", ""),
                 "score": float(scores[i]),
             })
+        return out
+
+    def _rank_code_first(self, results: list) -> list:
+        """Multiply the fused score of tests, data and docs by
+        `secondary_weight` and sort again: they stay in the results, after
+        the code (see file_kinds.py for the measurement)."""
+        weight = getattr(self, "secondary_weight", 1.0)
+        if weight == 1.0 or not results:
+            return results
+        root = str(getattr(self, "codebase_path", "") or "")
+        out = []
+        for item in results:
+            path = item.get("file_path", "")
+            try:
+                rel = os.path.relpath(path, root) if root and path else path
+            except ValueError:          # another drive on Windows
+                rel = path
+            if is_secondary(rel):
+                item = {**item, "score": item.get("score", 0.0) * weight}
+            out.append(item)
+        out.sort(key=lambda i: i.get("score", 0.0), reverse=True)
         return out
 
     def _rrf_fuse(self, rankings: list, k: int, top_k: int) -> list:
