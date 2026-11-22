@@ -38,7 +38,15 @@ from llama_index.core.bridge.pydantic import Field, PrivateAttr
 from .model_files import ModelFiles, resolve_model_files
 
 DEFAULT_MAX_LENGTH = 512
-DEFAULT_EMBED_BATCH_SIZE = 8
+# How many texts LlamaIndex hands over per call: all it can (its field caps
+# at 2048), so a group of pieces from many files is sorted by length as one
+# (see _encode_batched). At 8, LlamaIndex cut each insert into calls of 8 and
+# the sort only ever saw 8 pieces.
+DEFAULT_EMBED_BATCH_SIZE = 2048
+# Texts per ONNX run, after the sort. lynx-zombie-bench E33, 2,202 pieces of
+# a TypeScript game: file by file in runs of 8 (as the index did) 163.7 s;
+# sorted together in runs of 8 62.1 s, 16 54.0 s, 32 52.6 s; vectors equal.
+DEFAULT_RUN_SIZE = 32
 
 # Query instructions LlamaIndex's HuggingFaceEmbedding applied for these exact
 # model ids (`llama_index.embeddings.huggingface.utils`). Reproduced verbatim:
@@ -235,12 +243,14 @@ class OnnxEmbedding(BaseEmbedding):
     max_length: int = Field(default=DEFAULT_MAX_LENGTH, description="Token limit per text.")
 
     _runtime: Any = PrivateAttr(default=None)
+    _run_size: int = PrivateAttr(default=DEFAULT_RUN_SIZE)
 
     def __init__(
         self,
         model_name: str,
         *,
         embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE,
+        run_size: int = DEFAULT_RUN_SIZE,
         normalize: bool = True,
         query_instruction: Optional[str] = None,
         text_instruction: Optional[str] = None,
@@ -259,6 +269,7 @@ class OnnxEmbedding(BaseEmbedding):
             **kwargs,
         )
         self._runtime = runtime
+        self._run_size = max(1, int(run_size))
 
     @classmethod
     def class_name(cls) -> str:
@@ -289,14 +300,14 @@ class OnnxEmbedding(BaseEmbedding):
         return self._encode_batched(self._format_texts(list(texts)))
 
     def _encode_batched(self, items: List[str]) -> List[List[float]]:
-        """Encode in batches of `embed_batch_size`, grouping texts of similar
-        length first so a batch pads to its longest member and not to the
-        longest chunk of the whole call. Measured on 200 real C# chunks:
-        16.9 s unsorted at batch 32, 14.1 s sorted at batch 8, which is why
-        the default batch is small. The original order is restored."""
+        """Encode in ONNX runs of `run_size`, grouping texts of similar length
+        first so a run pads to its longest member and not to the longest
+        chunk of the whole call. The longer the call, the better the sort
+        works: the index now inserts pieces of many files at once (see
+        DEFAULT_RUN_SIZE for the numbers). The original order is restored."""
         if not items:
             return []
-        step = max(1, int(self.embed_batch_size))
+        step = self._run_size
         order = sorted(range(len(items)), key=lambda i: len(items[i]))
         out: List[Optional[List[float]]] = [None] * len(items)
         for start in range(0, len(order), step):

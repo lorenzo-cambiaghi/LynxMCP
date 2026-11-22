@@ -55,3 +55,33 @@ def build_rag_from_first_source(config_path):
         candidate_pool_size=cfg.search.candidate_pool_size,
     )
     return cfg, name, rag
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def _codebase_rag_pristine():
+    from lynx.rag_manager import CodebaseRAG
+    return CodebaseRAG, dict(vars(CodebaseRAG))
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _codebase_rag_restored(_codebase_rag_pristine):
+    """Put CodebaseRAG back as it was at the start of the session when each
+    test module ends.
+
+    Several older tests stub it by assigning to the class
+    (`CodebaseRAG.__init__ = stub_init`), some in module-scoped fixtures, and
+    never restore it, so every module collected after them got the stub: a
+    real build there indexed nothing (found 2026-11-22 when
+    tests/test_grouped_insert.py passed alone and failed in the suite). Per
+    module, not per test, so a stub a module sets up for all its tests lives
+    exactly as long as that module."""
+    yield
+    cls, saved = _codebase_rag_pristine
+    for name in [n for n in vars(cls) if n not in saved]:
+        delattr(cls, name)
+    for name, value in saved.items():
+        if vars(cls).get(name) is not value:
+            setattr(cls, name, value)

@@ -372,6 +372,11 @@ def _norm(path) -> str:
     return os.path.normpath(os.path.abspath(str(path)))
 
 
+# Pieces inserted (and embedded) per call during a build; see the loop in
+# CodebaseRAG's update.
+INSERT_GROUP_NODES = 512
+
+
 class CodebaseRAG:
     """Manages indexing and search over a codebase.
 
@@ -1026,6 +1031,38 @@ class CodebaseRAG:
             dropped = 0    # old chunks of changed files, deleted in the loop
             indexed = {}   # abs_path -> chunk count actually inserted
             failed = []    # insert raised: nothing of this file is in the index
+            # Pieces of many files go in together: the embedder sorts a call
+            # by length before cutting it into ONNX runs, and one file's 4-5
+            # pieces gave it nothing to sort (E33: 3.1 times faster, same
+            # vectors). A group that fails is retried file by file, after
+            # removing what it wrote, so a bad file is still the only one
+            # left out.
+            pending: list = []
+            pending_nodes = 0
+
+            def flush() -> None:
+                nonlocal total_nodes, pending, pending_nodes
+                if not pending:
+                    return
+                try:
+                    index.insert_nodes([n for _p, ns in pending for n in ns])
+                    for p, ns in pending:
+                        indexed[p] = len(ns)
+                        total_nodes += len(ns)
+                except Exception as e:
+                    log(f"[rag] insert of {len(pending)} file(s) failed ({e}); "
+                        f"retrying them one at a time")
+                    for p, ns in pending:
+                        self._delete_file_chunks(p)
+                        try:
+                            index.insert_nodes(ns)
+                            indexed[p] = len(ns)
+                            total_nodes += len(ns)
+                        except Exception as e2:
+                            log(f"[rag] insert failed for {p}: {e2}")
+                            failed.append(p)
+                pending, pending_nodes = [], 0
+
             for abs_path in files_to_index:
                 nodes = self._build_nodes_for_file(abs_path)
                 if abs_path in changed:
@@ -1036,13 +1073,11 @@ class CodebaseRAG:
                     # and so a coverage check knows the absence is expected.
                     indexed[abs_path] = 0
                     continue
-                try:
-                    index.insert_nodes(nodes)
-                    total_nodes += len(nodes)
-                    indexed[abs_path] = len(nodes)
-                except Exception as e:
-                    log(f"[rag] insert failed for {abs_path}: {e}")
-                    failed.append(abs_path)
+                pending.append((abs_path, nodes))
+                pending_nodes += len(nodes)
+                if pending_nodes >= INSERT_GROUP_NODES:
+                    flush()
+            flush()
 
             # Prove the writes landed before trusting them. An insert can fail
             # WITHOUT raising — stale rows in chroma's `acquire_write` (left by
