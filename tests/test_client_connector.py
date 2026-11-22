@@ -119,7 +119,37 @@ def test_render_snippet_contains_expected_structure(tmp_path):
     assert parsed["mcpServers"]["lynx"]["command"] == "/bin/py"
 
 
-def test_cli_connect_list_and_dry_run(tmp_path, capsys):
+def _isolated_profile(monkeypatch, root: Path) -> None:
+    """Point every place a client keeps its config at `root`, so a test never
+    reads the real user's editors."""
+    for var, sub in (("HOME", "home"), ("USERPROFILE", "home"), ("APPDATA", "appdata"),
+                     ("LOCALAPPDATA", "localappdata"), ("XDG_CONFIG_HOME", "xdg")):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv(var, str(root / sub))
+
+
+def test_a_denied_client_folder_is_that_clients_error_not_a_crash(tmp_path, monkeypatch, capsys):
+    from lynx.client_connector import CLIENTS, inspect_all_clients, resolve_client_config_path
+    _isolated_profile(monkeypatch, tmp_path)
+    denied = next(p for p in (resolve_client_config_path(s) for s in CLIENTS if s.key == "cursor") if p)
+    real_exists = Path.exists
+
+    def exists(self, *a, **k):
+        if str(self).startswith(str(denied.parent)):
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    statuses = {s.spec.key: s for s in inspect_all_clients()}
+    assert "Access is denied" in (statuses["cursor"].error or "")
+    assert statuses["claude"].error is None
+    assert cli_main(["connect", "--json"]) == 0
+    keys = {c["key"] for c in json.loads(capsys.readouterr().out)}
+    assert {"claude", "cursor", "vscode"} <= keys
+
+
+def test_cli_connect_list_and_dry_run(tmp_path, capsys, monkeypatch):
+    _isolated_profile(monkeypatch, tmp_path / "profile")
     rc = cli_main(["connect", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)

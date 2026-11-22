@@ -310,9 +310,9 @@ def _lynx_names(servers) -> List[str]:
 
 def _read_json_dict(path: Path) -> Tuple[Optional[dict], Optional[str]]:
     """Read a JSON object from `path`. Missing/empty file -> `{}`."""
-    if not path.exists():
-        return {}, None
     try:
+        if not path.exists():
+            return {}, None
         raw_text = path.read_text(encoding="utf-8-sig")
     except OSError as e:
         return None, f"Could not read {path}: {e}"
@@ -374,8 +374,17 @@ def inspect_client(
     if cfg_path is None:
         return ClientStatus(spec=spec, config_path=None, detected=False, connected=False)
 
-    detected = cfg_path.exists() or cfg_path.parent.exists()
-    if not cfg_path.exists():
+    # `Path.exists()` raises on a denied folder (only "not found" errors are
+    # swallowed): one client's sandboxed or locked folder must show as that
+    # client's error, not stop `lynx connect` and the Integrations page from
+    # listing the others.
+    try:
+        present = cfg_path.exists()
+        detected = present or cfg_path.parent.exists()
+    except OSError as e:
+        return ClientStatus(spec=spec, config_path=cfg_path, detected=False, connected=False,
+                            error=f"Could not read {cfg_path}: {e}")
+    if not present:
         return ClientStatus(spec=spec, config_path=cfg_path, detected=detected, connected=False)
 
     data, err = _read_json_dict(cfg_path)
