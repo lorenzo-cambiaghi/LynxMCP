@@ -24,8 +24,11 @@ Design notes
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import os
+import sys
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -123,6 +126,19 @@ class LangGraphRules:
     call_accessor_types: frozenset = frozenset()
     call_accessor_field: str = "name"
 
+    # Grammars that keep the receiver as a field of the call node itself
+    # (Java `method_invocation`: `object`, `name`). A call with that field is
+    # a member call; without it Java's `list.add()` was a plain call to the
+    # one project method named `add`.
+    call_receiver_field: Optional[str] = None
+
+    # A declaration whose value is a function is a function too, named by
+    # the declaration: `const pickActor = (x) => ...`, `f = () => ...` in a
+    # class body. Until 2026-11-22 these had no node, so a TS/JS codebase
+    # written with arrow functions had no callers or callees for them.
+    declarator_types: frozenset = frozenset()
+    function_value_types: frozenset = frozenset()
+
     # Some grammars (PHP `member_call_expression`, `scoped_call_expression`)
     # don't wrap the callee in an accessor node — instead the method name is
     # a direct field on the call node itself. List those call types here.
@@ -209,9 +225,170 @@ def _first_keyword_child(node) -> Optional[str]:
 # to resolve every path alias / extension rewrite the way graphify does.
 
 
+# What an import may resolve to, and a cache of file-system lookups, for one
+# builder operation (a rebuild, one file's update). `accepts` says whether a
+# path is a file of the index (inside the codebase, a supported extension,
+# not ignored): an import naming a file outside it is unresolved, as for a
+# package, instead of a stub named after that file. Without a context (an
+# isolated extract_file) every existing file is accepted and nothing cached.
+_ACCEPTS: contextvars.ContextVar = contextvars.ContextVar("lynx_graph_accepts", default=None)
+_STATS: contextvars.ContextVar = contextvars.ContextVar("lynx_graph_stats", default=None)
+
+
+@contextlib.contextmanager
+def resolution_context(accepts: Optional[Callable[[str], bool]] = None):
+    """Imports resolve only to files `accepts` admits, and file-system
+    lookups are cached until the block ends (the tree does not change during
+    one builder operation)."""
+    a = _ACCEPTS.set(accepts)
+    s = _STATS.set({})
+    try:
+        yield
+    finally:
+        _ACCEPTS.reset(a)
+        _STATS.reset(s)
+
+
+def _stat(kind: str, path: str) -> bool:
+    cache = _STATS.get()
+    key = (kind, path)
+    if cache is not None and key in cache:
+        return cache[key]
+    hit = os.path.isfile(path) if kind == "f" else os.path.exists(path)
+    if cache is not None:
+        cache[key] = hit
+    return hit
+
+
+def _is_file(path: str) -> bool:
+    return _stat("f", path)
+
+
+def _exists(path: str) -> bool:
+    return _stat("e", path)
+
+
+def _admitted(path: str) -> bool:
+    accepts = _ACCEPTS.get()
+    if accepts is None:
+        return True
+    cache = _STATS.get()
+    key = ("a", path)
+    if cache is not None and key in cache:
+        return cache[key]
+    hit = accepts(path)
+    if cache is not None:
+        cache[key] = hit
+    return hit
+
+
+def _memo(kind: str, file_path: str, module: str, resolve: Callable[[], Optional[str]]) -> Optional[str]:
+    """What an import resolves to depends only on the importing file's
+    folder and the specifier: within one builder operation every file of a
+    folder importing `three` or `./util` asks once."""
+    cache = _STATS.get()
+    if cache is None:
+        return resolve()
+    key = (kind, os.path.dirname(os.path.abspath(file_path)), module)
+    if key not in cache:
+        cache[key] = resolve()
+    return cache[key]
+
+
+_PY_ROOT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg", ".git")
+_PY_ROOT_LEVELS = 4
+_PY_STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+
+def _python_module_file(base: str, parts: list) -> Optional[str]:
+    """`base/a/b/__init__.py` (a package) or `base/a/b.py`, as Python's path
+    finder prefers them; None when neither exists."""
+    path = os.path.join(base, *parts)
+    for c in (os.path.join(path, "__init__.py"), path + ".py", path + ".pyi"):
+        if _is_file(c):
+            c = os.path.normpath(os.path.abspath(c))
+            return c if _admitted(c) else None
+    return None
+
+
+def _python_roots(file_path: str) -> list:
+    """Where an absolute import of `file_path` is looked for: the folder that
+    holds its outermost package, then up to _PY_ROOT_LEVELS folders above,
+    each also with `src/` (the src layout), stopping at a project root
+    marker. Bounded so a lookup never wanders far outside the project."""
+    d = os.path.dirname(os.path.abspath(file_path))
+    while _is_file(os.path.join(d, "__init__.py")):
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    roots = []
+    for _ in range(_PY_ROOT_LEVELS + 1):
+        roots += [d, os.path.join(d, "src")]
+        if any(_exists(os.path.join(d, m)) for m in _PY_ROOT_MARKERS):
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return roots
+
+
+def _resolve_python_module(file_path: str, module: str) -> Optional[str]:
+    """The project file a Python import names: `.engine` and `..pkg.x`
+    relative to the importing file's package, `pkg.engine` from the roots
+    above. None for the standard library, installed packages and anything
+    not on disk."""
+    return _memo("py", file_path, module, lambda: _resolve_python_module_uncached(file_path, module))
+
+
+def _resolve_python_module_uncached(file_path: str, module: str) -> Optional[str]:
+    dots = len(module) - len(module.lstrip("."))
+    parts = [p for p in module[dots:].split(".") if p]
+    if dots:
+        base = os.path.dirname(os.path.abspath(file_path))
+        for _ in range(dots - 1):
+            base = os.path.dirname(base)
+        if not parts:
+            init = os.path.normpath(os.path.join(base, "__init__.py"))
+            return init if _is_file(init) and _admitted(init) else None
+        return _python_module_file(base, parts)
+    if not parts or parts[0] in _PY_STDLIB:
+        return None
+    for root in _python_roots(file_path):
+        hit = _python_module_file(root, parts)
+        if hit:
+            return hit
+    return None
+
+
+def _python_import_edge(file_id: str, file_path: str, module: str, relation: str) -> Optional[dict]:
+    resolved = _resolve_python_module(file_path, module)
+    if resolved is None and not module.lstrip("."):
+        return None
+    return {
+        "source": file_id,
+        "target": (_make_id(_file_id_stem(resolved)) if resolved
+                   else unresolved_import_target(file_path, module)),
+        "relation": relation,
+        "module": module,
+    }
+
+
+def _spec(edges: list, relation: str, module: str, item: bool = False, reexport: bool = False) -> None:
+    """Record an import the file tries, resolved or not (see `import_specs`
+    in extract_file): what the incremental path needs to redo it when a
+    file appears or goes."""
+    edges.append({"relation": "_spec", "spec": [relation, module, item, reexport]})
+
+
 def _handle_python_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
     # import_statement: `import a.b.c` or `import a as alias`
-    # import_from_statement: `from a.b import c, d`
+    # import_from_statement: `from a.b import c, d`, `from . import x`
+    # A project module points at its file, as relative TS/JS imports do since
+    # E26: until 2026-11-22 every Python import was an "external" stub, the
+    # project's own included (338 of 338 in Lynx's source), so the graph
+    # could not say which file imports which.
     if node.type == "import_statement":
         for c in node.children:
             if c.type in ("dotted_name", "aliased_import"):
@@ -221,36 +398,56 @@ def _handle_python_import(node, source: bytes, file_id: str, edges: list, file_p
                     target = c.child_by_field_name("name") or c.children[0]
                 mod = _text(target, source).strip()
                 if mod:
-                    edges.append({
-                        "source": file_id,
-                        "target": _make_id(mod.split(".")[0]),
-                        "relation": "imports",
-                        "module": mod,
-                    })
+                    _spec(edges, "imports", mod)
+                    edge = _python_import_edge(file_id, file_path, mod, "imports")
+                    if edge:
+                        edges.append(edge)
     elif node.type == "import_from_statement":
         mod_node = node.child_by_field_name("module_name")
         if mod_node is None:
             return
-        mod = _text(mod_node, source).strip().lstrip(".")
+        mod = _text(mod_node, source).strip()
         if not mod:
             return
-        edges.append({
-            "source": file_id,
-            "target": _make_id(mod.split(".")[0]),
-            "relation": "imports_from",
-            "module": mod,
-        })
+        _spec(edges, "imports_from", mod)
+        edge = _python_import_edge(file_id, file_path, mod, "imports_from")
+        if edge:
+            edges.append(edge)
+        # `from pkg import engine` and `from . import engine` may name
+        # submodules: each one found on disk is imported too.
+        for c in node.children:
+            if c is mod_node or c.start_byte == mod_node.start_byte:
+                continue
+            if c.type not in ("dotted_name", "aliased_import"):
+                continue
+            name_node = c.child_by_field_name("name") if c.type == "aliased_import" else c
+            name = _text(name_node or c, source).strip()
+            if not name:
+                continue
+            sub = mod + name if mod.endswith(".") else f"{mod}.{name}"
+            _spec(edges, "imports_from", sub, item=True)
+            if _resolve_python_module(file_path, sub):
+                edges.append(_python_import_edge(file_id, file_path, sub, "imports_from"))
 
 
 _JS_MODULE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs")
 
+# Files whose code reaches another file's symbols only through an import Lynx
+# resolves to that file: ES modules. The builder lets `obj.f()` in these
+# files land only on methods of the files they import. Not in other
+# languages: C# sees a whole namespace without a `using` per file, GDScript a
+# `class_name` from anywhere, Python an object of a class it never imported.
+# Applying the rule to them (2026-11-22, commit 658a935) dropped every
+# cross-file member call they had: `a.Foo()` in C#, `m.move()` in GDScript.
+IMPORT_SCOPED_EXTS = frozenset(_JS_MODULE_EXTS)
 
-def _resolve_relative_module(file_path: str, raw: str) -> Optional[str]:
-    """The file a relative ES module specifier names, as the TypeScript and
-    Node resolvers find it: the path as written, with an extension added, a
-    `.js` written for a `.ts` source (TypeScript's ES module convention), or
-    the folder's `index`. None when no such file exists."""
-    base = os.path.normpath(os.path.join(os.path.dirname(file_path), raw))
+
+def _resolve_module_base(base: str) -> Optional[str]:
+    """The file an ES module path (absolute, without resolution rules
+    applied yet) names, as the TypeScript and Node resolvers find it: the
+    path as written, with an extension added, a `.js` written for a `.ts`
+    source (TypeScript's ES module convention), or the folder's `index`."""
+    base = os.path.normpath(base)
     stem, ext = os.path.splitext(base)
     candidates = []
     if ext in _JS_MODULE_EXTS:
@@ -260,15 +457,230 @@ def _resolve_relative_module(file_path: str, raw: str) -> Optional[str]:
     candidates += [base + e for e in _JS_MODULE_EXTS]
     candidates += [os.path.join(base, "index" + e) for e in _JS_MODULE_EXTS]
     for c in candidates:
-        if os.path.isfile(c):
-            return os.path.normpath(os.path.abspath(c))
+        if _is_file(c):
+            c = os.path.normpath(os.path.abspath(c))
+            return c if _admitted(c) else None
     return None
+
+
+def _resolve_relative_module(file_path: str, raw: str) -> Optional[str]:
+    """The file a relative ES module specifier names; None when no such file
+    exists."""
+    return _resolve_module_base(os.path.join(os.path.dirname(file_path), raw))
+
+
+_TSCONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
+_TSCONFIG_LEVELS = 8
+_tsconfig_cache: dict = {}
+
+
+def _jsonc(text: str):
+    """tsconfig.json is JSON with comments and trailing commas."""
+    import json
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return json.loads(_TRAILING_COMMA.sub(r"\1", "".join(out)))
+
+
+_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+
+
+def _tsconfig_options(path: str, depth: int = 0) -> dict:
+    """compilerOptions.baseUrl and .paths of a tsconfig, following a relative
+    `extends`, with baseUrl made absolute and paths' base recorded."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    hit = _tsconfig_cache.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        data = _jsonc(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        data = {}
+    here = os.path.dirname(path)
+    opts: dict = {}
+    ext = data.get("extends") if isinstance(data, dict) else None
+    if isinstance(ext, str) and ext.startswith(".") and depth < 3:
+        parent = os.path.normpath(os.path.join(here, ext))
+        if not parent.endswith(".json"):
+            parent += ".json"
+        opts = dict(_tsconfig_options(parent, depth + 1))
+    co = data.get("compilerOptions") if isinstance(data, dict) else None
+    if isinstance(co, dict):
+        if isinstance(co.get("baseUrl"), str):
+            opts["baseUrl"] = os.path.normpath(os.path.join(here, co["baseUrl"]))
+        if isinstance(co.get("paths"), dict):
+            opts["paths"] = co["paths"]
+            opts["paths_base"] = opts.get("baseUrl") or here
+    if "paths" in opts and "baseUrl" in opts:
+        opts["paths_base"] = opts["baseUrl"]
+    _tsconfig_cache[path] = (mtime, opts)
+    return opts
+
+
+def _nearest_tsconfig(file_path: str) -> Optional[str]:
+    d = os.path.dirname(os.path.abspath(file_path))
+    for _ in range(_TSCONFIG_LEVELS):
+        for name in _TSCONFIG_NAMES:
+            c = os.path.join(d, name)
+            if _is_file(c):
+                return c
+        if _exists(os.path.join(d, ".git")):
+            return None
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+    return None
+
+
+def _resolve_aliased_module(file_path: str, raw: str) -> Optional[str]:
+    """A non-relative specifier through the nearest tsconfig/jsconfig:
+    `paths` patterns (`@/*` -> `src/*`), then `baseUrl`. None when neither
+    names a project file, as for a package (`three`, `react`)."""
+    cfg = _nearest_tsconfig(file_path)
+    if cfg is None:
+        return None
+    opts = _tsconfig_options(cfg)
+    paths = opts.get("paths") or {}
+    for pattern, targets in paths.items():
+        if not isinstance(targets, list):
+            continue
+        if "*" in pattern:
+            prefix, _star, suffix = pattern.partition("*")
+            if not (raw.startswith(prefix) and raw.endswith(suffix) and len(raw) >= len(prefix) + len(suffix)):
+                continue
+            star = raw[len(prefix):len(raw) - len(suffix)]
+        elif raw != pattern:
+            continue
+        else:
+            star = ""
+        for target in targets:
+            if isinstance(target, str):
+                hit = _resolve_module_base(os.path.join(opts["paths_base"], target.replace("*", star)))
+                if hit:
+                    return hit
+    if opts.get("baseUrl"):
+        return _resolve_module_base(os.path.join(opts["baseUrl"], raw))
+    return None
+
+
+def _resolve_js_module(file_path: str, raw: str) -> Optional[str]:
+    if raw.startswith("."):
+        return _memo("js", file_path, raw, lambda: _resolve_relative_module(file_path, raw))
+    return _memo("js", file_path, raw, lambda: _resolve_aliased_module(file_path, raw))
+
+
+def resolve_import(importer: str, module: str) -> Optional[str]:
+    """The project file an import in `importer` names, for the languages
+    whose imports Lynx resolves (TS/JS relative specifiers, Python); None
+    otherwise. Shared by the extractor and the builder's incremental path,
+    so an update gives the graph a full rebuild would."""
+    ext = os.path.splitext(importer)[1].lower()
+    if ext in _JS_MODULE_EXTS:
+        return _resolve_js_module(importer, module)
+    if ext in (".py", ".pyi"):
+        return _resolve_python_module(importer, module)
+    return None
+
+
+def unresolved_import_target(importer: str, module: str) -> str:
+    """The stub an import points at while it names no project file: the
+    importer and the specifier for a relative one (each is its own), the
+    top-level package otherwise (`three`, `numpy`, `os`)."""
+    ext = os.path.splitext(importer)[1].lower()
+    if module.startswith("."):
+        return _make_id(importer, module)
+    if ext in (".py", ".pyi"):
+        return _make_id(module.split(".")[0])
+    return _make_id(module.split("/")[0])
+
+
+def file_name_keys(abs_path: str) -> set:
+    """The names an import may call a file by, case-folded (on Windows
+    `./widget` resolves to Widget.ts): its stem, and for an `index` or
+    `__init__` its folder's name."""
+    stem = os.path.basename(abs_path).split(".")[0].casefold()
+    keys = {stem}
+    if stem in ("index", "__init__"):
+        keys.add(os.path.basename(os.path.dirname(abs_path)).casefold())
+    return keys
+
+
+def import_key(module: str, importer: str) -> Optional[str]:
+    """The last name in an import, case-folded: what `file_name_keys` of
+    the file it names would hold. None for a language whose imports Lynx
+    does not resolve."""
+    ext = os.path.splitext(importer)[1].lower()
+    if ext in _JS_MODULE_EXTS:
+        return module.rstrip("/").split("/")[-1].split(".")[0].casefold()
+    if ext in (".py", ".pyi"):
+        return module.lstrip(".").split(".")[-1].casefold()
+    return None
+
+
+def import_via_alias(module: str, importer: str) -> bool:
+    """A non-relative TS/JS specifier that the importer's tsconfig `paths`
+    may map to any file, under any name (`~lib` -> lib/index.ts)."""
+    if module.startswith(".") or os.path.splitext(importer)[1].lower() not in _JS_MODULE_EXTS:
+        return False
+    cfg = _nearest_tsconfig(importer)
+    for key in ((_tsconfig_options(cfg).get("paths") or {}) if cfg else {}):
+        prefix, star, suffix = key.partition("*")
+        if module == key or (star and module.startswith(prefix) and module.endswith(suffix)):
+            return True
+    return False
+
+
+def import_could_name(module: str, importer: str, abs_path: str) -> bool:
+    """Cheap test before resolving: can `module` (written in `importer`) name
+    the file `abs_path` at all? A prefilter may let through more than
+    resolves, never less. Keeps the incremental path from resolving every
+    import of the standard library on each file save."""
+    key = import_key(module, importer)
+    if key is None:
+        return False
+    if os.path.splitext(importer)[1].lower() in (".py", ".pyi") and not key:
+        # `from . import x` names the package itself, its __init__.py.
+        return os.path.basename(abs_path).split(".")[0] == "__init__"
+    if key in file_name_keys(abs_path) or key in ("", ".."):
+        return True
+    return import_via_alias(module, importer)
 
 
 def _handle_js_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
     # import_statement covers ES module imports. The module specifier is the
-    # single `string` child of the import.
-    if node.type != "import_statement":
+    # single `string` child of the import. `export { x } from "./y"` and
+    # `export * from "./y"` (a barrel) import too, and are marked so that a
+    # file importing the barrel reaches what it re-exports.
+    reexport = node.type == "export_statement"
+    if reexport and node.child_by_field_name("source") is None:
+        return
+    if node.type not in ("import_statement", "export_statement"):
         return
     for c in node.children:
         if c.type == "string":
@@ -281,18 +693,19 @@ def _handle_js_import(node, source: bytes, file_id: str, edges: list, file_path:
             # importing path and the specifier: on a 214k-line TypeScript game
             # all 5,663 project imports were "external", 5,534 of them files
             # in the index. Bare specifiers stay packages.
-            if raw.startswith("."):
-                resolved = _resolve_relative_module(file_path, raw)
-                target = (_make_id(_file_id_stem(resolved)) if resolved
-                          else _make_id(file_path, raw))
-            else:
-                target = _make_id(raw.split("/")[0])
-            edges.append({
+            _spec(edges, "imports_from", raw, reexport=reexport)
+            resolved = _resolve_js_module(file_path, raw)
+            target = (_make_id(_file_id_stem(resolved)) if resolved
+                      else unresolved_import_target(file_path, raw))
+            edge = {
                 "source": file_id,
                 "target": target,
                 "relation": "imports_from",
                 "module": raw,
-            })
+            }
+            if reexport:
+                edge["reexport"] = True
+            edges.append(edge)
             return
 
 
@@ -1143,7 +1556,9 @@ GRAPH_RULES: dict = {
     "javascript": LangGraphRules(
         container_types=frozenset({"class_declaration"}),
         function_types=frozenset({"function_declaration", "method_definition", "generator_function_declaration"}),
-        import_types=frozenset({"import_statement"}),
+        import_types=frozenset({"import_statement", "export_statement"}),
+        declarator_types=frozenset({"variable_declarator", "public_field_definition", "field_definition"}),
+        function_value_types=frozenset({"arrow_function", "function_expression", "function", "generator_function"}),
         call_types=frozenset({"call_expression"}),
         call_function_field="function",
         call_accessor_types=frozenset({"member_expression"}),
@@ -1156,7 +1571,9 @@ GRAPH_RULES: dict = {
         container_types=frozenset({"class_declaration", "abstract_class_declaration",
                                    "interface_declaration", "namespace_declaration", "module"}),
         function_types=frozenset({"function_declaration", "method_definition", "abstract_method_signature"}),
-        import_types=frozenset({"import_statement"}),
+        import_types=frozenset({"import_statement", "export_statement"}),
+        declarator_types=frozenset({"variable_declarator", "public_field_definition", "field_definition"}),
+        function_value_types=frozenset({"arrow_function", "function_expression", "function", "generator_function"}),
         call_types=frozenset({"call_expression"}),
         call_function_field="function",
         call_accessor_types=frozenset({"member_expression"}),
@@ -1169,7 +1586,9 @@ GRAPH_RULES: dict = {
         container_types=frozenset({"class_declaration", "abstract_class_declaration",
                                    "interface_declaration", "namespace_declaration"}),
         function_types=frozenset({"function_declaration", "method_definition"}),
-        import_types=frozenset({"import_statement"}),
+        import_types=frozenset({"import_statement", "export_statement"}),
+        declarator_types=frozenset({"variable_declarator", "public_field_definition", "field_definition"}),
+        function_value_types=frozenset({"arrow_function", "function_expression", "function", "generator_function"}),
         call_types=frozenset({"call_expression"}),
         call_function_field="function",
         call_accessor_types=frozenset({"member_expression"}),
@@ -1205,6 +1624,7 @@ GRAPH_RULES: dict = {
         call_function_field="name",  # Java's method_invocation uses field "name" directly
         call_accessor_types=frozenset(),  # No accessor wrapping; "object" field is the receiver
         call_accessor_field="name",
+        call_receiver_field="object",
         function_boundary_types=frozenset({"method_declaration", "constructor_declaration"}),
         import_handler=_handle_java_import,
         inheritance_handler=_handle_java_inheritance,
@@ -1470,10 +1890,13 @@ def _extract_callee(call_node, rules: LangGraphRules, source: bytes) -> "Optiona
             return (name, True) if name else None
         return None
 
-    # Plain identifier — direct call `foo()`.
+    # Plain identifier — direct call `foo()`, unless the call node holds a
+    # receiver of its own (Java `obj.foo()`).
     if callee.type in ("identifier", "simple_identifier", "name"):
         name = _text(callee, source).strip()
-        return (name, False) if name else None
+        member = bool(rules.call_receiver_field
+                      and call_node.child_by_field_name(rules.call_receiver_field) is not None)
+        return (name, member) if name else None
 
     # Fallback: try child_by_field_name("name") on the callee subtree.
     nm = callee.child_by_field_name("name")
@@ -1511,9 +1934,16 @@ def _local_function_names(fn_node, source: bytes) -> frozenset:
 
 def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 local_index: dict, edges: list, raw_calls: list, file_path: str,
-                local_names: frozenset = frozenset()) -> None:
-    """Walk a function body, emitting call edges (resolved or raw)."""
+                local_names: frozenset = frozenset(), file_id: Optional[str] = None) -> None:
+    """Walk a function body, emitting call edges (resolved or raw), and the
+    file's imports written inside it."""
     for child in node.children:
+        # An import inside a function (Python's lazy `from .x import y`, kept
+        # out of module load for start-up time) is the file's import all the
+        # same. The declaration walker never entered function bodies, so on
+        # Lynx's own source 163 of its 219 project imports were missing.
+        if file_id is not None and child.type in rules.import_types and rules.import_handler is not None:
+            rules.import_handler(child, source, file_id, edges, file_path)
         # A function nested in this one (a closure, a callback, an arrow
         # function, a local function) is not a graph node: the declaration
         # walker does not enter function bodies. Its calls are this
@@ -1556,7 +1986,7 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 #   navigation view, so emit nothing rather than guess.
         # Recurse into the children — body / block / expression-statement etc.
         _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path,
-                    local_names)
+                    local_names, file_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1583,6 +2013,34 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
             # We don't `continue` here — falling through lets the same node
             # also be considered as a call within a function body (it isn't
             # at the top level, but the recursive descent handles that).
+        if child.type in rules.declarator_types:
+            value = child.child_by_field_name("value")
+            name_node = child.child_by_field_name("name") or child.child_by_field_name("property")
+            if (value is not None and value.type in rules.function_value_types and name_node is not None
+                    and name_node.type in ("identifier", "property_identifier", "private_property_identifier")):
+                name = _text(name_node, source).strip()
+                qualified = ".".join(container_path + [name]) if container_path else name
+                node_id = _make_id(id_stem, qualified)
+                nodes.append({
+                    "id": node_id,
+                    "label": qualified,
+                    "kind": "function",
+                    "subkind": value.type,
+                    "file": file_path,
+                    "start_line": child.start_point[0] + 1,
+                    "end_line": child.end_point[0] + 1,
+                    "lang_key": None,
+                })
+                local_index[name.lower()] = node_id
+                if container_path:
+                    edges.append({
+                        "source": _make_id(id_stem, ".".join(container_path)),
+                        "target": node_id,
+                        "relation": "contains",
+                        "confidence": "extracted",
+                    })
+                function_bodies.append((node_id, value))
+                continue
         if child.type in rules.function_types:
             name = (_name_of(child, source) or default_names.get(child.type)
                     or "<anonymous>")
@@ -1743,7 +2201,15 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     raw_calls: list = []
     for caller_id, body in function_bodies:
         _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm,
-                    _local_function_names(body, source))
+                    _local_function_names(body, source), file_id)
+
+    # Every import the file tries, resolved or not, travels on its file node:
+    # when another file appears or goes, the builder finds the files whose
+    # imports could name it from these, and extracts them again.
+    specs = sorted({tuple(e["spec"]) for e in edges if e.get("relation") == "_spec"})
+    edges = [e for e in edges if e.get("relation") != "_spec"]
+    if specs:
+        nodes[0]["import_specs"] = [list(s) for s in specs]
 
     return {
         "file_id": file_id,

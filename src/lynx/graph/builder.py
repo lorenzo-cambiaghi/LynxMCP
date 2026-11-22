@@ -44,7 +44,9 @@ from typing import Iterable, Optional
 
 import networkx as nx
 
-from .extractor import extract_file, GRAPH_LANGUAGES, _make_id, _resolve_relative_module
+from .extractor import (extract_file, GRAPH_LANGUAGES, IMPORT_SCOPED_EXTS, _file_id_stem, _make_id,
+                        file_name_keys, import_could_name, import_key, import_via_alias,
+                        resolution_context)
 
 
 def _log(msg: str) -> None:
@@ -438,25 +440,101 @@ class GraphLayer:
             self._graph.add_node(v, **{k: val for k, val in stub.items() if k != "id"})
         self._graph.add_edge(u, v, **attrs)
 
-    def _adopt_pending_imports(self, abs_path: str, file_id: str) -> None:
-        """Point at `abs_path` the relative imports other files made of it
-        while it did not exist (an unresolved stub until now), as a full
-        rebuild would."""
-        stubs = [nid for nid, n in self._nodes_by_id.items()
-                 if n.get("kind") == "external" and nid != file_id]
-        for stub in stubs:
-            for u, _v, data in list(self._graph.in_edges(stub, data=True)):
-                module = data.get("module") or ""
-                importer = (self._nodes_by_id.get(u) or {}).get("file") or ""
-                if not module.startswith(".") or not importer:
+    def _in_index(self, path: str) -> bool:
+        """A file of this graph's index: what an import may resolve to."""
+        from ..fs_scan import in_scope
+        return in_scope(path, self.codebase_path, self.supported_extensions,
+                        self.ignored_path_fragments, self.ignored_globs)
+
+    def _importers_of(self, paths, among: "set | None" = None) -> set:
+        """Files whose imports may name one of `paths`: an import edge to its
+        file node, or an import they try (`import_specs`) that the cheap
+        test `import_could_name` does not rule out. A superset: each is
+        extracted again and the resolver decides. `among` limits the answer
+        to those files (a delta rebuild asks only about the unchanged ones:
+        the others are extracted anyway).
+
+        One pass over the file nodes, the paths found by name: a first build
+        through `rebuild(force=False)` sees every file as added, and asking
+        file by file made it 11 times slower (12 s to 145 s on 1,918 files)."""
+        paths = [p for p in paths]
+        if not paths or (among is not None and not among):
+            return set()
+        targets = set(paths)
+        by_key: dict = {}
+        for p in paths:
+            for k in file_name_keys(p):
+                by_key.setdefault(k, []).append(p)
+        out = set()
+        for n in self._nodes_by_id.values():
+            if n.get("kind") != "file":
+                continue
+            importer = n.get("file") or ""
+            if not importer or importer in targets or (among is not None and importer not in among):
+                continue
+            for spec in n.get("import_specs") or ():
+                module = spec[1]
+                key = import_key(module, importer)
+                if key is None:
                     continue
-                if _resolve_relative_module(importer, module) != abs_path:
-                    continue
-                self._graph.remove_edge(u, stub)
-                self._add_edge_inplace({"source": u, "target": file_id, **data})
-            if stub in self._graph and self._graph.degree(stub) == 0:
-                self._graph.remove_node(stub)
-                self._nodes_by_id.pop(stub, None)
+                hits = paths if key in ("", "..") else by_key.get(key, ())
+                if any(import_could_name(module, importer, p) for p in hits) or (
+                        key not in by_key and import_via_alias(module, importer)):
+                    out.add(importer)
+                    break
+        for p in paths:
+            nid = _make_id(_file_id_stem(p))
+            if nid not in self._graph:
+                continue
+            for u, _v, d in self._graph.in_edges(nid, data=True):
+                if d.get("relation") in ("imports", "imports_from"):
+                    importer = (self._nodes_by_id.get(u) or {}).get("file")
+                    if importer and importer not in targets and (among is None or importer in among):
+                        out.add(importer)
+        return out
+
+    def _reextract(self, abs_path: str) -> set:
+        """Extract an unchanged file again, because what its imports name
+        changed. Returns the names whose resolution may move, as
+        update_file does."""
+        affected = self._drop_file(abs_path)
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError as e:
+            _log(f"[graph] read failed for {abs_path}: {e}")
+            return affected
+        sha = _compute_sha256(abs_path)
+        if sha:
+            self._file_hashes[abs_path] = {"sha256": sha,
+                                           "last_indexed_at": datetime.now().isoformat()}
+        res = extract_file(abs_path, content)
+        if res is None:
+            return affected
+        for n in res["nodes"]:
+            self._add_node_inplace(n)
+            affected |= _index_keys(n)
+        for e in res["edges"]:
+            self._add_edge_inplace(e, register_external=True)
+        if res["raw_calls"]:
+            self._raw_calls_by_file[abs_path] = res["raw_calls"]
+            affected |= {rc["callee_name"].lower() for rc in res["raw_calls"]}
+        if res.get("raw_inherits"):
+            self._raw_inherits_by_file[abs_path] = res["raw_inherits"]
+            affected |= {ri["base_name"].lower() for ri in res["raw_inherits"]}
+        return affected
+
+    def _calls_of_moved_reach(self, reach_before: dict) -> set:
+        """Callee names of the files whose reach (the files they import,
+        through barrels too) is not what it was: their member and ambiguous
+        calls resolve by it. A barrel that changes what it re-exports moves
+        the reach of every file importing it, and defines no name itself."""
+        after = self._imported_files()
+        names = set()
+        for f in set(reach_before) | set(after):
+            if reach_before.get(f, set()) != after.get(f, set()):
+                names |= {rc["callee_name"].lower() for rc in self._raw_calls_by_file.get(f, ())}
+        return names
 
     def _drop_file(self, abs_path: str, gone: bool = False) -> set:
         """Remove every node/edge attached to `abs_path` from the in-memory
@@ -503,13 +581,13 @@ class GraphLayer:
             if ext in self._graph and self._graph.degree(ext) == 0:
                 self._graph.remove_node(ext)
                 self._nodes_by_id.pop(ext, None)
-        for edge in kept_imports:
-            if gone:
-                # The file is deleted: the import is unresolved, as a full
-                # rebuild would make it (the importer's path and the specifier).
-                importer = (self._nodes_by_id.get(edge["source"]) or {}).get("file") or ""
-                edge = {**edge, "target": _make_id(importer, edge.get("module") or "")}
-            self._add_edge_inplace(edge, register_external=True)
+        # A deleted file's importers are extracted again by the caller
+        # (`_importers_of`), which gives their imports what a full rebuild
+        # gives: another file, a stub, or nothing (`from . import x` of a
+        # submodule that went).
+        if not gone:
+            for edge in kept_imports:
+                self._add_edge_inplace(edge, register_external=True)
         # Clear raw_calls + raw_inherits bucketed under this file.
         self._raw_calls_by_file.pop(abs_path, None)
         self._raw_inherits_by_file.pop(abs_path, None)
@@ -570,21 +648,41 @@ class GraphLayer:
                 candidates = self._symbol_index.get(key) or []
                 if not candidates:
                     continue
-                if rc.get("is_member"):
-                    # `obj.f()` calls a method of a class the caller can see:
-                    # defined in its own file or in a file it imports. A free
-                    # function, or a method of a class the caller never
-                    # imports, is not it: `Object.keys()`, `map.has()` and
-                    # `array.push()` used to resolve to the one project
-                    # function or method named `keys`, `has` or `push`.
-                    # (A namespace import, `math.f()` after `import * as
-                    # math`, is lost this way; The Lost Storm has none.)
-                    reach = imported.get(file_path, set()) | {rc.get("file") or file_path}
+                reach = imported.get(file_path, set()) | {rc.get("file") or file_path}
+                if rc.get("is_member") and os.path.splitext(file_path)[1].lower() in IMPORT_SCOPED_EXTS:
+                    # `obj.f()` in an ES module calls a method of a class the
+                    # caller can see: defined in its own file or in a file it
+                    # imports. A free function, or a method of a class the
+                    # caller never imports, is not it: `Object.keys()`,
+                    # `map.has()` and `array.push()` used to resolve to the
+                    # one project function or method named `keys`, `has` or
+                    # `push`. (A namespace import, `math.f()` after `import *
+                    # as math`, is lost this way; The Lost Storm has none.)
                     candidates = [c for c in candidates
                                   if "." in ((self._nodes_by_id.get(c) or {}).get("label") or "")
                                   and (self._nodes_by_id.get(c) or {}).get("file") in reach]
                     if not candidates:
                         continue
+                elif rc.get("is_member"):
+                    if os.path.splitext(file_path)[1].lower() in (".py", ".pyi"):
+                        # In Python `x.f()` reaches a module's free function
+                        # only as `mod.f()` with `mod` imported: `d.keys()`
+                        # is not the project's `def keys()` of a module the
+                        # caller never imports. Methods keep the name rule.
+                        candidates = [c for c in candidates
+                                      if "." in ((self._nodes_by_id.get(c) or {}).get("label") or "")
+                                      or (self._nodes_by_id.get(c) or {}).get("file") in reach]
+                        if not candidates:
+                            continue
+                    if len(candidates) > 1:
+                        # Other languages keep the name rule (one definition
+                        # of the name resolves, several are skipped), except
+                        # that one definition among several in a file the
+                        # caller imports, or in its own, is the one it calls.
+                        seen = [c for c in candidates
+                                if (self._nodes_by_id.get(c) or {}).get("file") in reach]
+                        if len(seen) == 1:
+                            candidates = seen
                 if len(candidates) > 1 and not rc.get("is_member"):
                     # Several definitions of the name: the ones in files the
                     # caller imports are the ones it can call. On a 214k-line
@@ -633,8 +731,10 @@ class GraphLayer:
         return added
 
     def _imported_files(self) -> dict:
-        """file path -> the project files it imports (resolved imports)."""
+        """file path -> the project files it imports (resolved imports), and
+        through a barrel (`export * from "./y"`) the files it re-exports."""
         out: dict = {}
+        reexports: dict = {}
         for u, v, d in self._graph.edges(data=True):
             if d.get("relation") not in ("imports", "imports_from"):
                 continue
@@ -642,6 +742,16 @@ class GraphLayer:
             source = self._nodes_by_id.get(u) or {}
             if target.get("kind") == "file" and source.get("file"):
                 out.setdefault(source["file"], set()).add(target.get("file"))
+                if d.get("reexport"):
+                    reexports.setdefault(source["file"], set()).add(target.get("file"))
+        if reexports:
+            for files in out.values():
+                stack = [f for f in files if f in reexports]
+                while stack:
+                    for g in reexports.get(stack.pop(), ()):
+                        if g not in files:
+                            files.add(g)
+                            stack.append(g)
         return out
 
     def _derived_edge_counts(self) -> dict:
@@ -756,7 +866,7 @@ class GraphLayer:
             from ..errors import StoreNotOwnedError
             raise StoreNotOwnedError(self.storage_dir.parent.name,
                                      str(self.storage_dir.parent))
-        with self._lock:
+        with self._lock, resolution_context(self._in_index):
             fingerprint = extractor_fingerprint()
             if (not force and self._file_hashes
                     and self._metadata.get("extractor") != fingerprint):
@@ -808,8 +918,18 @@ class GraphLayer:
 
             to_process = sorted(list(added) + list(changed))
 
+            # The files whose imports name a file that goes or comes: found
+            # before the drop (it needs the import edges), extracted again
+            # below, as a full rebuild would read them.
+            importers = set()
+            unchanged_set = set(unchanged)
+            if not force and unchanged_set:
+                importers = self._importers_of(removed, among=unchanged_set)
+
             # Drop everything we're replacing.
-            for p in list(removed) + changed:
+            for p in removed:
+                self._drop_file(p, gone=True)
+            for p in changed:
                 self._drop_file(p)
 
             # Re-extract changed/added.
@@ -843,6 +963,11 @@ class GraphLayer:
                     self._raw_calls_by_file[p] = res["raw_calls"]
                 if res.get("raw_inherits"):
                     self._raw_inherits_by_file[p] = res["raw_inherits"]
+
+            if not force and unchanged_set:
+                importers |= self._importers_of(added, among=unchanged_set)
+                for p in sorted(importers):
+                    self._reextract(p)
 
             # Cross-file resolution: always re-do from scratch on the
             # current symbol index. The intra-file "extracted" calls are
@@ -881,7 +1006,7 @@ class GraphLayer:
         change arrives through `refresh_if_stale`."""
         if self.follower:
             return False
-        with self._lock:
+        with self._lock, resolution_context(self._in_index):
             abs_norm = os.path.normpath(os.path.abspath(abs_path))
             if os.path.splitext(abs_norm)[1].lower() not in self.supported_extensions:
                 return False
@@ -891,6 +1016,8 @@ class GraphLayer:
             cached_sha = (self._file_hashes.get(abs_norm) or {}).get("sha256")
             if live_sha and live_sha == cached_sha:
                 return False  # nothing to do
+            is_new = abs_norm not in self._file_hashes
+            reach_before = self._imported_files()
             # Drop old state for this file; capture the names whose symbol-index
             # entry it touched (their cross-file resolution may now change).
             affected_names = self._drop_file(abs_norm)
@@ -911,7 +1038,6 @@ class GraphLayer:
                     affected_names |= _index_keys(n)
                 for e in res["edges"]:
                     self._add_edge_inplace(e, register_external=True)
-                self._adopt_pending_imports(abs_norm, res["file_id"])
                 if res["raw_calls"]:
                     self._raw_calls_by_file[abs_norm] = res["raw_calls"]
                     # The file's OWN outgoing calls reference names defined
@@ -923,6 +1049,12 @@ class GraphLayer:
                     self._raw_inherits_by_file[abs_norm] = res["raw_inherits"]
                     for ri in res["raw_inherits"]:
                         affected_names.add(ri["base_name"].lower())
+            if is_new:
+                # Imports waiting for this file, by any name that resolves to
+                # it (relative, alias, `from . import x`), are redone.
+                for importer in sorted(self._importers_of([abs_norm])):
+                    affected_names |= self._reextract(importer)
+            affected_names |= self._calls_of_moved_reach(reach_before)
             # Re-resolve ONLY the affected names cross-file (the symbol index
             # only moved for symbols defined/removed in this one file).
             self._reresolve_for_names(affected_names)
@@ -933,13 +1065,18 @@ class GraphLayer:
     def remove_file(self, abs_path: str) -> bool:
         if self.follower:
             return False
-        with self._lock:
+        with self._lock, resolution_context(self._in_index):
             abs_norm = os.path.normpath(os.path.abspath(abs_path))
             if abs_norm not in self._file_hashes and not any(
                 n.get("file") == abs_norm for n in self._nodes_by_id.values()
             ):
                 return False
+            importers = self._importers_of([abs_norm])
+            reach_before = self._imported_files()
             affected_names = self._drop_file(abs_norm, gone=True)
+            for importer in sorted(importers):
+                affected_names |= self._reextract(importer)
+            affected_names |= self._calls_of_moved_reach(reach_before)
             # Re-resolve only the names this file defined (other files' raw_calls
             # to them may now resolve differently — or no longer resolve).
             self._reresolve_for_names(affected_names)
