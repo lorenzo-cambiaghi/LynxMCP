@@ -217,7 +217,10 @@ def test_loader_runs_while_the_handle_is_already_answering():
     # Nothing below blocks on the index.
     assert set(handle.backends) == set(SOURCES)
     text = _build_instructions(handle, ["search", "feedback"], "core")
-    assert "game" in text and "open in the background" in text
+    # The source catalog comes from the config, not the indexes. (A call made
+    # while they are still opening says so itself and asks for a retry, so
+    # the instructions no longer spend a sentence on it.)
+    assert "game" in text
 
     result = {}
 

@@ -312,6 +312,7 @@ def _cmd_describe_symbol(args, build_manager, muted) -> int:
     try:
         data = ctx.manager.describe_symbol(
             ctx.source, args.symbol,
+            file=getattr(args, "file", None),
             callers_limit=args.callers_limit,
             callees_limit=args.callees_limit,
             tests_limit=args.tests_limit,

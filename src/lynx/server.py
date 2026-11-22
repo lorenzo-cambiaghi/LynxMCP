@@ -161,6 +161,7 @@ def _run_stdio(mcp) -> None:
 # ----------------------------------------------------------------------
 
 from ._format import (
+    SEARCH_BODY_CHARS,
     _format_one_result,
     _format_one_outline,
     _format_outline_results,
@@ -234,11 +235,11 @@ def _build_instructions(manager, tools=None, profile: str | None = None) -> str:
     spelled out, so the tool descriptions don't have to repeat them 17
     times. Kept compact: it rides along in the client's context on every
     turn, and Claude Code keeps only the first `_MAX_INSTRUCTIONS`
-    characters, so the two questions Lynx answers best come first and the
-    source paths go when they would push the text past it. The full playbook
-    is the `lynx://guide` resource. `tools` is the set actually registered;
+    characters, so how to find code comes first and the source paths go
+    when they would push the text past it. The full playbook is the
+    `lynx://guide` resource. `tools` is the set actually registered;
     anything outside it is not mentioned, and the profile that hid it is
-    named so the model can ask for it."""
+    named so the model can say how to get it."""
     for detail in ("full", "names", "compact"):
         text = _compose_instructions(manager, tools, profile, detail=detail)
         if len(text) <= _MAX_INSTRUCTIONS:
@@ -260,19 +261,40 @@ def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
         if _is_codebase(b) and b.source_config.get("git_integration", {}).get("enabled")
     ]
 
-    parts = [
-        "Lynx searches the code and docs indexed on this machine, by meaning "
-        "and by name. "
-    ]
-    if has("search") and has("find_similar"):
+    # Navigation first. The text used to open with "before writing new code,
+    # does this already exist?", and on the Sketchbook bench (2026-11-21)
+    # Claude Code never called Lynx to fix a bug: nothing here said it was
+    # the way to find where something happens. Every sentence below rides in
+    # the context of every call, so each one has to change what the agent does.
+    parts = ["Lynx indexes the code and docs on this machine by meaning and by name. "]
+    if has("search"):
         parts.append(
-            "Before writing new code, two questions it answers better than grep. "
-            "Does this already exist? Call `search` and describe what the code "
-            "does ('method that clamps camera zoom'); identifiers work too. Is "
-            "what I am about to write a duplicate? Run `find_similar` on your "
-            "draft, or on the function you are about to copy: it returns the "
-            "parallel implementations and how close each one is. "
+            "To find where something happens, start with `search` instead of grep or "
+            "opening whole files: describe it in plain words ('where the player picks "
+            "a seat to enter'); identifiers work too. You get ranked file:line hits, "
+            "the best with its code, the rest as signatures: read only the lines you "
+            "need. "
         )
+    gloss = {"find_usages": " (callers, overrides, mentions)",
+             "describe_symbol": " (code, callers, subtypes)"}
+    lookups = [n + gloss.get(n, "") for n in ("find_usages", "find_definition", "describe_symbol")
+               if has(n)]
+    if lookups:
+        parts.append(f"For a name you already know: {' / '.join(lookups)}. ")
+    if has("module_summary"):
+        parts.append("`module_summary` lists a file's symbols before you open it. ")
+    structural = [n for n in ("graph_query", "impact") if has(n)]
+    if caps["has_graph"] and structural:
+        parts.append(
+            f"Who calls X, what breaks if X changes: {' / '.join(structural)}; they read "
+            "the code graph, which text search cannot see. "
+        )
+    if has("find_similar"):
+        parts.append("Before writing a new helper, run `find_similar` on your draft: it "
+                     "returns the code that already does it. ")
+    if has("deep_search"):
+        parts.append("Escalate to `deep_search` only when `search` returns weak or empty results. ")
+
     if detail == "compact":
         parts.append(f"Sources: {', '.join(manager.backends)}. ")
     else:
@@ -283,56 +305,27 @@ def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
             return "all"
         return ", ".join(names)
 
-    scoped = []
-    if codebase:
-        scoped.append(f"codebase: {listed(codebase)}")
-    if graph:
-        scoped.append(f"graph-enabled: {listed(graph)}")
-    if git:
-        scoped.append(f"git-enabled: {listed(git)}")
-    if scoped:
-        parts.append(
-            f"Per-source tools ({'; '.join(scoped)}) take `source`; omit it when "
-            "only one source qualifies. "
-        )
-    if has("search"):
-        parts.append(
-            "Use `search` first for any question about this code or these docs; "
-            "omit `source` to search everything. Hybrid scores are small by "
-            "construction: about 0.03 is a strong match. For broad queries or a "
-            "large top_k use outline=true (signatures only), then read just the "
-            "one body you need. "
-        )
-    lookups = [n for n in ("find_definition", "find_usages", "describe_symbol") if has(n)]
-    if lookups:
-        parts.append(f"For an identifier you already know: {' / '.join(lookups)}; "
-                     "they return the code too. ")
-    if has("module_summary"):
-        parts.append("Before opening a file you don't know, `module_summary` "
-                     "gives its signatures. ")
-    if has("deep_search"):
-        parts.append("Escalate to `deep_search` only when `search` returns weak or empty results. ")
-    structural = [n for n in ("graph_query", "impact", "describe_symbol") if has(n)]
-    if caps["has_graph"] and structural:
-        parts.append(
-            "For structural questions ('who calls X?', 'what breaks if I change "
-            f"X?') use {' / '.join(structural)}: they read the code graph, which "
-            "textual search cannot see. "
-        )
+    if len(manager.backends) == 1:
+        parts.append("`source` can be left out. ")
+    else:
+        scoped = []
+        if codebase:
+            scoped.append(f"codebase: {listed(codebase)}")
+        if graph:
+            scoped.append(f"graph-enabled: {listed(graph)}")
+        if git:
+            scoped.append(f"git-enabled: {listed(git)}")
+        if scoped:
+            parts.append(
+                f"Per-source tools ({'; '.join(scoped)}) take `source`; omit it when "
+                "only one source qualifies, or on `search` to search everything. "
+            )
     if tools is not None and profile is not None:
         every = available_tools(**caps)
-        hidden = [n for n in every if n not in set(tools)]
-        if hidden:
-            parts.append(
-                f"Tool profile '{profile}' ({len(tools)} of {len(every)} tools); "
-                f"not loaded: {', '.join(hidden)}. They come with "
-                "`lynx serve --profile full` or `tools.include` in config.json. "
-            )
-    parts.append(
-        "Indexes open in the background right after this handshake; a call that "
-        "arrives earlier answers with the loading state, so retry it. "
-    )
-    parts.append("Read the `lynx://guide` resource for the full playbook. ")
+        if len(tools) < len(every):
+            parts.append(f"Tool profile '{profile}' ({len(tools)} of {len(every)} tools; "
+                         "the rest with `--profile full`). ")
+    parts.append("Full playbook: the `lynx://guide` resource. ")
     if has("feedback"):
         parts.append("If you cannot find what you need, call `feedback` before giving up.")
     return "".join(parts).rstrip()
@@ -430,6 +423,7 @@ def _register_search_tools(mcp, manager):
     @mcp.tool(name="search", description=_desc_search, annotations=_ANN_READ)
     def _search(
         query: Annotated[str, Field(description=_param("search.query"))],
+        identifiers: Annotated[str | None, Field(description=_param("search.identifiers"))] = None,
         source: _SourcesArg = None,
         top_k: Annotated[int | None, Field(description=_param("*.top_k"))] = None,
         outline: Annotated[bool, Field(description=_param("search.outline"))] = False,
@@ -438,6 +432,12 @@ def _register_search_tools(mcp, manager):
         path_contains: _PathContainsArg = None,
     ) -> str:
         try:
+            # Guessed names ride with the description: on 22 bug reports
+            # (lynx-zombie-bench E24b) Claude's three queries found the fix's
+            # file at MRR 0.626, 0.684 with its guessed identifiers added; it
+            # never wrote identifiers into a query without a slot for them.
+            if identifiers and identifiers.strip():
+                query = f"{query} {identifiers.replace(',', ' ').strip()}"
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
             filters = dict(
                 file_glob=file_glob, extensions=extensions, path_contains=path_contains
@@ -453,11 +453,105 @@ def _register_search_tools(mcp, manager):
                 results = manager.search_all(query, top_k=effective_top_k, only=names, **filters)
                 label = f"sources {names}"
             filter_suffix = _build_filter_suffix(file_glob, extensions, path_contains)
-            fmt = _format_outline_results if outline else _format_search_results
-            return _with_notice(manager.lexical_notice(names),
-                                fmt(query, results, label, filter_suffix))
+            if outline:
+                text = _format_outline_results(query, results, label, filter_suffix)
+            else:
+                text = _format_search_results(query, results, label, filter_suffix,
+                                              SEARCH_BODY_CHARS)
+            return _with_notice(manager.lexical_notice(names), text)
         except Exception as e:
             return f"Error during search: {str(e)}"
+
+    @mcp.tool(name="prompt_hook", description=_tool_desc("prompt_hook"), annotations=_ANN_READ)
+    def _prompt_hook(
+        prompt: Annotated[str, Field(description=_param("prompt_hook.prompt"))],
+    ) -> str:
+        # Called by Claude Code's UserPromptSubmit hook (type mcp_tool), not
+        # by the model: see prompt_hook.py. Whatever goes wrong, the answer is
+        # "{}" (nothing added) so a prompt never waits on, or reads, an error.
+        from .outline import signature_for
+        from .prompt_hook import FETCH_PER_SENTENCE, build
+        try:
+            names = list(manager.backends)
+
+            def _search(query):
+                if len(names) == 1:
+                    return manager.search(names[0], query, top_k=FETCH_PER_SENTENCE)
+                return manager.search_all(query, top_k=FETCH_PER_SENTENCE)
+
+            def _signature(hit):
+                return signature_for(hit.get("content", ""), hit.get("symbol_kind", ""),
+                                     hit.get("language", ""))
+
+            return build(prompt, _search, _signature, show_source=len(names) > 1)
+        except Exception as e:
+            print(f"[server] prompt_hook: nothing added ({e})", file=sys.stderr)
+            return "{}"
+
+    refused_reads: set = set()
+
+    @mcp.tool(name="read_guard", description=_tool_desc("read_guard"), annotations=_ANN_READ)
+    def _read_guard(
+        file_path: Annotated[str, Field(description=_param("read_guard.file_path"))] = "",
+        offset: Annotated[str, Field(description=_param("read_guard.offset"))] = "",
+        limit: Annotated[str, Field(description=_param("read_guard.limit"))] = "",
+        command: Annotated[str, Field(description=_param("read_guard.command"))] = "",
+    ) -> str:
+        # Called by Claude Code's PreToolUse hooks on Read and on Bash (type
+        # mcp_tool), not by the model: see read_guard.py. Any failure lets
+        # the read run.
+        from pathlib import Path as _Path
+        from .read_guard import bash_reads, decide, decide_span, span_of
+
+        def _indexed(path):
+            """(source name, relative path, line count) of an indexed file."""
+            target = _Path(path).resolve()
+            for name, backend in manager.backends.items():
+                rag = getattr(backend, "rag", None)
+                if getattr(backend, "type_name", "") != "codebase" or rag is None:
+                    continue
+                if not target.is_file() or not rag.is_supported(str(target)):
+                    continue
+                rel = target.relative_to(_Path(rag.codebase_path).resolve()).as_posix()
+                fragments = getattr(rag, "ignored_path_fragments", ()) or ()
+                if any(f.strip("/") and f"/{f.strip('/')}/" in f"/{rel}" for f in fragments):
+                    continue
+                with open(target, encoding="utf-8", errors="replace") as fh:
+                    return name, rel, sum(1 for _ in fh)
+            return None
+
+        def _seen(key):
+            if key in refused_reads:
+                return True
+            refused_reads.add(key)
+            return False
+
+        try:
+            if command:
+                roots = [str(getattr(b, "rag").codebase_path) for b in manager.backends.values()
+                         if getattr(b, "type_name", "") == "codebase" and getattr(b, "rag", None)]
+                for read in bash_reads(command, roots[0] if roots else os.getcwd()):
+                    found = _indexed(read[0])
+                    if not found:
+                        continue
+                    name, rel, total = found
+                    first, last = span_of(read, total)
+                    answer = decide_span(
+                        rel, first, last, command,
+                        lambda name=name, rel=rel: _format_module_summary(rel, manager.module_summary(name, rel)),
+                        _seen)
+                    if answer != "{}":
+                        return answer
+                return "{}"
+            found = _indexed(file_path) if file_path else None
+            if not found:
+                return "{}"
+            name, rel, total = found
+            return decide(rel, total, offset, limit,
+                          lambda: _format_module_summary(rel, manager.module_summary(name, rel)), _seen)
+        except Exception as e:
+            print(f"[server] read_guard: read let through ({e})", file=sys.stderr)
+            return "{}"
 
     _desc_deep = _tool_desc("deep_search")
 
@@ -776,6 +870,7 @@ def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
     def _describe_symbol(
         symbol: Annotated[str, Field(description=_param("describe_symbol.symbol"))],
         source: _SourceArg = None,
+        file: Annotated[str | None, Field(description=_param("describe_symbol.file"))] = None,
         callers_limit: Annotated[int, Field(description=_param("describe_symbol.callers_limit"))] = 10,
         callees_limit: Annotated[int, Field(description=_param("describe_symbol.callees_limit"))] = 10,
         tests_limit: Annotated[int, Field(description=_param("describe_symbol.tests_limit"))] = 5,
@@ -784,6 +879,7 @@ def _register_combined_tools(mcp, manager, *, has_graph: bool = False):
             src = _resolve_source(manager, source, predicate=_is_codebase, kind="codebase source")
             d = manager.describe_symbol(
                 src, symbol,
+                file=file,
                 callers_limit=callers_limit,
                 callees_limit=callees_limit,
                 tests_limit=tests_limit,
@@ -988,10 +1084,34 @@ def _slim_tool_schemas(mcp) -> None:
             for prop in (params.get("properties") or {}).values():
                 if isinstance(prop, dict):
                     prop.pop("title", None)
+                    _drop_null_branch(prop)
         fm = getattr(tool, "fn_metadata", None)
         if fm is not None and getattr(fm, "output_schema", None) is not None:
             fm.output_schema = None
             fm.wrap_output = False
+
+
+def _drop_null_branch(prop: dict) -> None:
+    """`x: str | None = None` reaches the client as `anyOf: [{type: string},
+    {type: null}], default: null`. An optional argument is one the client
+    leaves out, never one it sends as null, so the advertised schema keeps
+    the real type only: `{type: string}`. What the server accepts does not
+    change, because arguments are validated against the Python signature, not
+    against this copy. Saves about 60 characters per optional argument."""
+    branches = prop.get("anyOf")
+    if not isinstance(branches, list):
+        return
+    rest = [b for b in branches if b != {"type": "null"}]
+    if len(rest) == len(branches):
+        return
+    if prop.get("default", ...) is None:
+        del prop["default"]
+    if len(rest) == 1 and isinstance(rest[0], dict):
+        del prop["anyOf"]
+        for key, value in rest[0].items():
+            prop.setdefault(key, value)
+    else:
+        prop["anyOf"] = rest
 
 
 def only_sources(config, names):
@@ -1015,7 +1135,7 @@ def only_sources(config, names):
     return dataclasses.replace(config, sources={n: config.sources[n] for n in wanted})
 
 
-def run_server(config_path=None, profile: str | None = None, sources=None):
+def run_server(config_path=None, profile: str | None = None, sources=None, *, config=None):
     """Boot the MCP server. Blocks until the client disconnects.
 
     The handshake does not wait for the indexes. Everything it needs (which
@@ -1025,7 +1145,8 @@ def run_server(config_path=None, profile: str | None = None, sources=None):
     `SourceManager` is constructed in a background thread. A tool call that
     arrives before the indexes are open waits a bounded time, then answers
     with the loading state and asks to be retried (see `startup.py`)."""
-    config = load_config(config_path=config_path)
+    if config is None:
+        config = load_config(config_path=config_path)
     try:
         config = only_sources(config, sources)
     except ValueError as e:

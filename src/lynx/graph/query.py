@@ -88,6 +88,31 @@ def find_symbols(G: nx.DiGraph, symbol: str) -> list:
 # ---------------------------------------------------------------------------
 
 
+def callers_of_node(G: nx.DiGraph, nid, limit: int = 50) -> list:
+    """The callers of one node. `get_callers` takes a name and unites the
+    callers of every node so named: for `rig`, a test helper defined in
+    dozens of test files, that listed other files' callers under the one
+    definition shown (The Lost Storm, 2026-11-22)."""
+    out = []
+    for src, _tgt, data in G.in_edges(nid, data=True):
+        if data.get("relation") == "calls":
+            out.append(_edge_to_dict(G, src, nid, data))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def callees_of_node(G: nx.DiGraph, nid, limit: int = 50) -> list:
+    """What one node calls; see `callers_of_node`."""
+    out = []
+    for _src, tgt, data in G.out_edges(nid, data=True):
+        if data.get("relation") == "calls":
+            out.append(_edge_to_dict(G, nid, tgt, data))
+            if len(out) >= limit:
+                break
+    return out
+
+
 def get_callers(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
     """Functions that call `symbol`. Returns list of edge dicts.
 

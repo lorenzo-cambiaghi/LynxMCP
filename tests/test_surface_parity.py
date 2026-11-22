@@ -99,12 +99,17 @@ TOOL_TO_CLI = {
     # a human typing at a terminal has no such gap to report. The CLI reads
     # the log instead, with `lynx manager feedback`.
     "feedback": None,
+    # Claude Code's UserPromptSubmit hook calls it on the running server with
+    # the prompt; at a terminal the same map is `lynx search --outline`, one
+    # sentence at a time.
+    "prompt_hook": None,
+    "read_guard": None,
 }
 
 
 # tool name -> how the web UI serves it. A `/api/playground/<name>` endpoint
 # for the tools you try by hand; a page for the ones that are a view rather
-# than a query. `None` would mean deliberately absent — nothing is, now.
+# than a query. `None` means deliberately absent, with the reason.
 TOOL_TO_UI = {
     "search": "playground:search",
     "deep_search": "playground:deep_search",
@@ -124,6 +129,9 @@ TOOL_TO_UI = {
     "get_rag_status": "page:/sources",
     "update_source_index": "page:/sources",   # the per-source Build button
     "feedback": "page:/",                     # the dashboard's report card
+    # Called by a hook, not by a person: nothing to try by hand.
+    "prompt_hook": None,
+    "read_guard": None,
 }
 
 
@@ -168,10 +176,11 @@ def test_every_mapped_command_exists(registered_tools):
 
 def test_the_whole_tool_surface_is_covered(registered_tools):
     """The headline claim, stated as a number so a regression is loud:
-    every tool but `feedback` is reachable from a terminal."""
+    every tool but `feedback` and the hook's `prompt_hook` is reachable from
+    a terminal."""
     reachable = {t for t in registered_tools if TOOL_TO_CLI.get(t) is not None}
-    assert reachable == registered_tools - {"feedback"}
-    assert len(registered_tools) == 17, (
+    assert reachable == registered_tools - {"feedback", "prompt_hook", "read_guard"}
+    assert len(registered_tools) == 19, (
         f"the tool surface changed ({len(registered_tools)} tools); "
         f"re-check the CLI mapping"
     )
@@ -252,5 +261,5 @@ def test_both_surfaces_cover_the_same_tools(registered_tools):
     true while the UI quietly isn't."""
     cli = {t for t in registered_tools if TOOL_TO_CLI.get(t) is not None}
     ui = {t for t in registered_tools if TOOL_TO_UI.get(t) is not None}
-    assert ui == registered_tools
-    assert cli == registered_tools - {"feedback"}
+    assert ui == registered_tools - {"prompt_hook", "read_guard"}
+    assert cli == registered_tools - {"feedback", "prompt_hook", "read_guard"}

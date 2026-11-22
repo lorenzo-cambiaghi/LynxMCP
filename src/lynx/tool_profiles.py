@@ -8,9 +8,9 @@ had not yet paid for its own tool list. Most sessions need a handful of tools,
 so the tool set is layered:
 
   core      the five you reach for in an ordinary coding session
-  standard  core plus the precise lookups, the escalation search, the graph
-            query, the repo orientation and the diff-scoped search (default)
-  full      everything, including maintenance and export
+  standard  core plus the precise lookups, duplicate detection, graph query,
+            repo orientation and diff-scoped search (default)
+  full      everything, including escalation search, feedback, maintenance and export
 
 A profile is a ceiling on what gets registered, never a promise: a tool that
 needs the graph layer or git integration is still registered only when a
@@ -25,6 +25,8 @@ from typing import Iterable, List, Sequence, Set, Tuple
 # Every tool `run_server` can register, in the order the docs list them.
 ALL_TOOLS: Tuple[str, ...] = (
     "search",
+    "prompt_hook",
+    "read_guard",
     "deep_search",
     "graph_query",
     "find_definition",
@@ -45,10 +47,18 @@ ALL_TOOLS: Tuple[str, ...] = (
 
 CORE_TOOLS: Tuple[str, ...] = (
     "search",
+    # Not for the model: Claude Code's UserPromptSubmit hook calls it with the
+    # prompt and puts the map in front of the first turn (prompt_hook.py). In
+    # every profile, since the hook fails when the tool is not there.
+    "prompt_hook",
+    # Not for the model either: the PreToolUse hook on Read (read_guard.py).
+    "read_guard",
     "describe_symbol",
+    # A file as signatures and doc lines: what an agent reads instead of
+    # opening a file it does not know yet. Works without the graph.
+    "module_summary",
     "find_usages",
     "impact",
-    "feedback",
 )
 
 STANDARD_TOOLS: Tuple[str, ...] = CORE_TOOLS + (
@@ -57,10 +67,6 @@ STANDARD_TOOLS: Tuple[str, ...] = CORE_TOOLS + (
     # Lynx has to duplicated code, and it used to be reachable only from the
     # command line or the full profile.
     "find_similar",
-    # A file as signatures and doc lines: what an agent reads instead of
-    # opening a file it does not know yet. Works without the graph.
-    "module_summary",
-    "deep_search",
     "graph_query",
     "repo_overview",
     "search_diff",
@@ -69,10 +75,13 @@ STANDARD_TOOLS: Tuple[str, ...] = CORE_TOOLS + (
 # Tools a client should load with the session instead of deferring them
 # behind a tool search. Claude Code defers every MCP tool by default: the model
 # sees only the names, has to fetch a schema before a call, and Grep and Glob,
-# always loaded, win by default. These two answer "does this exist?" and "is
-# this a duplicate?", the questions Lynx is for. Each costs context on every
-# turn, so the list stays short.
-ALWAYS_LOAD: Tuple[str, ...] = ("search", "find_similar")
+# always loaded, win by default. `search` is the way in for finding code, so it
+# is loaded; the instructions name the others, which the model fetches when it
+# needs them (on the Sketchbook bench it loaded find_usages, describe_symbol and
+# module_summary in one tool search). find_similar was here too until
+# 2026-11-21: its schema rode in every turn of sessions that never wrote a
+# helper.
+ALWAYS_LOAD: Tuple[str, ...] = ("search",)
 
 PROFILES = {
     "core": CORE_TOOLS,

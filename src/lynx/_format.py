@@ -26,6 +26,13 @@ from .outline import doc_of, signature_for
 # one read away.
 RESULT_BODY_CHARS = 4000
 RESPONSE_BODY_CHARS = 16000
+# What the MCP `search` answer carries: the best hit with its code (or the
+# first few, when they are short), the rest as signatures. An agent that is
+# about to edit reads the lines anyway, so bodies past the first were paid
+# twice. Measured on the Sketchbook bench (2026-11-21): two default searches
+# returned 4,000-6,400 characters each and Claude still opened the files;
+# with signatures the same hits took about 1,000. The CLI keeps the full view.
+SEARCH_BODY_CHARS = 2000
 
 
 def _display_path(item: dict, root=None) -> str:
@@ -113,23 +120,29 @@ def _format_one_outline(i, res):
     return out + "\n"
 
 
-def _render_results(results) -> str:
-    """Full bodies until the response holds RESPONSE_BODY_CHARS of them, then
-    outlines for the rest, with one line saying so."""
+# Less room than this left in the budget: the next hit comes as an outline
+# rather than as a few lines of its body.
+_MIN_BODY_CHARS = 300
+
+
+def _render_results(results, budget: int = RESPONSE_BODY_CHARS) -> str:
+    """Bodies until the response holds `budget` characters of them, then
+    outlines for the rest, with one line saying so. Each body is cut to the
+    room left (and to RESULT_BODY_CHARS), so the budget is a ceiling."""
     out, used, switched = [], 0, False
     for i, res in enumerate(results, 1):
-        if used >= RESPONSE_BODY_CHARS:
+        room = min(RESULT_BODY_CHARS, budget - used)
+        if room < _MIN_BODY_CHARS or switched:
             if not switched:
-                out.append(f"(Output budget of {RESPONSE_BODY_CHARS} chars of code reached: "
+                out.append(f"(Output budget of {budget} chars of code reached: "
                            f"results {i}-{len(results)} as outlines; read a body by its "
                            f"file:line.)\n\n")
                 switched = True
             out.append(_format_one_outline(i, res))
             continue
-        block = _format_one_result(i, res)
+        out.append(_format_one_result(i, res, room))
         # What the answer holds, not the chunk: an 8,000-char chunk shows 4,000.
-        used += len(_capped(res.get("content") or "", RESULT_BODY_CHARS)[0])
-        out.append(block)
+        used += len(_capped(res.get("content") or "", room)[0])
     return "".join(out)
 
 
@@ -146,11 +159,12 @@ def _format_outline_results(query, results, source_label, filter_suffix):
     return out
 
 
-def _format_search_results(query, results, source_label, filter_suffix):
+def _format_search_results(query, results, source_label, filter_suffix,
+                           budget: int = RESPONSE_BODY_CHARS):
     if not results:
         return f"No results found for '{query}' in {source_label}{filter_suffix}."
     out = f"Found {len(results)} results for '{query}' in {source_label}{filter_suffix}:\n\n"
-    return out + _render_results(results)
+    return out + _render_results(results, budget)
 
 
 def _format_deep_response(response, queries, source_label, meta_suffix):
@@ -442,6 +456,12 @@ def _format_describe_symbol(symbol: str, d: dict, root=None) -> str:
             lines.extend(_definition_lines(r, root, with_body=(i == 0)))
     else:
         lines.append("  (not found)")
+    more = d.get("other_definitions") or 0
+    if more:
+        where = ", ".join(d.get("other_definition_files") or [])
+        tail = " and others" if more > len(d.get("other_definition_files") or []) else ""
+        lines.append(f"  ... and {more} other definition(s) of this name: {where}{tail}. "
+                     f"Pass `file` (a path fragment) to describe one of them.")
 
     if d.get("is_type"):
         lines.append("")
@@ -522,45 +542,67 @@ def _format_impact(symbol: str, d: dict, root=None) -> str:
     return "\n".join(lines)
 
 
+# A visibility keyword repeated on every member says nothing the line needs.
+_NOISE_PREFIXES = ("public ",)
+# Past this many dependents a summary says how many more; `impact` lists them all.
+_MAX_DEPENDENTS = 15
+
+
+def _summary_line(s: dict, containers: set) -> str:
+    """One symbol of a module summary on one line: its span, then the
+    signature (the name is in it), then the doc line if any. A member listed
+    under its own class drops the `Class.` prefix and is indented; a symbol
+    without a signature falls back to `name [kind]`."""
+    label = s.get("label", "?")
+    parent, _, short = label.rpartition(".")
+    nested = bool(parent) and parent in containers
+    name = short if nested else label
+    sig = s.get("signature") or ""
+    for prefix in _NOISE_PREFIXES:
+        if sig.startswith(prefix):
+            sig = sig[len(prefix):]
+    text = sig if sig and short in sig else (f"{name}: {sig}" if sig else f"{name} [{s.get('kind', '?')}]")
+    doc = f"  ↳ {s['doc']}" if s.get("doc") else ""
+    span = _line_span(s.get("start_line") or 0, s.get("end_line") or 0)
+    return f"{'    ' if nested else '  '}{span:<10} {text}{doc}".rstrip()
+
+
 def _format_module_summary(file: str, d: dict, root=None) -> str:
+    """What a file defines, one line per symbol, then its imports and the
+    files that depend on it. Kept to one line per symbol on purpose: the
+    earlier layout (name and kind, then the signature that repeats the name,
+    then `public` on every member) spent about 200 characters per symbol,
+    9,700 for one 988-line TypeScript class, the size of reading half of it."""
     symbols = d.get("symbols") or []
     imports = d.get("imports") or []
     deps = d.get("dependent_files") or []
     if not (symbols or imports or deps):
         return f"No file matches {file!r} (or it defines nothing)."
 
-    files = d.get("files") or []
+    files = [f for f in (d.get("files") or []) if f != file]
     where = f" ({', '.join(files)})" if files else ""
     lines = [f"Module summary for {file!r}{where}:", ""]
     lines.append(f"DEFINES ({len(symbols)}):")
+    containers = {s.get("label") for s in symbols}
     for s in symbols:
-        span = _line_span(s.get("start_line") or 0, s.get("end_line") or 0)
-        sig = s.get("signature") or ""
-        head = f"{s.get('label', '?')} [{s.get('kind', '?')}] {span}".rstrip()
-        lines.append(f"  • {head}")
-        if sig:
-            lines.append(f"      {sig}")
-        if s.get("doc"):
-            lines.append(f"      ↳ {s['doc']}")
+        lines.append(_summary_line(s, containers))
     if not symbols:
         lines.append("  (none)")
 
     lines.append("")
-    lines.append("IMPORTS:")
-    for e in imports:
-        tgt = e.get("target") or {}
-        lines.append(f"  • {e.get('module') or tgt.get('label') or '?'}")
-    if not imports:
-        lines.append("  (none)" if d.get("graph_enabled") else
-                     "  (see the file header; the graph layer lists resolved imports)")
+    if imports:
+        names = [e.get("module") or (e.get("target") or {}).get("label") or "?" for e in imports]
+        lines.append("IMPORTS: " + ", ".join(names))
+    else:
+        lines.append("IMPORTS: (none)" if d.get("graph_enabled") else
+                     "IMPORTS: (see the file header; the graph layer lists resolved imports)")
 
-    lines.append("")
     if d.get("graph_enabled"):
-        lines.append(f"DEPENDED ON BY ({len(deps)} file(s), via call graph):")
-        for f in deps:
-            lines.append(f"  • {to_rel_path(f, root)}")
-        if not deps:
-            lines.append("  (none found)")
+        shown = [to_rel_path(f, root) for f in deps[:_MAX_DEPENDENTS]]
+        more = len(deps) - len(shown)
+        listed = ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+        lines.append(f"DEPENDED ON BY ({len(deps)} file(s), imports and calls): "
+                     f"{listed or '(none found)'}")
     else:
         lines.append("DEPENDED ON BY: (enable the graph layer for call data)")
     return "\n".join(lines)

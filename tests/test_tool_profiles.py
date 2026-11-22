@@ -85,7 +85,7 @@ def test_profiles_nest_and_full_is_everything():
     core, standard, full = (set(tp.PROFILES[p]) for p in ("core", "standard", "full"))
     assert core < standard < full
     assert full == set(tp.ALL_TOOLS)
-    assert (len(core), len(standard), len(full)) == (5, 12, 17)
+    assert (len(core), len(standard), len(full)) == (7, 12, 19)
     # The answer to "is this a duplicate?" belongs where agents can reach it.
     assert "find_similar" in standard
     assert tp.DEFAULT_PROFILE == "standard"
@@ -103,7 +103,7 @@ def test_available_tools_without_a_codebase_source():
     mgr = _Manager({"docs": _Backend(type_name="webdoc", graph=False, git=False)})
     registered = set(_register_all(mgr)._tool_manager._tools)
     assert registered == set(tp.available_tools(has_codebase=False, has_graph=False, has_git=False))
-    assert registered == {"search", "deep_search", "feedback", "list_sources",
+    assert registered == {"search", "prompt_hook", "read_guard", "deep_search", "feedback", "list_sources",
                           "get_rag_status", "update_source_index"}
 
 
@@ -142,7 +142,7 @@ def test_unknown_registered_names_are_never_hidden():
 def test_apply_tool_profile_prunes_the_registered_tools():
     mgr = _Manager({"demo": _Backend()})
     mcp = _register_all(mgr)
-    assert len(mcp._tool_manager._tools) == 17
+    assert len(mcp._tool_manager._tools) == 19
     kept, dropped = apply_tool_profile(mcp, "core")
     assert set(mcp._tool_manager._tools) == set(kept) == set(tp.CORE_TOOLS)
     assert len(dropped) == 12
@@ -152,10 +152,10 @@ def test_instructions_and_guide_name_only_the_tools_the_client_has():
     mgr = _Manager({"demo": _Backend()})
     core = list(tp.CORE_TOOLS)
     text = _build_instructions(mgr, core, "core")
-    assert "Tool profile 'core' (5 of 17 tools)" in text
-    assert "not loaded: deep_search" in text
-    assert "Escalate to `deep_search`" not in text
-    assert "find_usages / describe_symbol" in text
+    assert "Tool profile 'core' (7 of 19 tools" in text
+    # A tool the client cannot call is not named at all.
+    assert "deep_search" not in text and "find_definition" not in text
+    assert "find_usages" in text and "describe_symbol" in text
     assert "lynx://guide" in text
 
     guide = _build_guide(mgr, core, "core")
@@ -221,7 +221,24 @@ def test_config_tools_block(tmp_path):
 # (12,925 measured; the tool itself is 830). It answers with a file's
 # signatures, which is what an agent reads instead of opening the whole file,
 # and it no longer needs the graph layer. core and full stayed in budget.
-_WIRE_BUDGET = {"core": 5_300, "standard": 13_000, "full": 16_800}
+# 2026-11-21, standard 13,000 -> 10,800: deep_search moved to full, feedback
+# left core and standard, module_summary moved into core (5,295 / 10,288 /
+# 16,545 measured).
+# 2026-11-21, later: optional arguments advertised without the null branch,
+# shorter search descriptions (4,802 / 9,323 / 14,969 measured).
+# 2026-11-21, later still: prompt_hook in every profile, the tool Claude Code's
+# UserPromptSubmit hook calls (5,232 / 9,753 / 15,399 measured). Claude Code
+# defers it, so there it costs its name only.
+# 2026-11-22: describe_symbol takes `file`, to pick one of several
+# definitions of a name (a test helper defined in 15 files); 5,329 measured
+# for core.
+# 2026-11-22, later: read_guard in every profile, the tool the PreToolUse hook
+# on Read calls (5,831 / 10,352 / 15,998 measured); deferred by Claude Code.
+# 2026-11-22, later: search takes `identifiers`, the guessed names Claude
+# only writes when there is a slot for them (E24b; 5,962 / 10,483 / 16,129).
+# 2026-11-22, later still: read_guard takes `command`, for the PreToolUse hook
+# on Bash (E25: Claude read code through Bash, not Read).
+_WIRE_BUDGET = {"core": 6_100, "standard": 10_600, "full": 16_250}
 _MAX_DESCRIPTION = 450
 
 
@@ -274,19 +291,33 @@ def test_server_reports_the_package_version_not_the_sdk_version():
 # the instructions an agent sees first
 # ---------------------------------------------------------------------------
 
-def test_the_instructions_lead_with_the_two_questions_lynx_answers_best():
+def test_the_instructions_lead_with_how_to_find_code():
+    # On the Sketchbook bench (2026-11-21) Claude Code never called Lynx to fix
+    # a bug while the instructions opened with "before writing new code": the
+    # first thing they say is now how to find where something happens.
     mgr = _Manager({"demo": _Backend()})
     text = _build_instructions(mgr, list(tp.STANDARD_TOOLS), "standard")
 
-    lead = text[:600]
-    assert "`search`" in lead and "`find_similar`" in lead
-    assert lead.index("`find_similar`") < text.index("Sources:")
+    lead = text[:400]
+    assert "find where something happens" in lead and "`search` instead of grep" in lead
+    assert text.index("`search`") < text.index("`find_similar`") < text.index("Sources:")
 
 
 def test_the_instructions_name_find_similar_only_where_it_is_loaded():
     mgr = _Manager({"demo": _Backend()})
 
     assert "find_similar` on your" not in _build_instructions(mgr, list(tp.CORE_TOOLS), "core")
+    assert "find_similar` on your" in _build_instructions(mgr, list(tp.STANDARD_TOOLS), "standard")
+
+
+def test_the_instructions_stay_short_for_one_source():
+    # They ride in the context of every call. One source, standard profile:
+    # 1,768 characters before the rewrite of 2026-11-21.
+    mgr = _Manager({"demo": _Backend()})
+    text = _build_instructions(mgr, list(tp.STANDARD_TOOLS), "standard")
+
+    assert len(text) <= 1300
+    assert "`source` can be left out" in text and "Per-source tools" not in text
 
 
 def test_the_instructions_fit_what_claude_code_keeps(monkeypatch):
@@ -307,9 +338,27 @@ def test_the_instructions_fit_what_claude_code_keeps(monkeypatch):
     assert "client-00" not in text and "src29" in text
 
 
-def test_search_and_find_similar_ask_to_be_loaded_up_front():
+def test_optional_arguments_are_advertised_without_the_null_branch():
+    # `x: str | None = None` used to reach the client as anyOf [string, null]
+    # with default null, on every optional argument of every tool.
+    mgr = _Manager({"demo": _Backend()})
+    mcp = _register_all(mgr)
+    apply_tool_profile(mcp, "full")
+
+    listed = {t.name: t.inputSchema for t in asyncio.run(mcp.list_tools())}
+    assert '{"type": "null"}' not in json.dumps(listed)
+    props = listed["search"]["properties"]
+    assert props["top_k"]["type"] == "integer" and "default" not in props["top_k"]
+    assert [b.get("type") for b in props["source"]["anyOf"]] == ["string", "array"]
+    assert props["outline"]["default"] is False
+    # What the server accepts is unchanged: the arguments are still optional.
+    assert listed["search"]["required"] == ["query"]
+
+
+def test_only_search_asks_to_be_loaded_up_front():
     # Claude Code defers MCP tools behind a tool search unless a tool's _meta
     # says otherwise; deferred, they lose to the always-loaded Grep and Glob.
+    # `search` is the way in; each schema loaded up front rides in every call.
     mgr = _Manager({"demo": _Backend()})
     mcp = _register_all(mgr)
     apply_tool_profile(mcp, "standard")
@@ -317,7 +366,7 @@ def test_search_and_find_similar_ask_to_be_loaded_up_front():
     flagged = {t.name for t in asyncio.run(mcp.list_tools())
                if (t.meta or {}).get("anthropic/alwaysLoad") is True}
 
-    assert flagged == {"search", "find_similar"}
+    assert flagged == {"search"}
     # On the wire the SDK serializes by alias: the key is `_meta`.
     entry = next(t for t in asyncio.run(mcp.list_tools()) if t.name == "search")
     assert entry.model_dump(mode="json", by_alias=True, exclude_none=True)["_meta"] == {

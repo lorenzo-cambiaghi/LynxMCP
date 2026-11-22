@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..file_kinds import TEST_PATH_PATTERN
 from .base import SourceBackend
 
 
@@ -69,6 +70,7 @@ class CodebaseBackend(SourceBackend):
             search_mode=shared_config.search.mode,
             rrf_k=shared_config.search.rrf_k,
             candidate_pool_size=shared_config.search.candidate_pool_size,
+            secondary_weight=shared_config.search.secondary_weight,
             # Opt-in cross-encoder reranker (default disabled; see
             # README "Reranking" section for cost/benefit).
             reranker_config=shared_config.search.reranker,
@@ -713,17 +715,8 @@ class CodebaseBackend(SourceBackend):
                 break
         return out
 
-    # Default regex covering the most common test-path conventions:
-    # Python pytest (`/tests/`, `/test/`, `_test.py`), JS/TS (`.test.`,
-    # `.spec.`, `__tests__/`), C# xUnit/NUnit (`Test.cs`, `Tests.cs`),
-    # Go (`_test.go`).
-    _DEFAULT_TEST_PATH_PATTERN = (
-        r"(^|/)(test|tests|spec|__tests__)/|"
-        r"_test\.|\.test\.|\.spec\.|"
-        # pytest outside tests/, Godot GUT: test_player.gd
-        r"(^|/)test_[^/]*$|"
-        r"Test\.cs$|Tests\.cs$"
-    )
+    # The conventions live in file_kinds, shared with search ranking.
+    _DEFAULT_TEST_PATH_PATTERN = TEST_PATH_PATTERN
 
     @_rel_paths
     def find_tests_for(
@@ -978,6 +971,7 @@ class CodebaseBackend(SourceBackend):
         self,
         symbol: str,
         *,
+        file: str | None = None,
         callers_limit: int = 10,
         callees_limit: int = 10,
         tests_limit: int = 5,
@@ -1003,7 +997,19 @@ class CodebaseBackend(SourceBackend):
         self._before_read()
         from ..snippets import FileLines, symbol_outline
         files = FileLines()
-        defs = self._definitions(symbol, 3)
+        # Every definition of the name, then the ones in `file` when given:
+        # a name like `rig` (a helper in dozens of test files) used to come
+        # back as the first three definitions found, none of them the one
+        # the reader meant, with no word that others existed.
+        every = self._definitions(symbol, 500)
+        if file:
+            wanted = file.replace("\\", "/").lower()
+            chosen = [d for d in every if wanted in (d[1].get("file") or "").replace("\\", "/").lower()]
+            every = chosen + [d for d in every if d not in chosen] if chosen else every
+        defs = every[:3]
+        from ..fs_scan import to_rel_path
+        root = self.source_config.get("path")
+        others = [to_rel_path(d[1].get("file"), root) for d in every[3:] if d[1].get("file")]
         top_nid, top = defs[0] if defs else (None, None)
         is_type = bool(top and top.get("kind") == "class")
         definition = [r for _nid, r in defs]
@@ -1020,13 +1026,22 @@ class CodebaseBackend(SourceBackend):
             "subclasses": [],
             "members": [],
             "tests": self.find_tests_for(symbol, limit=tests_limit),
+            "other_definitions": len(others),
+            "other_definition_files": sorted(set(others))[:10],
         }
         if self.graph is not None:
-            # Seeded by the label the definition resolved to: `symbol` may be
-            # a fragment that matches a dozen names.
+            if top_nid is not None:
+                # The callers and callees of the definition shown, not of
+                # every node that shares its name.
+                from ..graph.query import callees_of_node, callers_of_node
+                G = self.graph.graph
+                result["called_by"] = callers_of_node(G, top_nid, limit=callers_limit)
+                result["calls"] = callees_of_node(G, top_nid, limit=callees_limit)
+            else:
+                seed = top.get("symbol") if top else symbol
+                result["called_by"] = self.get_callers(seed, limit=callers_limit)
+                result["calls"] = self.get_callees(seed, limit=callees_limit)
             seed = top.get("symbol") if top else symbol
-            result["called_by"] = self.get_callers(seed, limit=callers_limit)
-            result["calls"] = self.get_callees(seed, limit=callees_limit)
             if is_type:
                 result["superclasses"] = self.get_superclasses(seed, limit=subtypes_limit)
                 result["subclasses"] = self.get_subclasses(seed, limit=subtypes_limit)
@@ -1131,14 +1146,18 @@ class CodebaseBackend(SourceBackend):
         lines = FileLines()
 
         if self.graph is not None:
-            from ..graph import get_imports, get_callers
+            from ..graph import get_imports
             G = self.graph.graph
             symbols = []
+            symbol_ids, file_ids = [], []
             for _nid, data in G.nodes(data=True):
+                if data.get("kind") == "file" and _norm_path(data.get("file")) in wanted:
+                    file_ids.append(_nid)
                 if data.get("kind") not in ("function", "class"):
                     continue
                 if _norm_path(data.get("file")) not in wanted:
                     continue
+                symbol_ids.append(_nid)
                 symbols.append({
                     "label": data.get("label"),
                     "kind": data.get("kind"),
@@ -1152,15 +1171,26 @@ class CodebaseBackend(SourceBackend):
             for f in files:
                 imports.extend(get_imports(G, f, limit=100))
             result["imports"] = imports
-            # Dependent files: distinct files of everything that calls a symbol
-            # defined in this file (its own file excluded).
+            # Dependent files: the files that import this one, and those whose
+            # code calls a symbol defined here (its own file excluded). By
+            # node, not by name: by name, a file defining `rig` listed the
+            # callers of every `rig` in the project.
             dependents: set = set()
-            for s in symbols:
-                for e in get_callers(G, s["label"], limit=50):
-                    caller_file = (e.get("source") or {}).get("file")
-                    if caller_file and _norm_path(caller_file) not in wanted:
-                        dependents.add(caller_file)
-            result["dependent_files"] = sorted(dependents)
+            for fid in file_ids:
+                for u, _v, d in G.in_edges(fid, data=True):
+                    if d.get("relation") in ("imports", "imports_from"):
+                        f = G.nodes[u].get("file")
+                        if f and _norm_path(f) not in wanted:
+                            dependents.add(f)
+            for nid in symbol_ids:
+                for u, _v, d in G.in_edges(nid, data=True):
+                    if d.get("relation") == "calls":
+                        f = G.nodes[u].get("file")
+                        if f and _norm_path(f) not in wanted:
+                            dependents.add(f)
+            # Relative, like `files`: 33 absolute paths of one deep checkout
+            # were 3,500 characters of the same prefix (Sketchbook, 2026-11-21).
+            result["dependent_files"] = sorted(to_rel_path(f, root) for f in dependents)
         else:
             from ..chunking import chunk_file
             symbols = []

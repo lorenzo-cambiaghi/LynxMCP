@@ -115,14 +115,14 @@ def test_tool_count_constant_in_number_of_sources():
     n_one = len(_tools(_register_everything(one)))
     n_three = len(_tools(_register_everything(three)))
     assert n_one == n_three, "tool count must not grow with sources"
-    assert n_three <= 17, f"tool surface too large: {n_three}"
+    assert n_three <= 19, f"tool surface too large: {n_three}"
 
 
 def test_expected_fixed_tool_names():
     mgr = FakeManager({"a": FakeBackend(graph=object(), git=True)})
     names = set(_tools(_register_everything(mgr)))
     assert names == {
-        "search", "deep_search", "list_sources", "update_source_index",
+        "search", "prompt_hook", "read_guard", "deep_search", "list_sources", "update_source_index",
         "get_rag_status", "feedback", "graph_query", "find_definition",
         "find_usages", "find_tests_for", "find_similar", "describe_symbol",
         "impact", "module_summary", "repo_overview", "export_graph",
@@ -135,7 +135,7 @@ def test_conditional_tools_skipped_without_capability():
     mgr = FakeManager({"docs": FakeBackend(type_name="webdoc")})
     names = set(_tools(_register_everything(mgr)))
     assert names == {
-        "search", "deep_search", "list_sources", "update_source_index",
+        "search", "prompt_hook", "read_guard", "deep_search", "list_sources", "update_source_index",
         "get_rag_status", "feedback",
     }
 

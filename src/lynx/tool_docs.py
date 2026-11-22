@@ -18,12 +18,18 @@ from __future__ import annotations
 
 TOOL_DESCRIPTIONS = {
     "search": (
-        "Hybrid semantic + lexical search over the indexed code and docs. "
-        "Describe what the code does in plain words ('method that clamps camera "
-        "zoom'), not an identifier. Returns ranked chunks with file:line, symbol "
-        "and score; a hybrid score near 0.03 is a strong match. Omit `source` to "
-        "search every source at once. outline=true returns signatures only, for "
-        "cheap triage of broad queries."
+        "Find where something happens in the indexed code and docs, by meaning "
+        "and by name: describe it in plain words ('where the player picks a seat "
+        "to enter'). Ranked file:line hits, the best with its code, the rest as "
+        "signatures; a score near 0.03 is a strong match. Omit `source` to search "
+        "every source. outline=true: signatures only."
+    ),
+    "prompt_hook": (
+        "Hook only, do not call: Claude Code's UserPromptSubmit hook (mcp_tool) "
+        "sends the prompt and gets the code map of the request as hook JSON."
+    ),
+    "read_guard": (
+        "Hook only, do not call: Claude Code's PreToolUse hooks on Read and Bash call it."
     ),
     "deep_search": (
         "Escalation for when `search` came back weak or empty: runs 2-4 genuinely "
@@ -82,9 +88,9 @@ TOOL_DESCRIPTIONS = {
         "graph layer."
     ),
     "module_summary": (
-        "A file as a unit: each symbol it defines with signature and doc line, "
-        "its imports and the files depending on it (those two need the graph). "
-        "Read it instead of opening a file you don't know; describe_symbol "
+        "A file as a unit: each symbol it defines on one line (span, signature, "
+        "doc line), its imports and the files depending on it (those two need the "
+        "graph). Read it instead of opening an unknown file; describe_symbol "
         "covers one symbol in it."
     ),
     "repo_overview": (
@@ -137,8 +143,9 @@ PARAM_DESCRIPTIONS = {
     "*.top_k": "Max results; default from config.",
     "*.limit": "Max results.",
 
-    "search.query": "What the code does, in plain words, not an identifier.",
-    "search.outline": "Signatures only, no bodies: cheap triage for broad queries.",
+    "search.query": "What the code does, in plain words; a name works too.",
+    "search.outline": "Signatures only, no code.",
+    "search.identifiers": "Names you expect the code to use (guesses are fine), searched with the query.",
 
     "deep_search.queries": "2-4 genuinely different phrasings, tried in order.",
     "deep_search.mode": "dense | sparse | hybrid (single source only).",
@@ -149,6 +156,12 @@ PARAM_DESCRIPTIONS = {
     "update_source_index.source": "Source to rebuild.",
     "update_source_index.force": "Rebuild even without new git commits.",
     "get_rag_status.source": "Source to inspect; omit for all.",
+
+    "prompt_hook.prompt": "The prompt.",
+    "read_guard.file_path": "File.",
+    "read_guard.offset": "Offset.",
+    "read_guard.limit": "Limit.",
+    "read_guard.command": "Bash command.",
 
     "feedback.trying_to_do": "What you were trying to find or answer.",
     "feedback.tried": "Tools and queries you already tried.",
@@ -171,6 +184,7 @@ PARAM_DESCRIPTIONS = {
     "find_similar.snippet": "Code block to match; cut at 2000 chars.",
 
     "describe_symbol.symbol": "Identifier, e.g. `MyClass` or `MyClass.handleClick`.",
+    "describe_symbol.file": "Path fragment, to pick one of several definitions.",
     "describe_symbol.callers_limit": "Max callers.",
     "describe_symbol.callees_limit": "Max callees.",
     "describe_symbol.tests_limit": "Max tests.",
