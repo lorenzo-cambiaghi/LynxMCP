@@ -307,9 +307,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source", "-s", metavar="NAME",
         help="Inspect only this source. Default: all sources.",
     )
+    sp_status.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit one JSON object (the list-sources rows plus needs_update "
+             "and drift) instead of text, for scripts.",
+    )
 
     sp_list = sub.add_parser("list-sources", help="Enumerate configured sources")
     sp_list.add_argument("--config", "-c", metavar="PATH")
+    sp_list.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit one JSON object instead of text, for scripts.",
+    )
 
     sp_graph = sub.add_parser(
         "graph",

@@ -433,11 +433,30 @@ def _render_search(args, results, label, source, as_json, notice="") -> int:
 
 
 def _cmd_status(args) -> int:
-    config, manager = _build_manager(getattr(args, "config", None))
+    as_json = getattr(args, "as_json", False)
+    with _muted_stdout(as_json):
+        config, manager = _build_manager(getattr(args, "config", None))
     requested = getattr(args, "source", None)
     if requested is not None and requested not in config.sources:
-        print(f"[cli] unknown source {requested!r}", file=sys.stderr)
+        if as_json:
+            _emit_json({"ok": False, "operation": "status", "source": requested,
+                        "error": f"unknown source {requested!r}"})
+        else:
+            print(f"[cli] unknown source {requested!r}", file=sys.stderr)
         return 1
+    if as_json:
+        # The rows `list-sources` and the web UI show (broken sources
+        # included, with their health), plus what only status says.
+        rows = [r for r in manager.list_sources() if not requested or r.get("name") == requested]
+        with _muted_stdout(True):
+            for row in rows:
+                backend = manager.backends.get(row.get("name"))
+                if backend is None:
+                    continue
+                row["needs_update"] = bool(backend.needs_update()) if hasattr(backend, "needs_update") else False
+                row["drift"] = backend.drift_status_text()
+        _emit_json({"ok": True, "operation": "status", "sources": rows})
+        return 0
 
     names = [requested] if requested else list(config.sources.keys())
     for name in names:
@@ -484,7 +503,12 @@ def _cmd_status(args) -> int:
 
 
 def _cmd_list_sources(args) -> int:
-    config, manager = _build_manager(getattr(args, "config", None))
+    as_json = getattr(args, "as_json", False)
+    with _muted_stdout(as_json):
+        config, manager = _build_manager(getattr(args, "config", None))
+    if as_json:
+        _emit_json({"ok": True, "operation": "list-sources", "sources": manager.list_sources()})
+        return 0
     print(f"Sources ({len(manager.backends)}):")
     for status in manager.list_sources():
         line = f"  - {status['name']} (type: {status['type']}, chunks: {status.get('chunk_count', 'n/a')})"
