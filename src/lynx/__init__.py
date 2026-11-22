@@ -10,6 +10,15 @@ when reaching into a large codebase or unfamiliar docs.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .config import sanitize_tls_keylog_env as _sanitize_tls_keylog_env
+
+# Here and not only in the `lynx` entry point: a script, a hook or a notebook
+# that imports Lynx skipped `cli.main`, and on a machine whose antivirus sets
+# SSLKEYLOGFILE the bundled interpreter then aborted on first TLS use with
+# "OPENSSL_Uplink: no OPENSSL_Applink" (found 2026-11-21 by a Claude Code hook
+# that imports lynx.cli). config is stdlib-only, so this costs nothing.
+_sanitize_tls_keylog_env()
+
 try:
     # Distribution name (PyPI: lynx-mcp) differs from the import package
     # name (`lynx` was already taken on PyPI by an unrelated project).

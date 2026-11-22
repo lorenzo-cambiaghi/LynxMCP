@@ -517,3 +517,24 @@ def test_the_tls_workaround_is_silent_unless_asked(monkeypatch, capfd):
     monkeypatch.setenv("LYNX_VERBOSE", "1")
     sanitize_tls_keylog_env()
     assert "SSLKEYLOGFILE" in capfd.readouterr().err
+
+
+def test_importing_lynx_drops_the_tls_keylog_variable():
+    # A script or a Claude Code hook that imports Lynx never runs cli.main;
+    # with SSLKEYLOGFILE set (antivirus) the bundled interpreter aborted on
+    # first TLS use. A fresh interpreter, so the import really happens.
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "SSLKEYLOGFILE": "C:/antivirus/pipe"}
+    env.pop("LYNX_KEEP_SSLKEYLOGFILE", None)
+    code = "import os, lynx; print('SSLKEYLOGFILE' in os.environ)"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                         text=True, timeout=120)
+    assert out.stdout.strip() == "False", out.stderr
+
+    env["LYNX_KEEP_SSLKEYLOGFILE"] = "1"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                         text=True, timeout=120)
+    assert out.stdout.strip() == "True", out.stderr
