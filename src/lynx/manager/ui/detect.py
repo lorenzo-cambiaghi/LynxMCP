@@ -29,24 +29,44 @@ _IGNORED_DIRS = {
 _IGNORED_EXTS = {".pyc", ".so", ".dylib", ".dll", ".class", ".o", ".import", ".uid"}
 
 
-def detect_extensions(folder: Path, top_n: int = 10) -> list:
+def detect_extensions(
+    folder: Path,
+    top_n: int | None = 10,
+    *,
+    allowed=None,
+    extra_ignored_dirs=(),
+    max_files: int | None = None,
+) -> list:
     """Walk `folder` and return the top-N file extensions by count.
 
     Skips dot-prefixed dirs (e.g. `.git`, `.venv`) and common compiled
     artifacts (`.pyc`, `.so`, ...). Returns lower-case extensions with
     the leading dot, ordered by frequency (most common first).
 
+    `allowed` keeps only those extensions (zero-config mode passes the
+    formats Lynx can read, so a Unity project's `.meta` and `.png` never
+    make the list). `extra_ignored_dirs` adds directory names to prune and
+    `max_files` stops the walk early on huge trees. `top_n=None` returns
+    every extension found.
+
     Empty list if nothing matches (e.g. a folder of binaries only).
     """
     counter: Counter = Counter()
+    pruned = _IGNORED_DIRS | set(extra_ignored_dirs)
+    seen = 0
     for root, dirs, files in os.walk(folder):
-        # Prune in place — os.walk respects mutation of `dirs`
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _IGNORED_DIRS]
+        # Prune in place: os.walk respects mutation of `dirs`
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in pruned]
         for f in files:
-            ext = Path(f).suffix.lower()
+            seen += 1
+            ext = os.path.splitext(f)[1].lower()
             if not ext or ext in _IGNORED_EXTS:
                 continue
+            if allowed is not None and ext not in allowed:
+                continue
             counter[ext] += 1
+        if max_files is not None and seen >= max_files:
+            break
     return [ext for ext, _ in counter.most_common(top_n)]
 
 

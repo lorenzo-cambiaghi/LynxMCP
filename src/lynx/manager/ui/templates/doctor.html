@@ -3,14 +3,17 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
-  <h1 class="text-2xl font-bold text-slate-900">Doctor</h1>
+<div class="flex items-center justify-between mb-5">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Doctor</h1>
+    <p class="text-sm text-slate-500 mt-0.5">Full diagnostics across models, indexes, watchers, and paths.</p>
+  </div>
   <button type="button"
           hx-get="/doctor"
           hx-target="body"
           hx-swap="outerHTML"
-          class="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
-    🔄 Re-run checks
+          class="px-3.5 py-2 text-sm font-medium border border-slate-300 bg-white text-slate-700 rounded-lg hover:bg-slate-50 shadow-sm">
+    Re-run checks
   </button>
 </div>
 

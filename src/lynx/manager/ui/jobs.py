@@ -107,6 +107,16 @@ def has_running_job_for(group: str) -> Optional[Job]:
     return None
 
 
+def any_running_job() -> Optional[Job]:
+    """First queued or running job of any group (an index build, a model
+    download): the manager must not shut down under it."""
+    with _JOBS_LOCK:
+        for j in _JOBS.values():
+            if j.state in ("queued", "running"):
+                return j
+    return None
+
+
 def cleanup_old(max_age_sec: float = 3600.0) -> int:
     """Drop finished jobs older than `max_age_sec`. Returns count dropped.
 

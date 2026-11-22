@@ -635,7 +635,7 @@ def register(app) -> None:
                         has_git = True
             except Exception:
                 pass
-        content = integ.render_rules_for_sources(source_names, has_graph, has_git)
+        content = integ.render_rules_file(source_names, has_graph, has_git)
         # Use just the basename so the browser doesn't try to save
         # nested directories (`.cursor/rules/lynx.md` → `lynx.md`).
         from pathlib import Path
@@ -646,6 +646,202 @@ def register(app) -> None:
                 "Content-Disposition": f'attachment; filename="{filename}"',
             },
             media_type="text/markdown",
+        )
+
+    def _render_connect_badge(client_key: str, connected: bool, note: str = "", is_error: bool = False) -> str:
+        """HTML fragment returned by 1-click connect/disconnect endpoints."""
+        esc_key = _html_escape(client_key)
+        esc_note = _html_escape(note)
+        if is_error:
+            return (
+                f'<div id="connect-ctrl-{esc_key}" class="space-y-2">'
+                f'  <div class="flex items-center gap-2">'
+                f'    <span class="badge bg-red-100 text-red-800">Error</span>'
+                f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
+                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
+                f'      class="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800">'
+                f'      Retry connect'
+                f'    </button>'
+                f'  </div>'
+                f'  <div class="text-xs text-red-700">{esc_note}</div>'
+                f'</div>'
+            )
+        if connected:
+            note_html = f'<div class="text-xs text-emerald-700">{esc_note}</div>' if note else ""
+            return (
+                f'<div id="connect-ctrl-{esc_key}" class="space-y-1.5">'
+                f'  <div class="flex items-center gap-2 flex-wrap">'
+                f'    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">'
+                f'      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Connected'
+                f'    </span>'
+                f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
+                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
+                f'      class="px-2.5 py-1 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50">'
+                f'      Update entry'
+                f'    </button>'
+                f'    <button type="button" hx-post="/api/integrations/{esc_key}/disconnect" '
+                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
+                f'      hx-confirm="Remove Lynx from this client\'s MCP config? (Other MCP servers stay untouched.)" '
+                f'      class="px-2.5 py-1 text-xs text-slate-500 hover:text-red-700 rounded-md hover:bg-red-50">'
+                f'      Disconnect'
+                f'    </button>'
+                f'  </div>'
+                f'  {note_html}'
+                f'</div>'
+            )
+        note_html = f'<div class="text-xs text-slate-500">{esc_note}</div>' if note else ""
+        return (
+            f'<div id="connect-ctrl-{esc_key}" class="space-y-1.5">'
+            f'  <div class="flex items-center gap-2">'
+            f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
+            f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
+            f'      class="px-3.5 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700 shadow-sm">'
+            f'      Connect automatically'
+            f'    </button>'
+            f'  </div>'
+            f'  {note_html}'
+            f'</div>'
+        )
+
+    @app.post("/api/integrations/{client}/connect")
+    def api_integrations_connect(client: str):
+        """1-click safe MCP wiring for a supported AI client."""
+        from fastapi.responses import HTMLResponse
+        from pathlib import Path
+        from ...client_connector import connect_client
+
+        cfg_path = Path(app.state.config_path) if app.state.config_path else None
+        res = connect_client(client, config_path=cfg_path)
+        if not res.ok:
+            return HTMLResponse(
+                _render_connect_badge(client, False, note=res.message, is_error=True),
+                status_code=400,
+            )
+        return HTMLResponse(_render_connect_badge(res.client_key, True, note=res.message))
+
+    @app.post("/api/integrations/{client}/disconnect")
+    def api_integrations_disconnect(client: str):
+        """Remove Lynx from a supported AI client's MCP config."""
+        from fastapi.responses import HTMLResponse
+        from ...client_connector import disconnect_client
+
+        res = disconnect_client(client)
+        if not res.ok:
+            return HTMLResponse(
+                _render_connect_badge(client, True, note=res.message, is_error=True),
+                status_code=400,
+            )
+        return HTMLResponse(_render_connect_badge(res.client_key, False, note=res.message))
+
+    # ------------------------------------------------------------------
+    # System self-update check & 1-click upgrade (explicit user click only)
+    # ------------------------------------------------------------------
+    @app.post("/api/system/check-update")
+    def api_system_check_update():
+        import sys
+        from fastapi.responses import HTMLResponse
+        from ...updater import check_latest_version
+
+        st = check_latest_version(force=True)
+        if not st.checked:
+            return HTMLResponse(
+                '<div id="update-banner" class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between gap-3">'
+                f'<div><strong>Offline / could not check PyPI</strong> — {_html_escape(st.error or "")} '
+                f'(installed: <code>v{_html_escape(st.current_version)}</code>)</div>'
+                '</div>'
+            )
+        if not st.update_available:
+            return HTMLResponse(
+                '<div id="update-banner" class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 flex items-center justify-between gap-3">'
+                f'<div><strong>Up to date</strong> — Lynx <code>v{_html_escape(st.current_version)}</code> is the latest release.</div>'
+                '</div>'
+            )
+
+        action_html = ""
+        if st.install.can_auto_upgrade:
+            action_html = (
+                '<button type="button" hx-post="/api/system/update" '
+                'hx-target="#update-banner" hx-swap="outerHTML" '
+                + (
+                    'hx-confirm="Close your AI editors first (Claude Code, Cursor...). '
+                    'LynxManager will close, update in its own window and reopen." '
+                    if sys.platform == "win32" else ''
+                ) +
+                'class="shrink-0 px-3 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700">'
+                f'Update to v{_html_escape(st.latest_version or "")}'
+                '</button>'
+            )
+        else:
+            action_html = (
+                f'<a href="{_html_escape(st.release_url)}" target="_blank" rel="noopener" '
+                'class="shrink-0 px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800">'
+                'Download release →</a>'
+            )
+        return HTMLResponse(
+            '<div id="update-banner" class="p-3 bg-orange-50 border border-orange-200 rounded-lg text-xs text-orange-950 flex items-center justify-between gap-3 flex-wrap">'
+            '<div>'
+            f'<strong>Update available:</strong> <code>v{_html_escape(st.current_version)}</code> → '
+            f'<code>v{_html_escape(st.latest_version or "")}</code> '
+            f'<span class="text-orange-800">({_html_escape(st.install.command_display)})</span>'
+            '</div>'
+            f'{action_html}'
+            '</div>'
+        )
+
+    @app.post("/api/system/update")
+    def api_system_update():
+        import os
+        import signal
+        import sys
+        import subprocess
+        import threading
+        from fastapi.responses import HTMLResponse
+        from ...updater import blocking_processes, describe_blockers, run_upgrade
+        from .jobs import any_running_job
+
+        def _banner(kind: str, html: str, status: int = 200):
+            colours = {
+                "info": "bg-sky-50 border-sky-200 text-sky-900",
+                "warn": "bg-amber-50 border-amber-200 text-amber-900",
+            }[kind]
+            return HTMLResponse(
+                f'<div id="update-banner" class="p-3 border rounded-lg text-xs {colours}">{html}</div>',
+                status_code=status,
+            )
+
+        if sys.platform == "win32":
+            # Windows will not replace files a running Lynx holds open, and this
+            # manager is one of them. Hand the update to a console of its own
+            # that waits for the manager to close, then reopens it.
+            job = any_running_job()
+            if job is not None:
+                return _banner("warn", f"<strong>Wait for “{_html_escape(job.label)}” to finish</strong> "
+                                       "before updating.", 409)
+            others = blocking_processes()
+            if others:
+                text = _html_escape(describe_blockers(others)).replace("\n", "<br>")
+                return _banner("warn", text, 409)
+            subprocess.Popen(
+                [sys.executable, "-m", "lynx", "update", "--wait-pid", str(os.getpid()),
+                 "--restart-manager"],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+            threading.Timer(1.0, lambda: signal.raise_signal(signal.SIGINT)).start()
+            return _banner("info", "<strong>Updating in a separate window.</strong> LynxManager closes "
+                                   "now and reopens by itself when the update is done.")
+
+        rc, output = run_upgrade()
+        if rc == 0:
+            return HTMLResponse(
+                '<div id="update-banner" class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900">'
+                f'<strong>✓ Updated!</strong> {_html_escape(output.splitlines()[0])}'
+                '</div>'
+            )
+        return HTMLResponse(
+            '<div id="update-banner" class="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-900">'
+            f'<strong>Update failed:</strong> {_html_escape(output[:400])}'
+            '</div>',
+            status_code=500,
         )
 
 

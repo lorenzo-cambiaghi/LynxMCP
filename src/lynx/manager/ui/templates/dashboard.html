@@ -3,41 +3,143 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-6">
-  <h1 class="text-2xl font-bold text-slate-900">Dashboard</h1>
-  <div class="text-sm text-slate-500">
-    {{ total_sources }} source{{ '' if total_sources == 1 else 's' }},
-    {{ total_chunks }} chunks indexed
+<!-- Page Header -->
+<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Dashboard</h1>
+    <p class="text-sm text-slate-500 mt-0.5">
+      Local semantic search &amp; code graph for your AI editor — 100% on your machine.
+    </p>
+  </div>
+  <div class="flex items-center gap-2.5">
+    <a href="/integrations"
+       class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition">
+      Connect AI
+    </a>
+    <a href="/sources/new"
+       class="px-4 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700 shadow-sm transition">
+      + Add project
+    </a>
   </div>
 </div>
 
-<!-- Health card: the doctor probes every index, so it loads after the page. -->
-<div id="health-card" hx-get="/partials/health" hx-trigger="load" hx-swap="outerHTML"
-     class="mb-6 p-4 bg-white border border-slate-200 rounded shadow-sm">
-  <div class="font-semibold text-slate-900 mb-2">Health check</div>
-  <div class="text-sm text-slate-500">Running the checks… (each index is probed; a large one takes a few seconds)</div>
+<!-- 3-Step Getting Started Strip (always visible when onboarding isn't complete, compact once done) -->
+{% set step1_done = total_sources > 0 %}
+{% set step2_done = connected_clients | length > 0 %}
+{% if not step1_done or not step2_done %}
+<div class="mb-6 p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-sm font-semibold text-slate-900">Get running in 3 steps</div>
+    <span class="text-xs text-slate-500">
+      {{ (1 if step1_done else 0) + (1 if step2_done else 0) }} of 3 complete
+    </span>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <!-- Step 1 -->
+    <a href="/sources/new/codebase"
+       class="flex items-start gap-3 p-3.5 rounded-lg border transition {{ 'bg-emerald-50/60 border-emerald-200' if step1_done else 'bg-slate-50/70 border-slate-200 hover:border-orange-300 hover:bg-orange-50/30' }}">
+      <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 {{ 'bg-emerald-600 text-white' if step1_done else 'bg-orange-600 text-white' }}">
+        {{ '✓' if step1_done else '1' }}
+      </div>
+      <div>
+        <div class="text-sm font-semibold text-slate-900">Add a project folder</div>
+        <div class="text-xs text-slate-600 mt-0.5">
+          {% if step1_done %}
+            {{ total_sources }} source{{ '' if total_sources == 1 else 's' }} configured
+          {% else %}
+            Pick a folder — languages &amp; code graph are detected automatically.
+          {% endif %}
+        </div>
+      </div>
+    </a>
+
+    <!-- Step 2 -->
+    <a href="/integrations"
+       class="flex items-start gap-3 p-3.5 rounded-lg border transition {{ 'bg-emerald-50/60 border-emerald-200' if step2_done else 'bg-slate-50/70 border-slate-200 hover:border-orange-300 hover:bg-orange-50/30' }}">
+      <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 {{ 'bg-emerald-600 text-white' if step2_done else ('bg-orange-600 text-white' if step1_done else 'bg-slate-300 text-slate-700') }}">
+        {{ '✓' if step2_done else '2' }}
+      </div>
+      <div>
+        <div class="text-sm font-semibold text-slate-900">Connect your AI editor</div>
+        <div class="text-xs text-slate-600 mt-0.5">
+          {% if step2_done %}
+            Connected: {{ connected_clients | join(', ') }}
+          {% else %}
+            1-click setup for Claude Code, Cursor, Windsurf, Antigravity &amp; VS Code.
+          {% endif %}
+        </div>
+      </div>
+    </a>
+
+    <!-- Step 3 -->
+    <a href="/playground"
+       class="flex items-start gap-3 p-3.5 rounded-lg border bg-slate-50/70 border-slate-200 hover:border-orange-300 hover:bg-orange-50/30 transition">
+      <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 {{ 'bg-orange-600 text-white' if (step1_done and step2_done) else 'bg-slate-300 text-slate-700' }}">
+        3
+      </div>
+      <div>
+        <div class="text-sm font-semibold text-slate-900">Try a search</div>
+        <div class="text-xs text-slate-600 mt-0.5">
+          Test semantic search right here or ask your AI a question about your code.
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
+{% endif %}
+
+<!-- Compact KPI / Status Bar -->
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+  <div class="p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+    <div class="text-xs font-medium text-slate-500">Indexed projects</div>
+    <div class="mt-1 flex items-baseline gap-2">
+      <span class="text-2xl font-bold text-slate-900">{{ total_sources }}</span>
+      <span class="expert-only-inline expert-only text-xs text-slate-500">{{ total_chunks }} chunks</span>
+    </div>
+  </div>
+  <div class="p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+    <div class="text-xs font-medium text-slate-500">Connected AI editors</div>
+    <div class="mt-1 flex items-baseline gap-2">
+      <span class="text-2xl font-bold text-slate-900">{{ connected_clients | length }}</span>
+      <span class="text-xs text-slate-500 truncate">
+        {% if connected_clients %}
+          {{ connected_clients | join(', ') }}
+        {% else %}
+          <a href="/integrations" class="text-orange-600 hover:underline font-medium">Connect now →</a>
+        {% endif %}
+      </span>
+    </div>
+  </div>
+  <!-- Health card loads asynchronously so large indexes never block page render -->
+  <div id="health-card" hx-get="/partials/health" hx-trigger="load" hx-swap="outerHTML"
+       class="p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+    <div class="text-xs font-medium text-slate-500">System health</div>
+    <div class="mt-1.5 text-sm text-slate-500">Checking indexes…</div>
+  </div>
 </div>
 
 <!-- Sources grid -->
 <div class="flex items-baseline justify-between mb-3">
-  <h2 class="text-lg font-semibold text-slate-900">Sources</h2>
+  <h2 class="text-base font-semibold text-slate-900">Sources</h2>
   {% if sources %}
-    <a href="/sources/new" class="text-sm text-indigo-600 hover:underline">+ Add source</a>
+    <a href="/sources/new" class="text-xs font-medium text-orange-600 hover:text-orange-700 hover:underline">+ Add source</a>
   {% endif %}
 </div>
 
 {% if not sources %}
-  <div class="p-8 bg-white border border-dashed border-slate-300 rounded text-center">
-    <div class="text-4xl mb-2">📚</div>
-    <div class="text-slate-700 font-medium mb-1">No sources configured yet</div>
+  <div class="p-10 bg-white border border-dashed border-slate-300 rounded-xl text-center">
+    <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-6 h-6"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    </div>
+    <div class="text-slate-900 font-semibold mb-1">No projects indexed yet</div>
     {% if not manager_error %}
-      <div class="text-sm text-slate-500 mb-4 max-w-md mx-auto">
-        Lynx needs at least one source — your code, a docs site, or a folder of PDFs —
-        to be useful. The guided form explains each option.
+      <div class="text-sm text-slate-500 mb-5 max-w-md mx-auto">
+        Point Lynx at a code folder, documentation site, or folder of PDFs.
+        Everything stays local on your machine.
       </div>
       <a href="/sources/new"
-         class="inline-block px-5 py-2 bg-indigo-600 text-white rounded font-medium hover:bg-indigo-700">
-        + Add your first source
+         class="inline-block px-5 py-2.5 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition">
+        + Add your first project
       </a>
     {% endif %}
   </div>
@@ -45,69 +147,60 @@
   <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
   {% for s in sources %}
     {% if s.health == "corrupt" %}
-    <div id="source-{{ s.name }}" class="p-4 bg-red-50 border border-red-200 rounded shadow-sm">
-      <div class="flex items-start justify-between mb-2">
+    <div id="source-{{ s.name }}" class="p-5 bg-red-50/70 border border-red-200 rounded-xl shadow-sm">
+      <div class="flex items-start justify-between gap-2 mb-2">
         <div>
-          <span class="font-semibold text-red-900">{{ s.name }}</span>
-          <div class="text-xs text-red-600 mt-0.5">type: {{ s.type }}</div>
+          <span class="font-semibold text-red-950">{{ s.name }}</span>
+          <div class="text-xs text-red-700 mt-0.5">{{ s.type }}</div>
         </div>
-        <span class="badge bg-red-100 text-red-800" title="The vector index can't be read (incompatible version or truncated store)">⚠ corrupt index</span>
+        <span class="badge bg-red-100 text-red-800">Needs rebuild</span>
       </div>
-      {% if s.path %}
-        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
-      {% endif %}
-      <p class="text-xs text-red-700 mb-1">{{ s.error }}</p>
-      <p class="text-xs text-slate-600 mb-2">The index is only derived data — reset it to rebuild from your files.</p>
+      <p class="text-xs text-slate-700 mb-3">The local index needs to be rebuilt from your files. Your source files are untouched.</p>
+      <p class="expert-only text-xs font-mono text-red-700 mb-2">{{ s.error }}</p>
       <div id="reset-status-{{ s.name }}">
         <button
           hx-post="/api/sources/{{ s.name }}/reset"
           hx-target="#reset-status-{{ s.name }}"
           hx-swap="innerHTML"
-          hx-confirm="Reset the index of '{{ s.name }}'? It is deleted and rebuilt from your files, which can take a while."
-          class="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">
-          Reset index
+          hx-confirm="Rebuild the index for '{{ s.name }}' from scratch? Your code is never touched."
+          class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700">
+          Rebuild index
         </button>
       </div>
     </div>
     {% elif s.health == "in_use" %}
-    <div id="source-{{ s.name }}" class="p-4 bg-sky-50 border border-sky-200 rounded shadow-sm">
-      <div class="flex items-start justify-between mb-2">
+    <div id="source-{{ s.name }}" class="p-5 bg-sky-50/70 border border-sky-200 rounded-xl shadow-sm">
+      <div class="flex items-start justify-between gap-2 mb-2">
         <div>
-          <span class="font-semibold text-sky-900">{{ s.name }}</span>
-          <div class="text-xs text-sky-700 mt-0.5">type: {{ s.type }}</div>
+          <span class="font-semibold text-sky-950">{{ s.name }}</span>
+          <div class="text-xs text-sky-700 mt-0.5">{{ s.type }}</div>
         </div>
-        <span class="badge bg-sky-100 text-sky-800" title="Another running Lynx process (usually `lynx serve`, possibly a build or a second manager) holds this index and did not answer the integrity probe in time.">🔒 in use by another Lynx process</span>
+        <span class="badge bg-sky-100 text-sky-800">Active in editor</span>
       </div>
-      {% if s.path %}
-        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
-      {% endif %}
-      <p class="text-xs text-slate-600 mb-2">Nothing is wrong — the index is busy serving another Lynx process (usually the MCP server). Stop that process and Re-check if you want to manage this source here.</p>
+      <p class="text-xs text-slate-600 mb-3">Everything is fine — your AI editor's Lynx server is actively serving this project.</p>
       <button
         hx-post="/api/manager/reload"
         hx-swap="none"
-        class="px-3 py-1.5 text-sm rounded bg-sky-600 text-white hover:bg-sky-700">
-        Re-check
+        class="px-3 py-1.5 text-xs font-medium rounded-lg bg-sky-600 text-white hover:bg-sky-700">
+        Refresh status
       </button>
     </div>
     {% elif s.health == "unverified" %}
-    <div id="source-{{ s.name }}" class="p-4 bg-amber-50 border border-amber-200 rounded shadow-sm">
-      <div class="flex items-start justify-between mb-2">
+    <div id="source-{{ s.name }}" class="p-5 bg-amber-50/70 border border-amber-200 rounded-xl shadow-sm">
+      <div class="flex items-start justify-between gap-2 mb-2">
         <div>
-          <span class="font-semibold text-amber-900">{{ s.name }}</span>
-          <div class="text-xs text-amber-700 mt-0.5">type: {{ s.type }}</div>
+          <span class="font-semibold text-amber-950">{{ s.name }}</span>
+          <div class="text-xs text-amber-700 mt-0.5">{{ s.type }}</div>
         </div>
-        <span class="badge bg-amber-100 text-amber-800" title="The integrity probe timed out — likely a large index, a slow/AV-scanned disk, or another Lynx process holding it. Not necessarily corrupt.">⚠ index not verified</span>
+        <span class="badge bg-amber-100 text-amber-800">Busy / unverified</span>
       </div>
-      {% if s.path %}
-        <div class="text-xs font-mono text-slate-600 truncate mb-1" title="{{ s.path }}">{{ s.path }}</div>
-      {% endif %}
-      <p class="text-xs text-amber-800 mb-1">{{ s.error }}</p>
-      <p class="text-xs text-slate-600 mb-2">Lynx left it unopened to stay safe. Close any other running Lynx process (a build or a second manager) and reload this page; reset only if it keeps failing.</p>
+      <p class="text-xs text-slate-600 mb-3">This index didn't respond in time (often because another Lynx window is indexing). Try refreshing first.</p>
+      <p class="expert-only text-xs font-mono text-amber-800 mb-2">{{ s.error }}</p>
       <div class="flex items-center gap-2">
         <button
           hx-post="/api/manager/reload"
           hx-swap="none"
-          class="px-3 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700">
+          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700">
           Re-check
         </button>
         <div id="reset-status-{{ s.name }}">
@@ -115,98 +208,125 @@
             hx-post="/api/sources/{{ s.name }}/reset"
             hx-target="#reset-status-{{ s.name }}"
             hx-swap="innerHTML"
-            hx-confirm="Reset the index of '{{ s.name }}'? It may only be slow to verify; a reset deletes it and rebuilds it from your files."
-            class="px-3 py-1.5 text-sm rounded border border-amber-300 text-amber-800 hover:bg-amber-100">
+            hx-confirm="Reset the index of '{{ s.name }}'? It deletes and rebuilds derived index data."
+            class="expert-only px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-300 text-amber-900 hover:bg-amber-100">
             Reset anyway
           </button>
         </div>
       </div>
     </div>
     {% else %}
-    <div id="source-{{ s.name }}" class="p-4 bg-white border border-slate-200 rounded shadow-sm hover:shadow transition">
-      <div class="flex items-start justify-between mb-2">
-        <div>
-          <a href="/sources/{{ s.name }}" class="font-semibold text-slate-900 hover:text-indigo-600">{{ s.name }}</a>
-          <div class="text-xs text-slate-500 mt-0.5">type: {{ s.type }}</div>
+    <div id="source-{{ s.name }}" class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm hover:border-orange-300 hover:shadow transition flex flex-col justify-between">
+      <div>
+        <div class="flex items-start justify-between gap-2 mb-3">
+          <div class="min-w-0">
+            <a href="/sources/{{ s.name }}" class="font-semibold text-slate-900 hover:text-orange-600 transition truncate block">{{ s.name }}</a>
+            <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+              <span class="badge bg-slate-100 text-slate-700">{{ s.type }}</span>
+              {% if s.graph %}
+                <span class="badge bg-orange-50 text-orange-700 border border-orange-200/70">Graph ON</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="shrink-0 flex flex-col items-end gap-1">
+            {% if s.chunk_count and s.chunk_count > 0 %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Ready
+              </span>
+            {% else %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Not indexed yet
+              </span>
+            {% endif %}
+            {% if s.drift_severity == "critical" %}
+              <span class="badge bg-red-100 text-red-800">Out of sync</span>
+            {% elif s.drift_severity == "warning" %}
+              <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800">drift: warning</span>
+            {% endif %}
+            {% if s.locked %}
+              <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800" title="Locked by another Lynx process">locked</span>
+            {% endif %}
+          </div>
         </div>
-        <div class="space-y-1 text-right">
-          {% if s.locked %}
-            <span class="badge bg-amber-100 text-amber-800" title="ChromaDB locked by another process (likely `lynx serve` is running)">🔒 locked</span>
+
+        {% if s.path %}
+          <div class="text-xs font-mono text-slate-500 truncate mb-3" title="{{ s.path }}">{{ s.path }}</div>
+        {% endif %}
+
+        <!-- Expert-only telemetry -->
+        <dl class="expert-only text-xs space-y-1.5 pt-2.5 mb-3 border-t border-slate-100">
+          {% if s.chunk_count is not none %}
+            <div class="flex justify-between gap-2">
+              <dt class="text-slate-500">Chunks</dt>
+              <dd class="font-mono text-slate-700">{{ s.chunk_count }}</dd>
+            </div>
           {% endif %}
-          {% if s.drift_severity == "critical" %}
-            <span class="badge bg-red-100 text-red-800">drift: critical</span>
-          {% elif s.drift_severity == "warning" %}
-            <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+          {% if s.last_update %}
+            <div class="flex justify-between gap-2">
+              <dt class="text-slate-500">Last update</dt>
+              <dd class="text-slate-700" title="{{ s.last_update }}">{{ s.last_update[:16] | replace('T', ' ') }}</dd>
+            </div>
           {% endif %}
-        </div>
+          {% if s.graph %}
+            <div class="flex justify-between gap-2">
+              <dt class="text-slate-500">Graph</dt>
+              <dd class="font-mono text-slate-700">{{ s.graph.nodes }} nodes · {{ s.graph.edges }} edges</dd>
+            </div>
+          {% endif %}
+          {% include "_serving_row.html" %}
+        </dl>
       </div>
 
-      <dl class="text-sm space-y-1">
-        {% if s.path %}
-          <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">Path</dt>
-            <dd class="font-mono text-xs truncate" title="{{ s.path }}">{{ s.path }}</dd>
-          </div>
-        {% endif %}
-        {% if s.chunk_count is not none %}
-          <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">Chunks</dt>
-            <dd>{{ s.chunk_count }}</dd>
-          </div>
-        {% endif %}
-        {% if s.last_update %}
-          <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">Last update</dt>
-            <dd class="text-xs" title="{{ s.last_update }}">{{ s.last_update[:16] | replace('T', ' ') }}</dd>
-          </div>
-        {% endif %}
-        {% if s.graph %}
-          <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">Graph</dt>
-            <dd class="text-xs">{{ s.graph.nodes }} nodes, {{ s.graph.edges }} edges</dd>
-          </div>
-        {% endif %}
-        {% include "_serving_row.html" %}
-      </dl>
+      <!-- Card footer actions -->
+      <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+        <span class="simple-only text-slate-400">
+          {% if s.last_update %}Updated {{ s.last_update[:10] }}{% else %}Click Manage to index{% endif %}
+        </span>
+        <div class="flex items-center gap-2 ml-auto">
+          <a href="/playground" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium">
+            Search
+          </a>
+          <a href="/sources/{{ s.name }}" class="px-2.5 py-1 rounded-md bg-slate-100 text-slate-800 hover:bg-slate-200 font-medium">
+            Manage →
+          </a>
+        </div>
+      </div>
     </div>
     {% endif %}
   {% endfor %}
   </div>
 {% endif %}
 
+<!-- Feedback reports (Expert section unless user switches to Expert) -->
 {% if feedback and feedback.total %}
-  <!-- What agents reported when the index couldn't answer them. Local file,
-       never uploaded; the only signal that says WHY the index falls short. -->
-  <h2 class="mt-8 mb-3 text-lg font-semibold text-slate-800">
-    Feedback from your AI clients
-    <span class="ml-2 text-sm font-normal text-slate-500">
-      {{ feedback.total }} report{{ '' if feedback.total == 1 else 's' }}
-      {%- if feedback.last_at %}, last {{ feedback.last_at.split('T')[0] }}{% endif %}
-    </span>
-  </h2>
-  <div class="p-4 bg-white border border-slate-200 rounded">
-    <p class="text-xs text-slate-500 mb-3">
-      Filed when a client exhausted search and still couldn't find what it
-      needed — each one is a source, a filter or a chunking setting worth a
-      second look. Stored locally in
-      <code class="font-mono">rag_storage/_feedback/feedback.jsonl</code>;
-      <code class="font-mono">lynx manager feedback</code> shows the full log.
-    </p>
-    <ul class="space-y-2">
-      {% for r in feedback.recent | reverse %}
-        <li class="p-3 bg-slate-50 border border-slate-200 rounded text-sm">
-          <div class="text-slate-800">{{ r.trying_to_do }}</div>
-          {% if r.stuck %}
-            <div class="mt-1 text-xs text-slate-600">
-              <span class="text-slate-400">stuck:</span> {{ r.stuck }}
+  <div class="expert-only mt-8">
+    <h2 class="mb-3 text-base font-semibold text-slate-900">
+      Feedback from your AI clients
+      <span class="ml-2 text-xs font-normal text-slate-500">
+        {{ feedback.total }} report{{ '' if feedback.total == 1 else 's' }}
+        {%- if feedback.last_at %}, last {{ feedback.last_at.split('T')[0] }}{% endif %}
+      </span>
+    </h2>
+    <div class="p-4 bg-white border border-slate-200 rounded-xl shadow-sm">
+      <p class="text-xs text-slate-500 mb-3">
+        Filed locally when an agent couldn't find what it needed (<code class="font-mono">lynx manager feedback</code>).
+      </p>
+      <ul class="space-y-2">
+        {% for r in feedback.recent | reverse %}
+          <li class="p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm">
+            <div class="text-slate-800">{{ r.trying_to_do }}</div>
+            {% if r.stuck %}
+              <div class="mt-1 text-xs text-slate-600">
+                <span class="text-slate-400">stuck:</span> {{ r.stuck }}
+              </div>
+            {% endif %}
+            <div class="mt-1 text-xs text-slate-400 font-mono">
+              {{ r.at }}{% if r.sources %} · {{ r.sources | join(', ') }}{% endif %}
             </div>
-          {% endif %}
-          <div class="mt-1 text-xs text-slate-400 font-mono">
-            {{ r.at }}{% if r.sources %} · {{ r.sources | join(', ') }}{% endif %}
-          </div>
-        </li>
-      {% endfor %}
-    </ul>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
   </div>
 {% endif %}
 

@@ -36,6 +36,7 @@ and the absence of `sources`) is rejected with a pointer to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -107,12 +108,28 @@ class RerankerConfig:
     top_n_before_rerank: int = 30
 
 
+def _secondary_weight(value) -> float:
+    """search.secondary_weight: a number in (0, 1]; 1.0 turns the ranking
+    of code above tests, data and docs off."""
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"search.secondary_weight must be a number in (0, 1], got {value!r}")
+    if not 0.0 < weight <= 1.0:
+        raise ValueError(f"search.secondary_weight must be in (0, 1], got {weight}")
+    return weight
+
+
 @dataclass(frozen=True)
 class SearchConfig:
     default_top_k: int = 5
     mode: str = "hybrid"            # "hybrid" | "dense" | "sparse"
     rrf_k: int = 60                 # standard RRF constant
     candidate_pool_size: int = 30   # per-retriever candidate pool size
+    # Fused score of test, data and doc files is multiplied by this, so the
+    # code a question is about ranks above the tests and data that describe
+    # it in the same words (file_kinds.py). 1.0 turns it off.
+    secondary_weight: float = 0.5
     deep: DeepSearchConfig = field(default_factory=DeepSearchConfig)
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
@@ -566,6 +583,7 @@ def load_config(config_path: Path | None = None) -> Config:
         mode=mode,
         rrf_k=int(search_raw.get("rrf_k", 60)),
         candidate_pool_size=int(search_raw.get("candidate_pool_size", 30)),
+        secondary_weight=_secondary_weight(search_raw.get("secondary_weight", 0.5)),
         deep=deep,
         reranker=reranker,
     )
@@ -627,6 +645,182 @@ def load_config(config_path: Path | None = None) -> Config:
         sources=sources,
         reports_path=reports_path,
         tools=tools,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zero-config builder (`lynx serve <PATH>`)
+# ---------------------------------------------------------------------------
+
+# What zero-config mode indexes when it finds it: every extension the chunker
+# parses with a grammar, plus text formats worth searching (docs, shaders,
+# web templates, config). Anything else (images, models, Unity `.meta`,
+# scene YAML, lock files) stays out. The list is static so `lynx serve PATH`
+# does not import tree-sitter before the handshake; a test keeps it in step
+# with `chunking.grammar_extensions()`.
+ZERO_CONFIG_EXTENSIONS = frozenset({
+    ".cs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".c", ".h", ".m", ".mm",
+    ".go", ".rs", ".java", ".rb", ".php", ".kt", ".kts", ".swift",
+    ".sh", ".bash", ".sql", ".scala", ".sc", ".lua", ".gd",
+    ".md", ".mdx", ".rst", ".txt",
+    ".html", ".css", ".scss", ".vue", ".svelte",
+    ".glsl", ".vert", ".frag", ".wgsl", ".hlsl", ".shader", ".cginc", ".gdshader",
+    ".uxml", ".uss", ".yaml", ".yml", ".toml",
+})
+
+# Used only when the folder holds none of the above (a brand-new repository).
+_ZERO_CONFIG_FALLBACK_EXTENSIONS = (
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".cs", ".cpp", ".c", ".h",
+    ".go", ".rs", ".java", ".gd", ".rb", ".php", ".md", ".txt",
+)
+
+# Generated folders of the engines, added only when the folder is a project
+# of that engine: `/Library/` or `/Saved/` are ordinary names elsewhere.
+_ENGINE_IGNORES = {
+    "unity": ("/Library/", "/Temp/", "/Logs/", "/UserSettings/", "/MemoryCaptures/"),
+    "unreal": ("/Binaries/", "/Intermediate/", "/Saved/", "/DerivedDataCache/"),
+    "godot": ("/.godot/", "/.import/"),
+}
+_ZERO_CONFIG_EXTRA_IGNORES = ("/coverage/", "/.cache/")
+
+# The extension scan stops after this many files; past it the counts are
+# already representative and a monorepo would only slow the handshake.
+_ZERO_CONFIG_SCAN_LIMIT = 50_000
+
+
+def detect_engine(target: Path) -> "str | None":
+    if (target / "Assets").is_dir() and (target / "ProjectSettings").is_dir():
+        return "unity"
+    if (target / "project.godot").is_file():
+        return "godot"
+    if any(target.glob("*.uproject")):
+        return "unreal"
+    return None
+
+
+def _refuse_broad_directory(target: Path) -> None:
+    """`lynx serve .` from an editor that starts servers in the home folder
+    or at a drive root would index the whole disk. Refuse with the fix."""
+    home = Path.home().resolve()
+    if target.parent == target:
+        what = "a drive root"
+    elif target == home:
+        what = "your home folder"
+    elif home.is_relative_to(target):
+        what = "a folder that contains your home folder"
+    else:
+        return
+    raise ValueError(
+        f"refusing to index {target}: it is {what}, not a project. Pass the "
+        f"project folder instead, e.g. `lynx serve /path/to/project`. Editors "
+        f"that do not start MCP servers inside the project need the full path "
+        f"rather than `.`."
+    )
+
+
+def sanitize_source_name(name: str) -> str:
+    """Turn a directory name into a valid v2 source identifier.
+
+    Mirrors `SOURCE_NAME_RE` (`^[a-zA-Z][a-zA-Z0-9_]{0,39}$`) so any folder
+    name (`my-app`, `2026-project`, `.`) becomes a valid MCP `source` name.
+    """
+    cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", name or "").strip("_")
+    if not cleaned:
+        return "project"
+    if not cleaned[0].isalpha():
+        cleaned = f"repo_{cleaned}"
+    return cleaned[:40]
+
+
+def _user_cache_root() -> Path:
+    """OS-appropriate cache root for auto-managed zero-config indexes."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "Lynx" / "auto"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "Lynx" / "auto"
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "lynx" / "auto"
+
+
+def default_auto_storage_dir(path: Path) -> Path:
+    """Deterministic per-repository cache directory outside the repo itself.
+
+    Stores zero-config indexes under the OS user cache directory keyed by
+    `<sanitized_name>-<sha8>`, so `lynx serve .` never pollutes the user's
+    working tree or git status.
+    """
+    resolved = path.resolve()
+    digest = hashlib.sha256(os.path.normcase(str(resolved)).encode("utf-8")).hexdigest()[:8]
+    slug = sanitize_source_name(resolved.name)
+    return _user_cache_root() / f"{slug}-{digest}"
+
+
+def build_zero_config(
+    path: "Path | str",
+    *,
+    storage_path: "Path | str | None" = None,
+    graph_enabled: bool = True,
+) -> Config:
+    """Build an in-memory `Config` for a single local directory with no config.json.
+
+    Reuses the stdlib-only folder detector (`detect_extensions`, `is_git_repo`),
+    the shared codebase ignore defaults (`DEFAULT_CODEBASE_IGNORES`), and
+    `_validate_codebase_source` so zero-config sources have the exact same
+    normalized schema as file-backed configs.
+    """
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        raise ValueError(f"path does not exist: {target}")
+    if not target.is_dir():
+        raise ValueError(f"path is not a directory: {target}")
+    _refuse_broad_directory(target)
+
+    from .manager.sources import DEFAULT_CODEBASE_IGNORES
+    from .manager.ui.detect import detect_extensions, is_git_repo
+
+    engine = detect_engine(target)
+    ignores = list(dict.fromkeys([
+        *DEFAULT_CODEBASE_IGNORES,
+        *_ZERO_CONFIG_EXTRA_IGNORES,
+        *_ENGINE_IGNORES.get(engine, ()),
+    ]))
+    extensions = detect_extensions(
+        target,
+        top_n=None,
+        allowed=ZERO_CONFIG_EXTENSIONS,
+        extra_ignored_dirs={frag.strip("/") for frag in ignores},
+        max_files=_ZERO_CONFIG_SCAN_LIMIT,
+    ) or list(_ZERO_CONFIG_FALLBACK_EXTENSIONS)
+
+    source_name = sanitize_source_name(target.name)
+    raw_source = {
+        "type": "codebase",
+        "path": str(target),
+        "supported_extensions": extensions,
+        "ignored_path_fragments": ignores,
+        "watcher": {"enabled": True, "debounce_seconds": 2.0},
+        "git_integration": {"enabled": is_git_repo(target)},
+        "graph": {"enabled": bool(graph_enabled)},
+    }
+    validated = _validate_codebase_source(source_name, raw_source, target)
+
+    resolved_storage = (
+        Path(storage_path).expanduser().resolve()
+        if storage_path is not None
+        else default_auto_storage_dir(target)
+    )
+
+    return Config(
+        config_version=CURRENT_CONFIG_VERSION,
+        storage_path=resolved_storage,
+        loading_timeout_seconds=600,
+        embedding=EmbeddingConfig(),
+        search=SearchConfig(),
+        sources={source_name: validated},
+        reports_path=None,
+        tools=ToolsConfig(),
     )
 
 

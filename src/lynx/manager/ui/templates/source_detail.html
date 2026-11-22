@@ -3,121 +3,129 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
+<div class="flex flex-wrap items-baseline justify-between gap-3 mb-5">
   <div>
     <div class="text-xs text-slate-500 mb-1">
-      <a href="/sources" class="hover:underline">← All sources</a>
+      <a href="/sources" class="hover:text-orange-600 transition">← All sources</a>
     </div>
-    <h1 class="text-2xl font-bold text-slate-900">{{ source.name }}</h1>
-    <div class="text-sm text-slate-500 mt-0.5">type: {{ source.type }}</div>
+    <div class="flex items-center gap-2.5">
+      <h1 class="text-2xl font-bold text-slate-900 tracking-tight">{{ source.name }}</h1>
+      <span class="badge bg-slate-100 text-slate-700">{{ source.type }}</span>
+      {% if source.graph %}
+        <span class="badge bg-orange-50 text-orange-700 border border-orange-200/70">Graph ON</span>
+      {% endif %}
+    </div>
   </div>
   <div class="flex items-center gap-2">
     {% if source.locked %}
-      <span class="badge bg-amber-100 text-amber-800" title="Another process is writing to this source's ChromaDB">🔒 locked</span>
+      <span class="badge bg-amber-100 text-amber-800" title="Another Lynx process is currently writing to this index">Locked</span>
     {% endif %}
     {% if source.drift_severity == "critical" %}
-      <span class="badge bg-red-100 text-red-800">drift: critical</span>
+      <span class="badge bg-red-100 text-red-800">Out of sync</span>
     {% elif source.drift_severity == "warning" %}
-      <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+      <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800">drift: warning</span>
     {% endif %}
+    <a href="/playground"
+       class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">
+      Try search →
+    </a>
   </div>
 </div>
 
-<!-- Status panel -->
-<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+<!-- Status & Graph cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
 
-  <div class="p-4 bg-white border border-slate-200 rounded">
-    <div class="font-semibold text-slate-800 text-sm mb-3">Status</div>
-    <dl class="text-sm space-y-1.5">
+  <div class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+    <div class="font-semibold text-slate-900 text-sm mb-3">Status</div>
+    <dl class="text-sm space-y-2">
       {% if source.path %}
         <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Path</dt>
-          <dd class="font-mono text-xs truncate" title="{{ source.path }}">{{ source.path }}</dd>
+          <dt class="text-slate-500">Folder</dt>
+          <dd class="font-mono text-xs text-slate-800 truncate" title="{{ source.path }}">{{ source.path }}</dd>
         </div>
       {% endif %}
       {% if source.chunk_count is not none %}
         <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Chunks</dt>
-          <dd>{{ source.chunk_count }}</dd>
-        </div>
-      {% endif %}
-      {% if source.last_commit %}
-        <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Last commit</dt>
-          <dd class="font-mono text-xs">{{ source.last_commit[:12] }}</dd>
+          <dt class="text-slate-500">Indexed chunks</dt>
+          <dd class="font-mono text-xs text-slate-800">{{ source.chunk_count }}</dd>
         </div>
       {% endif %}
       {% if source.last_update %}
         <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Last update</dt>
-          <dd class="text-xs">{{ source.last_update }}</dd>
+          <dt class="text-slate-500">Last updated</dt>
+          <dd class="text-xs text-slate-700">{{ source.last_update[:19] | replace('T', ' ') }}</dd>
         </div>
       {% endif %}
-      {% with s = source %}{% include "_serving_row.html" %}{% endwith %}
-      <div class="flex justify-between gap-3">
+      {% if source.last_commit %}
+        <div class="expert-only-flex expert-only justify-between gap-3">
+          <dt class="text-slate-500">Last commit</dt>
+          <dd class="font-mono text-xs text-slate-700">{{ source.last_commit[:12] }}</dd>
+        </div>
+      {% endif %}
+      <div class="expert-only">
+        {% with s = source %}{% include "_serving_row.html" %}{% endwith %}
+      </div>
+      <div class="expert-only-flex expert-only justify-between gap-3">
         <dt class="text-slate-500">Drift</dt>
-        <dd class="text-xs">
-          {% if source.drift_severity %}
-            {{ source.drift_severity }}
-          {% else %}
-            <span class="text-slate-400">none</span>
-          {% endif %}
-        </dd>
+        <dd class="text-xs text-slate-700">{{ source.drift_severity or 'none' }}</dd>
       </div>
     </dl>
   </div>
 
   {% if source.graph %}
-    <div class="p-4 bg-white border border-slate-200 rounded">
-      <div class="font-semibold text-slate-800 text-sm mb-3">Graph layer</div>
-      <dl class="text-sm space-y-1.5">
+    <div class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm">
+      <div class="font-semibold text-slate-900 text-sm mb-3">Code knowledge graph</div>
+      <dl class="text-sm space-y-2">
         <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Nodes</dt>
-          <dd>{{ source.graph.nodes }}</dd>
+          <dt class="text-slate-500">Symbols (nodes)</dt>
+          <dd class="font-mono text-xs text-slate-800">{{ source.graph.nodes }}</dd>
         </div>
         <div class="flex justify-between gap-3">
-          <dt class="text-slate-500">Edges</dt>
-          <dd>{{ source.graph.edges }}</dd>
+          <dt class="text-slate-500">Relationships (edges)</dt>
+          <dd class="font-mono text-xs text-slate-800">{{ source.graph.edges }}</dd>
         </div>
         {% if source.graph.files_indexed is not none %}
           <div class="flex justify-between gap-3">
-            <dt class="text-slate-500">Files indexed</dt>
-            <dd>{{ source.graph.files_indexed }}</dd>
+            <dt class="text-slate-500">Files analyzed</dt>
+            <dd class="font-mono text-xs text-slate-800">{{ source.graph.files_indexed }}</dd>
           </div>
         {% endif %}
         {% if source.graph.last_update %}
-          <div class="flex justify-between gap-3">
+          <div class="expert-only-flex expert-only justify-between gap-3">
             <dt class="text-slate-500">Last graph update</dt>
-            <dd class="text-xs">{{ source.graph.last_update }}</dd>
+            <dd class="text-xs text-slate-700">{{ source.graph.last_update[:19] | replace('T', ' ') }}</dd>
           </div>
         {% endif %}
       </dl>
     </div>
   {% else %}
-    <div class="p-4 bg-white border border-dashed border-slate-300 rounded text-sm text-slate-500">
-      Graph layer not enabled. Set
-      <code class="bg-slate-100 px-1 rounded">graph.enabled = true</code>
-      in the source config to activate call/import graph tools.
+    <div class="p-5 bg-white border border-dashed border-slate-300 rounded-xl text-sm text-slate-500 flex items-center">
+      <div>
+        <div class="font-medium text-slate-700 mb-1">Knowledge graph disabled</div>
+        <div class="text-xs">
+          Enable <code class="bg-slate-100 px-1 rounded font-mono">graph.enabled = true</code> in Config to unlock call-graph, inheritance, and blast-radius queries.
+        </div>
+      </div>
     </div>
   {% endif %}
 
 </div>
 
-<!-- Build trigger -->
-<div class="p-4 bg-white border border-slate-200 rounded mb-4">
+<!-- Rebuild / refresh card -->
+<div class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm mb-4">
   <div class="flex items-baseline justify-between mb-2">
-    <div class="font-semibold text-slate-800 text-sm">Rebuild index</div>
-    <div class="text-xs text-slate-500">
-      Runs <code class="bg-slate-100 px-1 rounded">manager.update("{{ source.name }}", force=True)</code>
+    <div class="font-semibold text-slate-900 text-sm">Rebuild index</div>
+    <div class="expert-only text-xs text-slate-400 font-mono">
+      lynx build --source {{ source.name }}
     </div>
   </div>
+  <p class="text-xs text-slate-500 mb-3">
+    Re-scans changed files and updates the local search index and knowledge graph.
+  </p>
 
   {% if source.locked %}
-    <div class="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900 mb-3">
-      ⚠ Another process is writing to this source's ChromaDB (probably
-      <code class="bg-amber-100 px-1 rounded">lynx serve</code>).
-      Stop it before triggering a build from the UI — concurrent writers
-      will corrupt the index.
+    <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 mb-3">
+      Another Lynx process (usually your AI editor) is currently writing to this index. Close it before triggering a manual rebuild.
     </div>
   {% endif %}
 
@@ -126,11 +134,11 @@
         hx-swap="innerHTML">
     <button type="submit"
             {% if source.locked %}disabled
-              class="px-4 py-2 bg-slate-300 text-slate-500 rounded text-sm cursor-not-allowed"
+              class="px-4 py-2 bg-slate-200 text-slate-500 rounded-lg text-sm font-medium cursor-not-allowed"
             {% else %}
-              class="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700"
+              class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition"
             {% endif %}>
-      {% if source.locked %}🔒 Locked — can't build{% else %}Rebuild index{% endif %}
+      {% if source.locked %}Locked — active in editor{% else %}Rebuild index{% endif %}
     </button>
   </form>
 

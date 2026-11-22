@@ -3,63 +3,152 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
-  <h1 class="text-2xl font-bold text-slate-900">Integrations</h1>
-  <div class="text-sm text-slate-500">Wire Lynx into your AI client</div>
+<div class="flex flex-wrap items-baseline justify-between gap-3 mb-5">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Integrations</h1>
+    <p class="text-sm text-slate-500 mt-0.5">
+      Connect Lynx to your AI editor in one click — no manual JSON editing required.
+    </p>
+  </div>
+  <div class="text-xs text-slate-500">
+    CLI shortcut: <code class="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-700">lynx connect cursor</code>
+  </div>
 </div>
 
-<div class="mb-6 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
-  💡 Each card below has a snippet pre-populated with <strong>your</strong> Python
-  interpreter and <strong>your</strong> config path — just copy and paste it into
-  the matching file. Then restart the client so it picks up the new MCP server.
+<div class="mb-6 p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm flex items-start gap-3">
+  <div class="w-8 h-8 rounded-lg bg-orange-50 text-orange-600 flex items-center justify-center shrink-0 mt-0.5">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+  </div>
+  <div class="text-sm text-slate-600 leading-relaxed">
+    <strong class="text-slate-900">Safe automatic setup:</strong> clicking <strong>Connect automatically</strong>
+    merges only the <code class="font-mono text-xs bg-slate-100 px-1 rounded">lynx</code> entry into your editor's MCP config,
+    keeps a <code class="font-mono text-xs bg-slate-100 px-1 rounded">.bak</code> backup, and never touches your other MCP servers.
+    Restart your editor afterwards to activate Lynx.
+  </div>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
-  {% for c in clients %}
-    <div class="p-4 bg-white border border-slate-200 rounded">
-      <div class="flex items-start justify-between mb-2">
-        <div>
-          <div class="font-semibold text-slate-900">{{ c.label }}</div>
-          <div class="text-xs text-slate-500 mt-0.5">
-            Paste into <code class="bg-slate-100 px-1 rounded">{{ c.config_file }}</code>
+{% macro client_card(c) %}
+    <div class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm flex flex-col justify-between gap-3">
+      <div>
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <div class="min-w-0">
+            <div class="font-semibold text-slate-900">{{ c.label }}</div>
+            <div class="text-xs text-slate-500 mt-0.5 font-mono truncate" title="{{ c.resolved_config_path or c.config_file }}">
+              {{ c.resolved_config_path or c.config_file }}
+            </div>
           </div>
-        </div>
-        <div class="flex gap-2">
-          <button type="button"
-                  class="copy-btn px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                  data-target="snippet-{{ c.key }}">
-            Copy snippet
-          </button>
-          {% if c.rules_file %}
-            <a href="/api/integrations/{{ c.key }}/rules"
-               class="px-3 py-1.5 text-xs border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
-              Download {{ c.rules_file.split('/')[-1] }}
-            </a>
+          {% if c.detected and not c.connected and c.supports_auto_connect %}
+            <span class="badge bg-slate-100 text-slate-600 shrink-0">Detected</span>
           {% endif %}
         </div>
+
+        <!-- 1-click auto-connect controls -->
+        {% if c.supports_auto_connect %}
+          <div id="connect-ctrl-{{ c.key }}" class="my-3">
+            {% if c.connected %}
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Connected
+                </span>
+                <button type="button"
+                        hx-post="/api/integrations/{{ c.key }}/connect"
+                        hx-target="#connect-ctrl-{{ c.key }}"
+                        hx-swap="outerHTML"
+                        class="px-2.5 py-1 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50">
+                  Update entry
+                </button>
+                <button type="button"
+                        hx-post="/api/integrations/{{ c.key }}/disconnect"
+                        hx-target="#connect-ctrl-{{ c.key }}"
+                        hx-swap="outerHTML"
+                        hx-confirm="Remove Lynx from {{ c.short_label }}'s MCP config? (Other MCP servers stay untouched.)"
+                        class="px-2.5 py-1 text-xs text-slate-500 hover:text-red-700 rounded-md hover:bg-red-50">
+                  Disconnect
+                </button>
+              </div>
+            {% else %}
+              <button type="button"
+                      hx-post="/api/integrations/{{ c.key }}/connect"
+                      hx-target="#connect-ctrl-{{ c.key }}"
+                      hx-swap="outerHTML"
+                      class="px-3.5 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700 shadow-sm transition">
+                Connect automatically
+              </button>
+            {% endif %}
+            {% if c.locations %}
+              <div class="mt-1.5 text-xs text-slate-500">
+                Active in:
+                {% for w in c.locations %}{{ 'all projects' if w in ('user', 'global') else w }}{% if not loop.last %}; {% endif %}{% endfor %}
+              </div>
+            {% endif %}
+            {% if c.status_error %}
+              <div class="mt-1.5 text-xs text-amber-700">{{ c.status_error }}</div>
+            {% endif %}
+          </div>
+        {% endif %}
+
+        {% if c.notes %}
+          <div class="text-xs text-slate-500 leading-relaxed">{{ c.notes }}</div>
+        {% endif %}
       </div>
-      <pre id="snippet-{{ c.key }}"
-           class="text-xs bg-slate-50 border border-slate-200 rounded p-3 overflow-x-auto whitespace-pre-wrap">{{ c.snippet }}</pre>
-      {% if c.notes %}
-        <div class="mt-2 text-xs text-slate-500">{{ c.notes }}</div>
-      {% endif %}
+
+      <!-- Manual JSON & rules file: collapsible in Simple mode, open in Expert mode -->
+      <details data-expert-open class="border-t border-slate-100 pt-3 mt-1" {% if not c.supports_auto_connect %}open{% endif %}>
+        <summary class="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-900 select-none">
+          Manual JSON snippet &amp; rules file
+        </summary>
+        <div class="mt-3 space-y-2.5">
+          <div class="flex items-center gap-2 flex-wrap">
+            <button type="button"
+                    class="copy-btn px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800 transition"
+                    data-target="snippet-{{ c.key }}">
+              Copy snippet
+            </button>
+            {% if c.rules_file %}
+              <a href="/api/integrations/{{ c.key }}/rules"
+                 class="px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50 transition">
+                Download {{ c.rules_file.split('/')[-1] }}
+              </a>
+            {% endif %}
+          </div>
+          <pre id="snippet-{{ c.key }}"
+               class="text-xs bg-slate-950 text-slate-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap font-mono">{{ c.snippet }}</pre>
+        </div>
+      </details>
     </div>
+{% endmacro %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+  {% for c in clients if c.detected or c.connected or not c.supports_auto_connect %}
+    {{ client_card(c) }}
   {% endfor %}
 </div>
 
-<!-- Rules file preview / download -->
-{% if rules_preview %}
-  <h2 class="text-lg font-semibold text-slate-900 mb-2">Rules file preview</h2>
-  <div class="text-sm text-slate-600 mb-2">
-    Auto-generated from your configured sources ({{ source_names|join(', ') }}).
-    Lives at the path the chosen client expects (CLAUDE.md, AGENTS.md, ...).
+{% set others = clients | rejectattr('detected') | selectattr('supports_auto_connect') | list %}
+{% if others %}
+<details class="mb-8 group">
+  <summary class="cursor-pointer select-none text-sm font-medium text-slate-600 hover:text-slate-900">
+    Other editors, not found on this computer ({{ others | length }})
+  </summary>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+    {% for c in others %}{{ client_card(c) }}{% endfor %}
   </div>
-  <pre class="text-xs bg-white border border-slate-200 rounded p-3 max-h-96 overflow-auto whitespace-pre-wrap">{{ rules_preview }}</pre>
+</details>
+{% endif %}
+
+<!-- Rules file preview (Expert section) -->
+{% if rules_preview %}
+  <div class="expert-only">
+    <h2 class="text-base font-semibold text-slate-900 mb-1.5">Rules file preview</h2>
+    <div class="text-xs text-slate-500 mb-2.5">
+      Optional prompt rules auto-generated from your configured sources ({{ source_names|join(', ') }}).
+      Lynx already injects core instructions over the MCP handshake automatically.
+    </div>
+    <pre class="text-xs bg-white border border-slate-200 rounded-xl p-4 max-h-96 overflow-auto whitespace-pre-wrap font-mono text-slate-700">{{ rules_preview }}</pre>
+  </div>
 {% endif %}
 
 <script>
-  // Vanilla clipboard copy. navigator.clipboard works on localhost without
-  // HTTPS — the spec carves out 127.0.0.1 as a secure context.
   document.querySelectorAll('.copy-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const targetId = btn.dataset.target;
@@ -68,12 +157,12 @@
         await navigator.clipboard.writeText(text);
         const original = btn.textContent;
         btn.textContent = '✓ Copied';
-        btn.classList.add('bg-green-600');
-        btn.classList.remove('bg-indigo-600');
+        btn.classList.add('bg-emerald-600');
+        btn.classList.remove('bg-slate-900');
         setTimeout(() => {
           btn.textContent = original;
-          btn.classList.remove('bg-green-600');
-          btn.classList.add('bg-indigo-600');
+          btn.classList.remove('bg-emerald-600');
+          btn.classList.add('bg-slate-900');
         }, 1500);
       } catch (err) {
         btn.textContent = '✗ Failed';

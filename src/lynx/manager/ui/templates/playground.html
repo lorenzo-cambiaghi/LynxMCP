@@ -3,27 +3,27 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
-  <h1 class="text-2xl font-bold text-slate-900">Search playground</h1>
-  <div class="text-sm text-slate-500">
-    Try the same tools your AI client uses via MCP.
+<div class="flex flex-wrap items-baseline justify-between gap-2 mb-5">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Search playground</h1>
+    <p class="text-sm text-slate-500 mt-0.5">
+      Test semantic search and code-graph queries directly — same engine your AI uses over MCP.
+    </p>
   </div>
 </div>
 
 {% if not sources_meta %}
-  <div class="p-6 bg-white border border-dashed border-slate-300 rounded text-slate-500 text-sm">
-    No sources available. Add one in the
-    <a href="/config" class="text-indigo-600 hover:underline">Config editor</a>
-    or run <code class="bg-slate-100 px-1 rounded">lynx manager init</code>.
+  <div class="p-8 bg-white border border-dashed border-slate-300 rounded-xl text-center text-slate-500 text-sm">
+    No sources configured yet. <a href="/sources/new" class="text-orange-600 font-medium hover:underline">Add your first project →</a>
   </div>
 {% else %}
 
 <!-- Shared source selector — hx-include="#pg-source" pulls this into every form -->
-<div class="mb-4 flex items-center gap-3">
-  <label for="pg-source" class="text-sm font-medium text-slate-700">Source:</label>
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <label for="pg-source" class="text-xs font-semibold uppercase tracking-wider text-slate-500">Project</label>
   <select id="pg-source" name="source"
-          class="px-3 py-1.5 border border-slate-300 rounded text-sm bg-white
-                 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+          class="px-3 py-1.5 border border-slate-300 rounded-lg text-sm bg-white shadow-xs
+                 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500">
     {% for s in sources_meta %}
       <option value="{{ s.name }}"
               data-type="{{ s.type }}"
@@ -35,16 +35,16 @@
   <div id="source-hint" class="text-xs text-slate-500"></div>
 </div>
 
-<!-- Tabs -->
-<div class="border-b border-slate-200 mb-4">
+<!-- Tabs: Search is primary; Code-aware / Graph / Diff are revealed in Expert mode (or on click) -->
+<div class="border-b border-slate-200 mb-5">
   <nav class="flex gap-1" id="pg-tabs">
     <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
             data-tab="search">Search</button>
-    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+    <button type="button" class="pg-tab-btn expert-only-inline expert-only px-4 py-2 text-sm font-medium border-b-2"
             data-tab="code">Code-aware</button>
-    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+    <button type="button" class="pg-tab-btn expert-only-inline expert-only px-4 py-2 text-sm font-medium border-b-2"
             data-tab="graph">Graph</button>
-    <button type="button" class="pg-tab-btn px-4 py-2 text-sm font-medium border-b-2"
+    <button type="button" class="pg-tab-btn expert-only-inline expert-only px-4 py-2 text-sm font-medium border-b-2"
             data-tab="diff">Diff</button>
   </nav>
 </div>
@@ -55,57 +55,60 @@
         hx-include="#pg-source"
         hx-target="#search-results"
         hx-swap="innerHTML"
-        class="space-y-3">
-    <div class="flex gap-2 items-end">
-      <div class="flex-1">
-        <label class="block text-xs font-medium text-slate-600 mb-1">Query</label>
+        class="p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm space-y-3">
+    <div class="flex flex-wrap gap-2 items-end">
+      <div class="flex-1 min-w-[240px]">
+        <label class="block text-xs font-medium text-slate-600 mb-1">Ask in plain English or paste a symbol name</label>
         <input name="query" required
-               placeholder="e.g. 'authentication middleware' or 'parse json'"
-               class="w-full px-3 py-2 border border-slate-300 rounded text-sm
-                      focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+               placeholder="e.g. 'where do we validate session tokens?' or 'ApplyDamage'"
+               class="w-full px-3.5 py-2 border border-slate-300 rounded-lg text-sm
+                      focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500">
       </div>
-      <div>
+      <div class="expert-only">
         <label class="block text-xs font-medium text-slate-600 mb-1">Mode</label>
-        <select name="mode" class="px-3 py-2 border border-slate-300 rounded text-sm bg-white">
+        <select name="mode" class="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
           <option value="">(default)</option>
           <option value="hybrid">hybrid</option>
           <option value="dense">dense</option>
           <option value="sparse">sparse</option>
         </select>
       </div>
-      <div>
+      <div class="expert-only">
         <label class="block text-xs font-medium text-slate-600 mb-1">Top K</label>
         <input type="number" name="top_k" value="5" min="1" max="50"
-               class="w-20 px-3 py-2 border border-slate-300 rounded text-sm">
+               class="w-20 px-3 py-2 border border-slate-300 rounded-lg text-sm">
       </div>
       <button type="submit"
-              class="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
+              class="px-5 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition">
         Search
       </button>
+    </div>
+    <div class="simple-only text-xs text-slate-400">
+      Tip: Switch to <strong>Expert</strong> mode in the sidebar for call-graph, blast radius, duplicate finder, and diff search.
     </div>
   </form>
   <div id="search-results" class="mt-4"></div>
 
-  <!-- deep_search: the escalation the agent reaches for when search is weak -->
+  <!-- deep_search: expert escalation workbench -->
   <form hx-post="/api/playground/deep_search"
         hx-include="#pg-source"
         hx-target="#deep-results"
-        class="mt-6 p-4 bg-white border border-slate-200 rounded space-y-2">
-    <div class="font-semibold text-slate-800 text-sm">deep_search</div>
+        class="expert-only mt-6 p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm space-y-2">
+    <div class="font-semibold text-slate-900 text-sm">deep_search</div>
     <div class="text-xs text-slate-500">
       One phrasing per line — 2-4 genuinely different angles, not paraphrases.
       Each is tried in order until one returns strong results.
     </div>
     <textarea name="queries" rows="3" required
               placeholder="player health system&#10;damage and healing logic&#10;HP component lifecycle"
-              class="w-full px-3 py-2 border border-slate-300 rounded text-sm font-mono"></textarea>
+              class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono"></textarea>
     <div class="flex gap-2 items-end">
       <div>
         <label class="block text-xs text-slate-600 mb-1">Top K</label>
         <input type="number" name="top_k" value="5" min="1" max="50"
-               class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
+               class="w-20 px-3 py-1.5 border border-slate-300 rounded-lg text-sm">
       </div>
-      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      <button type="submit" class="px-3.5 py-1.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800">Run</button>
     </div>
     <div id="deep-results" class="mt-2"></div>
   </form>

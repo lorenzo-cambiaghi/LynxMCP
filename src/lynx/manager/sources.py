@@ -146,11 +146,17 @@ def config_lock(config_path, timeout: float = _LOCK_TIMEOUT_SECONDS):
 
 
 def apply_codebase_defaults(block: dict) -> dict:
-    """Fill in sane defaults a new codebase source should have but the client
-    may omit. Currently: ignore VCS/deps/build dirs unless the caller set its
-    own list. Non-codebase blocks and explicit lists are left untouched."""
-    if block.get("type") == "codebase" and not block.get("ignored_path_fragments"):
-        block["ignored_path_fragments"] = list(DEFAULT_CODEBASE_IGNORES)
+    """Fill in sane defaults a new codebase source should have when omitted:
+    - ignore VCS/deps/build dirs unless the caller set its own list;
+    - enable the code knowledge graph unless the caller set `graph` explicitly
+      (existing hand-written configs without `graph` still default to False in
+      `config.py` for backward compatibility).
+    Non-codebase blocks and explicit settings are left untouched."""
+    if block.get("type") == "codebase":
+        if not block.get("ignored_path_fragments"):
+            block["ignored_path_fragments"] = list(DEFAULT_CODEBASE_IGNORES)
+        if "graph" not in block:
+            block["graph"] = {"enabled": True}
     return block
 
 

@@ -3,59 +3,70 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
-  <h1 class="text-2xl font-bold text-slate-900">Sources</h1>
-  <div class="flex items-center gap-3">
-    <span class="text-sm text-slate-500">
-      {{ sources|length }} source{{ '' if sources|length == 1 else 's' }} configured
-    </span>
-    <a href="/sources/new"
-       class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded font-medium hover:bg-indigo-700">
-      + Add source
-    </a>
+<div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Sources</h1>
+    <p class="text-sm text-slate-500 mt-0.5">
+      {{ sources|length }} project{{ '' if sources|length == 1 else 's' }} configured
+    </p>
   </div>
+  <a href="/sources/new"
+     class="px-4 py-2 bg-orange-600 text-white text-sm rounded-lg font-medium hover:bg-orange-700 shadow-sm transition">
+    + Add source
+  </a>
 </div>
 
 {% if not sources %}
-  <div class="p-8 bg-white border border-dashed border-slate-300 rounded text-center">
-    <div class="text-4xl mb-2">📚</div>
-    <div class="text-slate-700 font-medium mb-1">No sources configured yet</div>
-    <div class="text-sm text-slate-500 mb-4 max-w-md mx-auto">
-      A source is one body of content Lynx indexes — your code, a docs site, or a
-      folder of PDFs. Add one to get started.
+  <div class="p-10 bg-white border border-dashed border-slate-300 rounded-xl text-center">
+    <div class="text-slate-900 font-semibold mb-1">No sources configured yet</div>
+    <div class="text-sm text-slate-500 mb-5 max-w-md mx-auto">
+      Add a local repository, a documentation site, or a folder of PDFs so your AI editor can search it locally.
     </div>
     <a href="/sources/new"
-       class="inline-block px-5 py-2 bg-indigo-600 text-white rounded font-medium hover:bg-indigo-700">
+       class="inline-block px-5 py-2.5 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition">
       + Add your first source
     </a>
   </div>
 {% else %}
-  <div class="space-y-2">
+  <div class="space-y-2.5">
     {% for s in sources %}
       <a href="{{ '/sources/' ~ s.name if (s.health or 'ok') == 'ok' else '/#source-' ~ s.name }}"
-         class="block p-4 bg-white border {{ 'border-slate-200' if (s.health or 'ok') == 'ok' else 'border-amber-300' }} rounded hover:border-indigo-400 hover:shadow-sm transition">
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="font-semibold text-slate-900">{{ s.name }}</div>
-            <div class="text-xs text-slate-500 mt-0.5">
-              type: {{ s.type }}
-              {% if s.path %} · {{ s.path }}{% endif %}
+         class="block p-4 bg-white border {{ 'border-slate-200/90' if (s.health or 'ok') == 'ok' else 'border-amber-300' }} rounded-xl hover:border-orange-300 hover:shadow-sm transition">
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-slate-900">{{ s.name }}</span>
+              <span class="badge bg-slate-100 text-slate-600">type: {{ s.type }}</span>
+              {% if s.graph %}
+                <span class="badge bg-orange-50 text-orange-700">Graph</span>
+              {% endif %}
             </div>
+            {% if s.path %}
+              <div class="text-xs font-mono text-slate-500 mt-1 truncate" title="{{ s.path }}">{{ s.path }}</div>
+            {% endif %}
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2.5 shrink-0">
             {% if (s.health or 'ok') != 'ok' %}
-              <span class="badge bg-amber-100 text-amber-800" title="{{ s.error }}">⚠ {{ s.health | replace('_', ' ') }}</span>
+              <span class="badge bg-amber-100 text-amber-800" title="{{ s.error }}">{{ s.health | replace('_', ' ') }}</span>
+            {% elif s.chunk_count and s.chunk_count > 0 %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Ready
+              </span>
+            {% else %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Pending index
+              </span>
             {% endif %}
             {% if s.locked %}
-              <span class="badge bg-amber-100 text-amber-800" title="ChromaDB locked by another process">🔒 locked</span>
+              <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800" title="Locked by another Lynx process">locked</span>
             {% endif %}
             {% if s.drift_severity == "critical" %}
               <span class="badge bg-red-100 text-red-800">drift: critical</span>
             {% elif s.drift_severity == "warning" %}
-              <span class="badge bg-amber-100 text-amber-800">drift: warning</span>
+              <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800">drift: warning</span>
             {% endif %}
             {% if s.chunk_count is not none %}
-              <span class="text-sm text-slate-600">{{ s.chunk_count }} chunks</span>
+              <span class="expert-only-inline expert-only text-xs font-mono text-slate-500">{{ s.chunk_count }} chunks</span>
             {% endif %}
             <span class="text-slate-400">→</span>
           </div>

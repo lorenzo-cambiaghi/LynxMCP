@@ -531,10 +531,10 @@ def main() -> int:
             print(f"[test] FAIL [25/27]: wrong filename in disposition: "
                   f"{r.headers.get('content-disposition')}")
             return 25
-        # Tools take a `source=` argument now (not per-source `search_<name>`),
-        # so the rules list the source name and the generic search tool.
-        if ("Code Reuse" not in r.text or "`demo`" not in r.text
-                or "search(query" not in r.text):
+        # A short pointer (the playbook is the lynx://guide resource): it
+        # names the source and the generic search tool.
+        if ("# Lynx" not in r.text or "`demo`" not in r.text
+                or "`search`" not in r.text or len(r.text) > 1000):
             print(f"[test] FAIL [25/27]: rules content unexpected: {r.text[:200]}")
             return 25
         print(f"[test] OK [25/27] /api/integrations/claude/rules: CLAUDE.md downloaded")

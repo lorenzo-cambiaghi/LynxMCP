@@ -3,25 +3,25 @@
 
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-4">
-  <h1 class="text-2xl font-bold text-slate-900">Config editor</h1>
-  <div class="text-sm text-slate-500 font-mono">{{ config_path }}</div>
+<div class="flex flex-wrap items-baseline justify-between gap-2 mb-4">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Config editor</h1>
+    <div class="text-xs text-slate-500 font-mono mt-0.5">{{ config_path }}</div>
+  </div>
 </div>
 
-<div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
-  💡 Edit the JSON below and click <strong>Save</strong>.
-  The server validates with the same loader Lynx uses on startup — invalid
-  configs are rejected without overwriting the file. A backup of the
-  previous content is kept at <code>{{ config_path }}.bak</code> after every save.
+<div class="mb-4 p-3.5 bg-white border border-slate-200/90 rounded-xl text-xs text-slate-600 shadow-sm">
+  Validated against the exact schema Lynx uses on startup — invalid configs are rejected without touching disk.
+  A backup is saved to <code class="font-mono bg-slate-100 px-1 rounded">{{ config_path }}.bak</code> on every save.
 </div>
 
 <form id="config-form">
   <textarea
     id="config-content"
     name="content"
-    rows="32"
-    class="w-full font-mono text-sm p-3 border border-slate-300 rounded bg-white
-           focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+    rows="28"
+    class="w-full font-mono text-xs p-4 border border-slate-300 rounded-xl bg-white shadow-sm
+           focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
     spellcheck="false">{{ config_content }}</textarea>
 
   <div class="mt-3 flex items-center justify-between">
@@ -31,11 +31,11 @@
     <div class="flex gap-2">
       <button type="button"
               onclick="document.getElementById('config-content').value=initialContent; updateCounts()"
-              class="px-4 py-2 border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+              class="px-4 py-2 text-sm border border-slate-300 bg-white text-slate-700 rounded-lg hover:bg-slate-50">
         Reset to disk
       </button>
       <button type="submit"
-              class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+              class="px-5 py-2 text-sm font-medium bg-orange-600 text-white rounded-lg hover:bg-orange-700 shadow-sm">
         Save
       </button>
     </div>

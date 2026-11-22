@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="bg-slate-50">
+<html lang="en" class="bg-slate-50 antialiased">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,94 +11,244 @@
   <script src="{{ request.url_for('static', path='tailwind.min.js') }}"></script>
   <script src="{{ request.url_for('static', path='htmx.min.js') }}"></script>
   <style>
-    /* Subtle touches that aren't worth a full Tailwind config */
-    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-    /* Plain CSS: the Tailwind runtime only expands @apply inside
-       <style type="text/tailwindcss">, so badges used to get no padding. */
-    .badge { display: inline-block; padding: 0.125rem 0.5rem; font-size: 0.75rem;
-             line-height: 1rem; font-weight: 500; border-radius: 0.25rem; }
-    /* Stop FOUC on the side-nav active state */
-    a[data-active="true"] { background-color: rgb(99 102 241 / 0.1); color: rgb(67 56 202); }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background-color: #f8fafc;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.125rem 0.5rem;
+      font-size: 0.72rem;
+      line-height: 1.1rem;
+      font-weight: 500;
+      border-radius: 9999px;
+    }
+    /* Sidebar active navigation item */
+    a.nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #475569;
+      transition: background-color 120ms ease, color 120ms ease;
+    }
+    a.nav-item:hover {
+      background-color: #f1f5f9;
+      color: #0f172a;
+    }
+    a.nav-item[data-active="true"] {
+      background-color: #fff7ed;
+      color: #c2410c;
+      box-shadow: inset 0 0 0 1px #fed7aa;
+    }
+    a.nav-item svg {
+      width: 1.05rem;
+      height: 1.05rem;
+      flex-shrink: 0;
+      opacity: 0.85;
+    }
+
+    /* Progressive disclosure: Simple mode (default) vs Expert mode */
+    .expert-only { display: none !important; }
+    body.expert-mode .expert-only { display: block !important; }
+    body.expert-mode .expert-only-flex { display: flex !important; }
+    body.expert-mode .expert-only-inline { display: inline-flex !important; }
+    body.expert-mode .simple-only { display: none !important; }
+
+    /* Mode segmented control */
+    .mode-pill button {
+      transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+    }
+    body:not(.expert-mode) .mode-btn-simple {
+      background-color: #ffffff;
+      color: #0f172a;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    body.expert-mode .mode-btn-expert {
+      background-color: #0f172a;
+      color: #ffffff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16);
+    }
+    /* Subtle HTMX loading indicator */
+    .htmx-indicator { opacity: 0; transition: opacity 150ms ease; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { opacity: 1; }
   </style>
+  <script>
+    // Apply saved UI mode before paint to avoid layout flash.
+    (function () {
+      try {
+        if (localStorage.getItem('lynx_ui_mode') === 'expert') {
+          document.documentElement.dataset.uiMode = 'expert';
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body class="text-slate-800">
+<script>
+  if (document.documentElement.dataset.uiMode === 'expert') {
+    document.body.classList.add('expert-mode');
+  }
+</script>
 
 <div class="flex min-h-screen">
 
   <!-- Sidebar -->
-  <aside class="w-56 shrink-0 border-r border-slate-200 bg-white">
-    <div class="flex items-center gap-2 px-4 py-4 border-b border-slate-200">
-      <span class="text-2xl">🐱</span>
-      <div>
-        <div class="font-bold text-slate-900">LynxManager</div>
-        <div class="text-xs text-slate-500"
-             title="Lynx {{ lynx_identity.version }}, code {{ lynx_identity.code }}, from {{ lynx_identity.path }}. The code hash changes with every edit of the sources; the dashboard compares it with the process serving each index.">
-          v{{ lynx_identity.version }} · <span class="font-mono">{{ lynx_identity.code }}</span>
+  <aside class="w-64 shrink-0 border-r border-slate-200/90 bg-white flex flex-col">
+    <!-- Brand header -->
+    <div class="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 text-white flex items-center justify-center shadow-sm shrink-0">
+        <!-- Crisp Lynx geometric mark -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+          <path d="M4 10V4l4.5 3.5h7L20 4v6c0 5-3.2 9-8 10-4.8-1-8-5-8-10z"/>
+          <circle cx="9.25" cy="11.5" r="1" fill="currentColor" stroke="none"/>
+          <circle cx="14.75" cy="11.5" r="1" fill="currentColor" stroke="none"/>
+          <path d="M10.5 15l1.5 1.2L13.5 15"/>
+        </svg>
+      </div>
+      <div class="min-w-0">
+        <div class="font-bold text-slate-900 tracking-tight leading-tight">LynxManager</div>
+        <div class="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5"
+             title="Lynx {{ lynx_identity.version }}, code {{ lynx_identity.code }}, from {{ lynx_identity.path }}.">
+          <span>v{{ lynx_identity.version }}</span>
+          <span class="expert-only-inline expert-only font-mono text-[11px] text-slate-400">· {{ lynx_identity.code }}</span>
         </div>
       </div>
     </div>
-    <nav class="px-2 py-3 space-y-1 text-sm">
-      <a href="/" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/' else 'false' }}">
-        <span class="inline-block w-5">🏠</span> Dashboard
+
+    <!-- Primary Navigation -->
+    <nav class="px-3 py-4 space-y-1 flex-1">
+      <div class="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+        Workspace
+      </div>
+      <a href="/" class="nav-item" data-active="{{ 'true' if request.url.path == '/' else 'false' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/></svg>
+        <span>Dashboard</span>
       </a>
-      <a href="/sources" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path.startswith('/sources') else 'false' }}">
-        <span class="inline-block w-5">📚</span> Sources
+      <a href="/sources" class="nav-item" data-active="{{ 'true' if request.url.path.startswith('/sources') else 'false' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>Sources</span>
       </a>
-      <a href="/playground" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/playground' else 'false' }}">
-        <span class="inline-block w-5">🔎</span> Playground
+      <a href="/integrations" class="nav-item" data-active="{{ 'true' if request.url.path == '/integrations' else 'false' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 0 1-12 0V8z"/></svg>
+        <span>Connect AI</span>
       </a>
-      <a href="/config" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/config' else 'false' }}">
-        <span class="inline-block w-5">⚙️</span> Config
-      </a>
-      <a href="/integrations" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/integrations' else 'false' }}">
-        <span class="inline-block w-5">🔌</span> Integrations
-      </a>
-      <a href="/doctor" class="block px-3 py-2 rounded hover:bg-slate-100" data-active="{{ 'true' if request.url.path == '/doctor' else 'false' }}">
-        <span class="inline-block w-5">🩺</span> Doctor
+      <a href="/playground" class="nav-item" data-active="{{ 'true' if request.url.path == '/playground' else 'false' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <span>Playground</span>
       </a>
 
-      <!-- Restart: drop the cached manager so every source is reloaded — indexes re-opened,
-           watchers restarted, integrity re-probed. Same endpoint the problem-cards use; here it's
-           always available (e.g. to pick up a source after a `doctor --heal-wal` or a manual fix). -->
-      <button
-        hx-post="/api/manager/reload"
-        hx-swap="none"
-        hx-confirm="Restart Lynx? Reloads every source — re-opens each index, restarts its watcher, and re-runs the integrity checks. Nothing is lost."
-        class="w-full text-left px-3 py-2 mt-1 rounded hover:bg-slate-100 text-slate-700 border border-slate-200">
-        <span class="inline-block w-5">🔄</span> Restart
-      </button>
+      <!-- Expert section: hidden in Simple mode, zero-compromise in Expert mode -->
+      <div class="expert-only pt-4">
+        <div class="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          Advanced
+        </div>
+        <div class="space-y-1">
+          <a href="/config" class="nav-item" data-active="{{ 'true' if request.url.path == '/config' else 'false' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            <span>Config (JSON)</span>
+          </a>
+          <a href="/doctor" class="nav-item" data-active="{{ 'true' if request.url.path == '/doctor' else 'false' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <span>Doctor</span>
+          </a>
+          <a href="/api/v1/openapi.json" target="_blank" rel="noopener" class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>OpenAPI (Coral)</span>
+          </a>
+          <button
+            type="button"
+            hx-post="/api/manager/reload"
+            hx-swap="none"
+            hx-confirm="Restart Lynx? Reloads every source — re-opens each index, restarts its watcher, and re-runs integrity checks. Nothing is lost."
+            class="w-full flex items-center gap-2.5 px-3 py-2 mt-1 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition text-left">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 opacity-80"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            <span>Restart manager</span>
+          </button>
+        </div>
+      </div>
     </nav>
 
-    <div class="px-4 py-3 mt-auto border-t border-slate-200 text-xs text-slate-500">
-      {% if config_path %}
-        <div class="flex items-center gap-1 min-w-0" title="{{ config_path }}">
-          <span>📄</span>
-          <span class="truncate">{{ config_path | basename }}</span>
+    <!-- Bottom bar: Simple / Expert toggle + update check + config indicator -->
+    <div class="p-3 border-t border-slate-100 space-y-2.5 bg-slate-50/60">
+      <div>
+        <div class="text-[11px] font-medium text-slate-400 px-1 mb-1">Interface mode</div>
+        <div class="mode-pill grid grid-cols-2 p-0.5 rounded-lg bg-slate-200/80 text-xs font-medium">
+          <button type="button" onclick="setLynxUiMode('simple')"
+                  class="mode-btn-simple py-1.5 rounded-md text-slate-600">
+            Simple
+          </button>
+          <button type="button" onclick="setLynxUiMode('expert')"
+                  class="mode-btn-expert py-1.5 rounded-md text-slate-600">
+            Expert
+          </button>
         </div>
-      {% else %}
-        <div class="text-amber-600">No config loaded</div>
-      {% endif %}
+      </div>
+
+      <button type="button"
+              hx-post="/api/system/check-update"
+              hx-target="#global-update-slot"
+              hx-swap="innerHTML"
+              class="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:border-slate-300 transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Check for updates</span>
+      </button>
+
+      <div class="expert-only px-1 pt-1 text-[11px] text-slate-500">
+        {% if config_path %}
+          <div class="flex items-center gap-1.5 min-w-0" title="{{ config_path }}">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+            <span class="truncate font-mono">{{ config_path | basename }}</span>
+          </div>
+        {% else %}
+          <div class="text-amber-600">No config loaded</div>
+        {% endif %}
+      </div>
     </div>
   </aside>
 
   <!-- Main content -->
-  <main class="flex-1 px-8 py-6">
+  <main class="flex-1 min-w-0 px-8 py-7 max-w-6xl">
+    <!-- On-demand update status banner (empty until user clicks Check for updates) -->
+    <div id="global-update-slot" class="mb-4 empty:hidden"></div>
 
     {% if manager_error %}
-      <div class="mb-6 p-4 border border-amber-300 bg-amber-50 rounded text-amber-900">
-        <div class="font-medium mb-1">⚠ Manager not initialized</div>
-        <div class="text-sm">{{ manager_error }}</div>
+      <div class="mb-6 p-4 border border-amber-300 bg-amber-50 rounded-xl text-amber-950 shadow-sm">
+        <div class="font-semibold text-sm mb-1">Manager not initialized</div>
+        <div class="text-sm text-amber-900">{{ manager_error }}</div>
       </div>
     {% endif %}
 
     {% block content %}{% endblock %}
-
   </main>
 
 </div>
 
 <!-- Toasts (HTMX target zone for action feedback) -->
 <div id="toasts" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
+
+<script>
+  function syncExpertDetails(isExpert) {
+    document.querySelectorAll('details[data-expert-open]').forEach(function (el) {
+      el.open = !!isExpert;
+    });
+  }
+  function setLynxUiMode(mode) {
+    var isExpert = (mode === 'expert');
+    document.body.classList.toggle('expert-mode', isExpert);
+    try { localStorage.setItem('lynx_ui_mode', isExpert ? 'expert' : 'simple'); } catch (e) {}
+    syncExpertDetails(isExpert);
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    syncExpertDetails(document.body.classList.contains('expert-mode'));
+  });
+</script>
 
 </body>
 </html>

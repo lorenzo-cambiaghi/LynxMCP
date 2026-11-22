@@ -25,7 +25,7 @@
       "top_n_before_rerank": 30
     }
   },
-  "_tools_comment": "Which MCP tools `lynx serve` registers: core (5), standard (11, the default) or full (17). Every tool definition sits in the client's context on every turn, so smaller is cheaper. `include` / `exclude` adjust a profile by tool name; `lynx serve --profile` and the LYNX_TOOL_PROFILE variable override this block.",
+  "_tools_comment": "Which MCP tools `lynx serve` registers: core (5), standard (10, the default) or full (17). Every tool definition sits in the client's context on every turn, so smaller is cheaper. `include` / `exclude` adjust a profile by tool name; `lynx serve --profile` and the LYNX_TOOL_PROFILE variable override this block.",
   "tools": {
     "profile": "standard",
     "include": [],
@@ -83,9 +83,9 @@
       "git_integration": {
         "enabled": true
       },
-      "_graph_comment": "Opt-in knowledge graph layer (call graph + import graph + inheritance graph + community detection). Set enabled=true to expose the graph_query MCP tool (operations: callers, callees, subclasses, superclasses, imports, neighbors, shortest_path, overview, surprising_connections, status). Default is disabled — pure search still works without it.",
+      "_graph_comment": "Code knowledge graph layer (call graph + import graph + inheritance graph + community detection). Enabled by default for new codebase sources to power graph_query, transitive impact, describe_symbol, and export_graph. Set enabled=false if you only need plain semantic search.",
       "graph": {
-        "enabled": false
+        "enabled": true
       }
     },
     "exampleDocs_remove_or_replace": {

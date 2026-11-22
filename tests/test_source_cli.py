@@ -133,9 +133,9 @@ def test_add_codebase_optional_flags(tmp_path, code_dir):
     assert block["ignored_path_fragments"] == ["/Library/"]
 
 
-def test_add_codebase_omits_untouched_keys(tmp_path, code_dir):
-    """Flags the user didn't pass must not be written out: the loader's
-    defaults should keep applying (and keep evolving) for this source."""
+def test_add_codebase_omits_untouched_keys_and_enables_graph(tmp_path, code_dir):
+    """Flags the user didn't pass must not be written out except the
+    deliberate new-source defaults (ignores + knowledge graph ON)."""
     cfg = _write_config(tmp_path)
     cli_main([
         "source", "add", "demo", "--config", str(cfg),
@@ -144,7 +144,18 @@ def test_add_codebase_omits_untouched_keys(tmp_path, code_dir):
     block = _sources(cfg)["demo"]
     assert "watcher" not in block
     assert "git_integration" not in block
-    assert "graph" not in block
+    assert block["graph"] == {"enabled": True}
+
+
+def test_add_codebase_no_graph_disables_graph(tmp_path, code_dir):
+    cfg = _write_config(tmp_path)
+    rc = cli_main([
+        "source", "add", "demo", "--config", str(cfg),
+        "--type", "codebase", "--path", str(code_dir), "--ext", ".py",
+        "--no-graph",
+    ])
+    assert rc == 0
+    assert _sources(cfg)["demo"]["graph"] == {"enabled": False}
 
 
 # ----------------------------------------------------------------------

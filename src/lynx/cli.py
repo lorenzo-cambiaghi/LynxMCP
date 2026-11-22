@@ -197,11 +197,40 @@ def _build_manager(config_path):
 
 
 def _cmd_serve(args) -> int:
+    path = getattr(args, "path", None)
+    config_path = getattr(args, "config", None)
+    if path is not None and config_path is not None:
+        print(
+            "[cli] error: --config cannot be combined with a positional PATH "
+            "(use either `lynx serve PATH` for zero-config mode or "
+            "`lynx serve --config FILE`).",
+            file=sys.stderr,
+        )
+        return 2
+
+    cfg = None
+    if path is not None:
+        from .config import build_zero_config
+        graph_enabled = not getattr(args, "no_graph", False)
+        try:
+            cfg = build_zero_config(path, graph_enabled=graph_enabled)
+        except ValueError as e:
+            print(f"[cli] error: {e}", file=sys.stderr)
+            return 2
+        src_name = next(iter(cfg.sources))
+        src_path = cfg.sources[src_name]["path"]
+        print(
+            f"[server] zero-config mode: source {src_name!r} -> {src_path} "
+            f"(storage: {cfg.storage_path}, graph: {'on' if graph_enabled else 'off'})",
+            file=sys.stderr,
+        )
+
     from .server import run_server
     run_server(
-        config_path=getattr(args, "config", None),
+        config_path=config_path,
         profile=getattr(args, "profile", None),
         sources=getattr(args, "sources", None),
+        config=cfg,
     )
     return 0
 
@@ -557,7 +586,9 @@ def _source_block_from_args(args, quiet: bool = False):
             block["watcher"] = watcher
         if args.no_git:
             block["git_integration"] = {"enabled": False}
-        if args.graph:
+        if getattr(args, "no_graph", False):
+            block["graph"] = {"enabled": False}
+        elif args.graph:
             block["graph"] = {"enabled": True}
         return block, None
 
@@ -991,6 +1022,213 @@ def _cmd_query(args) -> int:
                               _muted_stdout)
 
 
+def _cmd_connect(args) -> int:
+    """Wire Lynx into a supported AI editor's MCP config safely (with .bak)."""
+    from .client_connector import (
+        connect_client,
+        disconnect_client,
+        inspect_all_clients,
+    )
+    from .config import resolve_config_path
+
+    as_json = getattr(args, "as_json", False)
+    client_key = getattr(args, "client", None)
+
+    if not client_key:
+        statuses = inspect_all_clients()
+        if as_json:
+            _emit_json([
+                {
+                    "key": st.spec.key,
+                    "label": st.spec.short_label,
+                    "detected": st.detected,
+                    "connected": st.connected,
+                    "supports_auto_connect": st.spec.supports_auto_connect,
+                    "config_path": str(st.config_path) if st.config_path else None,
+                    "locations": list(st.locations),
+                    "error": st.error,
+                }
+                for st in statuses
+            ])
+            return 0
+        print("Supported AI clients:")
+        for st in statuses:
+            if not st.spec.supports_auto_connect:
+                continue
+            badge = "CONNECTED" if st.connected else ("detected" if st.detected else "not found")
+            path_s = str(st.config_path) if st.config_path else "-"
+            print(f"  {st.spec.key:<15} [{badge:<9}]  {path_s}")
+            for where in st.locations:
+                print(f"  {'':<15}  - {where}")
+        print("\nRun `lynx connect <client>` (e.g. `lynx connect cursor --path .` or `lynx connect claude`).")
+        return 0
+
+    if getattr(args, "disconnect", False):
+        res = disconnect_client(client_key)
+        if as_json:
+            _emit_json({"ok": res.ok, "client": res.client_key, "message": res.message,
+                        "config_path": str(res.config_path) if res.config_path else None})
+        else:
+            stream = sys.stdout if res.ok else sys.stderr
+            print(res.message, file=stream)
+        return 0 if res.ok else 1
+
+    repo_path = getattr(args, "path", None)
+    cfg_arg = getattr(args, "config", None)
+    if repo_path and cfg_arg:
+        msg = "--config cannot be combined with --path."
+        if as_json:
+            _emit_json({"ok": False, "error": msg})
+        else:
+            print(f"[cli] error: {msg}", file=sys.stderr)
+        return 2
+
+    resolved_repo = Path(repo_path).expanduser().resolve() if repo_path else None
+    if resolved_repo is not None and not resolved_repo.is_dir():
+        msg = f"path does not exist or is not a directory: {resolved_repo}"
+        if as_json:
+            _emit_json({"ok": False, "error": msg})
+        else:
+            print(f"[cli] error: {msg}", file=sys.stderr)
+        return 2
+
+    resolved_cfg = None
+    if resolved_repo is None:
+        candidate = resolve_config_path(cfg_arg)
+        if candidate.is_file():
+            resolved_cfg = candidate
+        elif cfg_arg is not None:
+            msg = f"config file not found: {candidate}"
+            if as_json:
+                _emit_json({"ok": False, "error": msg})
+            else:
+                print(f"[cli] error: {msg}", file=sys.stderr)
+            return 2
+        else:
+            # No config.json here: zero-config mode. Claude Code starts its MCP
+            # servers inside the project it has open, so a literal "." gives
+            # every project its own index. Other editors start them elsewhere
+            # and get this folder's full path.
+            from .client_connector import get_client_spec
+            spec = get_client_spec(client_key)
+            resolved_repo = Path(".") if spec is not None and spec.key == "claude" else Path.cwd().resolve()
+
+    res = connect_client(
+        client_key,
+        config_path=resolved_cfg,
+        repo_path=resolved_repo,
+        profile=getattr(args, "profile", None),
+        dry_run=getattr(args, "dry_run", False),
+        hook=not getattr(args, "no_hook", False),
+    )
+    if as_json:
+        _emit_json({
+            "ok": res.ok,
+            "client": res.client_key,
+            "message": res.message,
+            "config_path": str(res.config_path) if res.config_path else None,
+            "backup_path": str(res.backup_path) if res.backup_path else None,
+            "dry_run": res.dry_run,
+        })
+    else:
+        stream = sys.stdout if res.ok else sys.stderr
+        print(res.message, file=stream)
+        if res.dry_run and res.preview_json:
+            print(res.preview_json)
+    return 0 if res.ok else 1
+
+
+def _cmd_update(args) -> int:
+    """Check PyPI for updates and upgrade Lynx automatically."""
+    from .updater import wait_for_exit
+
+    as_json = getattr(args, "as_json", False)
+    check_only = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+    wait_pid = getattr(args, "wait_pid", None)
+    restart_manager = getattr(args, "restart_manager", False)
+
+    if wait_pid:
+        print("[update] waiting for LynxManager to close...")
+        if not wait_for_exit(wait_pid):
+            print(f"[update] LynxManager (pid {wait_pid}) is still running; close it and run "
+                  "`lynx update`.", file=sys.stderr)
+            _pause_if_own_window(restart_manager)
+            return 1
+
+    rc = _check_and_upgrade(as_json=as_json, check_only=check_only, dry_run=dry_run)
+    if restart_manager and not dry_run:
+        # The manager closed itself to let the update through: bring it back
+        # whatever happened, and keep the window open if something failed.
+        _reopen_manager()
+        if rc != 0:
+            _pause_if_own_window(True)
+    return rc
+
+
+def _check_and_upgrade(*, as_json: bool, check_only: bool, dry_run: bool) -> int:
+    from .updater import check_latest_version, run_upgrade
+
+    status = check_latest_version(force=True)
+    if as_json:
+        _emit_json(status.to_dict())
+        return 0 if status.checked else 1
+
+    if not status.checked:
+        print(f"[update] {status.error}", file=sys.stderr)
+        print(f"[update] Current version: v{status.current_version} ({status.install.method})")
+        print(f"[update] Manual upgrade:  {status.install.command_display}")
+        return 1
+
+    if not status.update_available:
+        print(f"Lynx v{status.current_version} is already up to date (latest: v{status.latest_version}).")
+        return 0
+
+    print(
+        f"Update available: v{status.current_version} -> v{status.latest_version} "
+        f"(detected install: {status.install.method})"
+    )
+    if check_only:
+        print(f"Run `lynx update` or: {status.install.command_display}")
+        return 0
+
+    rc, output = run_upgrade(dry_run=dry_run, install_info=status.install)
+    stream = sys.stdout if rc == 0 else sys.stderr
+    print(output, file=stream)
+    return rc
+
+
+def _reopen_manager() -> None:
+    """Start LynxManager again, detached, after an update launched from it.
+    Runs the interpreter of this install, which now carries the new code."""
+    import subprocess
+
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "lynx", "manager", "ui"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+        print("[update] reopening LynxManager...")
+    except OSError as e:
+        print(f"[update] could not reopen LynxManager ({e}); run `lynx manager ui`.", file=sys.stderr)
+
+
+def _pause_if_own_window(own_window: bool) -> None:
+    # The manager starts the update in a console of its own, which closes
+    # with the process: keep it open so the message can be read.
+    if own_window and sys.stdin and sys.stdin.isatty():
+        try:
+            input("Press Enter to close this window.")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+
 _DISPATCH = {
     "serve": _cmd_serve,
     "build": _cmd_build,
@@ -1002,6 +1240,8 @@ _DISPATCH = {
     "graph": _cmd_graph,
     "manager": _cmd_manager,
     "migrate-config": _cmd_migrate_config,
+    "connect": _cmd_connect,
+    "update": _cmd_update,
 }
 
 # The retrieval / navigation commands all route through one handler; their

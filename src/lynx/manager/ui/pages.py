@@ -72,12 +72,24 @@ def register(app) -> None:
             except Exception:
                 pass  # a missing or unreadable log must not blank the page
 
+        # Which AI clients already have Lynx wired in (local file probe only,
+        # never touches the network). Drives the 3-step onboarding strip.
+        connected_clients: list[str] = []
+        try:
+            from ...client_connector import inspect_all_clients
+            connected_clients = [
+                st.spec.short_label for st in inspect_all_clients() if st.connected
+            ]
+        except Exception:
+            pass
+
         return app.state.templates.TemplateResponse(
             request, "dashboard.html",
             {
                 "sources": sources_data,
                 "total_chunks": total_chunks,
                 "total_sources": total_sources,
+                "connected_clients": connected_clients,
                 "feedback": feedback,
                 "manager_error": manager_error,
                 "config_path": str(app.state.config_path) if app.state.config_path else None,
@@ -274,7 +286,7 @@ def register(app) -> None:
                 pass
 
         rules_preview = (
-            integ.render_rules_for_sources(source_names, has_graph, has_git)
+            integ.render_rules_file(source_names, has_graph, has_git)
             if source_names else None
         )
 

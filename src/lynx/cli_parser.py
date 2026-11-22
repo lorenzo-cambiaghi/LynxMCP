@@ -146,6 +146,8 @@ def _add_query_parsers(sub) -> None:
     )
     sp_desc.add_argument("symbol", help="Identifier to describe.")
     _common(sp_desc, source_help=_CODE_SRC)
+    sp_desc.add_argument("--file", metavar="PATH",
+                         help="Path fragment of the definition to describe, when the name has several.")
     sp_desc.add_argument("--callers-limit", type=int, default=10)
     sp_desc.add_argument("--callees-limit", type=int, default=10)
     sp_desc.add_argument("--tests-limit", type=int, default=5)
@@ -204,10 +206,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     sp_serve = sub.add_parser("serve", help="Run the MCP server (default)")
+    sp_serve.add_argument(
+        "path", nargs="?", default=None, metavar="PATH",
+        help="Zero-config mode: serve a repository folder directly (e.g. `lynx serve .`) "
+             "without creating config.json. Index is stored in the OS cache directory "
+             "with the code knowledge graph enabled.",
+    )
     sp_serve.add_argument("--config", "-c", metavar="PATH")
     sp_serve.add_argument(
         "--profile", choices=["core", "standard", "full"],
-        help="Which tools to expose: core (5), standard (12, default) or full "
+        help="Which tools to expose: core (5), standard (10, default) or full "
              "(17). Overrides LYNX_TOOL_PROFILE and tools.profile in config.json.",
     )
     sp_serve.add_argument(
@@ -215,6 +223,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Serve only this source of the config (repeatable). One config can "
              "list every repository; each project's MCP entry names the sources "
              "it needs, and only those indexes are opened.",
+    )
+    sp_serve.add_argument(
+        "--no-graph", action="store_true",
+        help="Disable the code knowledge graph in zero-config mode (`lynx serve PATH`).",
     )
 
     sp_build = sub.add_parser(
@@ -448,7 +460,12 @@ def _build_parser() -> argparse.ArgumentParser:
              "Omitted: the standard VCS/deps/build ignore list is applied.",
     )
     g_code.add_argument(
-        "--graph", action="store_true", help="Enable the knowledge graph layer.",
+        "--graph", action="store_true",
+        help="Enable the knowledge graph layer (on by default for new codebase sources).",
+    )
+    g_code.add_argument(
+        "--no-graph", action="store_true",
+        help="Disable the knowledge graph layer (on by default for new codebase sources).",
     )
     g_code.add_argument(
         "--no-watcher", action="store_true",
@@ -685,6 +702,71 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_mig.add_argument(
         "--source-name", default="codebase",
         help="Name to give the migrated source in the v2 schema (default: 'codebase')",
+    )
+
+    sp_connect = sub.add_parser(
+        "connect",
+        help="Wire Lynx into your AI editor in one command (Claude Code, Cursor, "
+             "Claude Desktop, Windsurf, Antigravity, VS Code)",
+    )
+    sp_connect.add_argument(
+        "client", nargs="?", default=None, metavar="CLIENT",
+        help="AI client to configure: claude, cursor, claude-desktop, windsurf, "
+             "antigravity, vscode. Omit to list detected clients and their status.",
+    )
+    sp_connect.add_argument(
+        "--config", "-c", metavar="PATH",
+        help="Path to config.json (multi-source mode).",
+    )
+    sp_connect.add_argument(
+        "--path", metavar="DIR",
+        help="Connect directly to a repository folder in zero-config mode (no config.json needed).",
+    )
+    sp_connect.add_argument(
+        "--profile", choices=["core", "standard", "full"],
+        help="Tool profile to configure for this client.",
+    )
+    sp_connect.add_argument(
+        "--no-hook", action="store_true",
+        help="Claude Code only: do not add the prompt hook that gives every request "
+             "the Lynx map of the code it is about (~/.claude/settings.json).",
+    )
+    sp_connect.add_argument(
+        "--disconnect", action="store_true",
+        help="Remove Lynx from CLIENT's MCP configuration (keeps a .bak backup).",
+    )
+    sp_connect.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be written without modifying any file.",
+    )
+    sp_connect.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the result as JSON.",
+    )
+
+    sp_update = sub.add_parser(
+        "update",
+        help="Check for a newer Lynx release and upgrade automatically",
+    )
+    sp_update.add_argument(
+        "--check", action="store_true",
+        help="Only check if an update is available without installing it.",
+    )
+    sp_update.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the upgrade command that would run without executing it.",
+    )
+    sp_update.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit update status as JSON (implies --check when used alone).",
+    )
+    sp_update.add_argument(
+        "--wait-pid", type=int, default=None, metavar="PID",
+        help=argparse.SUPPRESS,  # LynxManager waits for itself to close first
+    )
+    sp_update.add_argument(
+        "--restart-manager", action="store_true",
+        help=argparse.SUPPRESS,  # reopen LynxManager after a successful update
     )
 
     return parser
