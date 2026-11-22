@@ -432,12 +432,10 @@ def _register_search_tools(mcp, manager):
         path_contains: _PathContainsArg = None,
     ) -> str:
         try:
-            # Guessed names ride with the description: on 22 bug reports
-            # (lynx-zombie-bench E24b) Claude's three queries found the fix's
-            # file at MRR 0.626, 0.684 with its guessed identifiers added; it
-            # never wrote identifiers into a query without a slot for them.
-            if identifiers and identifiers.strip():
-                query = f"{query} {identifiers.replace(',', ' ').strip()}"
+            # Guessed names ride with the description (see with_identifiers,
+            # shared with `lynx search --identifiers`).
+            from .source_manager import with_identifiers
+            query = with_identifiers(query, identifiers)
             effective_top_k = top_k if top_k is not None else manager.config.search.default_top_k
             filters = dict(
                 file_glob=file_glob, extensions=extensions, path_contains=path_contains

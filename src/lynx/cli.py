@@ -9,8 +9,16 @@ Subcommands:
   list-sources    - enumerate configured sources
   source          - add / remove a source in config.json (no web UI needed)
   graph           - build, query, inspect, or export the knowledge graph
+  connect         - register Lynx in an AI client's MCP config (and the
+                    Claude Code prompt hook); `--disconnect` undoes it
+  update          - check for and install a newer Lynx
   manager         - setup wizard, doctor, extras installer, web UI
   migrate-config  - convert a v1 config.json to the v2 schema
+
+Navigation commands, the MCP tools of the same name (see query_cli.py):
+  find-definition, find-usages, find-tests-for, find-similar,
+  describe-symbol, impact, repo-overview, module-summary, search-diff,
+  deep-search
 
 The package version is available via `--version` at the top level.
 
@@ -339,6 +347,8 @@ def _cmd_search(args) -> int:
     top_k = args.top_k if args.top_k is not None else config.search.default_top_k
     filters = dict(file_glob=args.glob, extensions=args.ext,
                    path_contains=args.path_contains)
+    from .source_manager import with_identifiers
+    args.query = with_identifiers(args.query, getattr(args, "identifiers", None))
 
     # A repeated --source fuses just those sources, the request-time way to
     # scope a query to a subset. One name, 'ALL', and omitting it keep

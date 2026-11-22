@@ -15,6 +15,13 @@ from __future__ import annotations
 import argparse
 
 from . import __version__
+from .tool_profiles import PROFILES
+
+# Counted, not written: the help said 5/10/17 after the two hook tools
+# (prompt_hook, read_guard) joined every profile.
+_PROFILE_SIZES = ", ".join(
+    f"{name} ({len(PROFILES[name])}{', default' if name == 'standard' else ''})"
+    for name in ("core", "standard", "full"))
 
 
 # Graph operations `lynx graph query --op` accepts. Duplicated from
@@ -215,8 +222,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_serve.add_argument("--config", "-c", metavar="PATH")
     sp_serve.add_argument(
         "--profile", choices=["core", "standard", "full"],
-        help="Which tools to expose: core (5), standard (10, default) or full "
-             "(17). Overrides LYNX_TOOL_PROFILE and tools.profile in config.json.",
+        help=f"Which tools to expose: {_PROFILE_SIZES}, each with the two "
+             "hook tools prompt_hook and read_guard. Overrides "
+             "LYNX_TOOL_PROFILE and tools.profile in config.json.",
     )
     sp_serve.add_argument(
         "--source", "-s", metavar="NAME", action="append", dest="sources",
@@ -259,6 +267,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_search = sub.add_parser("search", help="Run an ad-hoc search query")
     sp_search.add_argument("query", help="Natural-language search query")
+    sp_search.add_argument(
+        "--identifiers", metavar="NAMES",
+        help="Code names you guess are involved (camelCase or snake_case, "
+             "comma or space separated), added to the query as the MCP "
+             "search tool's `identifiers` field.",
+    )
     sp_search.add_argument("--config", "-c", metavar="PATH")
     sp_search.add_argument(
         "--source", "-s", metavar="NAME", action="append",
@@ -300,8 +314,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_graph = sub.add_parser(
         "graph",
         help="Build, query, inspect, or export the per-source knowledge "
-             "graph layer (opt-in via `graph: { enabled: true }` in the "
-             "source config).",
+             "graph layer. On for sources made by `lynx source add` and "
+             "`lynx serve PATH`; in config.json, `graph: { enabled: true }` "
+             "on the source.",
     )
     graph_sub = sp_graph.add_subparsers(dest="graph_command", metavar="GRAPH_COMMAND")
 

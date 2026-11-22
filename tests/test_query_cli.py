@@ -538,3 +538,13 @@ def test_importing_lynx_drops_the_tls_keylog_variable():
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
                          text=True, timeout=120)
     assert out.stdout.strip() == "True", out.stderr
+
+
+def test_search_identifiers_ride_with_the_query_as_in_the_mcp_tool(cli, capsys):
+    """`lynx search --identifiers` sends the query the MCP `search` tool
+    sends with its `identifiers` field (both through with_identifiers)."""
+    assert cli.main(["search", "where a click picks a person", "-s", "demo",
+                     "--identifiers", "pickActor, labelHover"]) == 0
+    name, args, _kw = _mgr(cli).calls[-1]
+    assert name == "search"
+    assert args[1] == "where a click picks a person pickActor  labelHover"

@@ -21,6 +21,17 @@ from typing import Any
 from .sources import SOURCE_BACKENDS, SourceBackend
 
 
+def with_identifiers(query: str, identifiers=None) -> str:
+    """`query` with guessed identifiers appended, as the MCP `search` tool
+    and `lynx search --identifiers` both send it. On 22 bug reports
+    (lynx-zombie-bench E24b) Claude's queries found the fix's file at MRR
+    0.626, 0.684 with its guessed identifiers added; it never wrote
+    identifiers into a query without a slot for them."""
+    if identifiers and str(identifiers).strip():
+        return f"{query} {str(identifiers).replace(',', ' ').strip()}"
+    return query
+
+
 class SourceManager:
     """Holds N backends and dispatches operations to them."""
 
