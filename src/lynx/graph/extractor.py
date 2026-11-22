@@ -242,6 +242,29 @@ def _handle_python_import(node, source: bytes, file_id: str, edges: list, file_p
         })
 
 
+_JS_MODULE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _resolve_relative_module(file_path: str, raw: str) -> Optional[str]:
+    """The file a relative ES module specifier names, as the TypeScript and
+    Node resolvers find it: the path as written, with an extension added, a
+    `.js` written for a `.ts` source (TypeScript's ES module convention), or
+    the folder's `index`. None when no such file exists."""
+    base = os.path.normpath(os.path.join(os.path.dirname(file_path), raw))
+    stem, ext = os.path.splitext(base)
+    candidates = []
+    if ext in _JS_MODULE_EXTS:
+        candidates.append(base)
+        if ext in (".js", ".jsx", ".mjs", ".cjs"):
+            candidates += [stem + ".ts", stem + ".tsx", stem + ".mts", stem + ".cts"]
+    candidates += [base + e for e in _JS_MODULE_EXTS]
+    candidates += [os.path.join(base, "index" + e) for e in _JS_MODULE_EXTS]
+    for c in candidates:
+        if os.path.isfile(c):
+            return os.path.normpath(os.path.abspath(c))
+    return None
+
+
 def _handle_js_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
     # import_statement covers ES module imports. The module specifier is the
     # single `string` child of the import.
@@ -252,10 +275,16 @@ def _handle_js_import(node, source: bytes, file_id: str, edges: list, file_path:
             raw = _text(c, source).strip().strip('"').strip("'")
             if not raw:
                 continue
-            # Naive resolution: relative imports keep the full path as the
-            # module label; bare specifiers use the package basename.
+            # A relative import points at the file it names, so "which files
+            # import X" and every query built on it see the project's own
+            # dependencies. Until 2026-11-22 it pointed at a stub made of the
+            # importing path and the specifier: on a 214k-line TypeScript game
+            # all 5,663 project imports were "external", 5,534 of them files
+            # in the index. Bare specifiers stay packages.
             if raw.startswith("."):
-                target = _make_id(file_path, raw)
+                resolved = _resolve_relative_module(file_path, raw)
+                target = (_make_id(_file_id_stem(resolved)) if resolved
+                          else _make_id(file_path, raw))
             else:
                 target = _make_id(raw.split("/")[0])
             edges.append({
@@ -1455,16 +1484,47 @@ def _extract_callee(call_node, rules: LangGraphRules, source: bytes) -> "Optiona
     return None
 
 
+def _local_function_names(fn_node, source: bytes) -> frozenset:
+    """Names of the functions declared inside a function (closures, local
+    functions, `const f = () => ...`), lowercased. A call to one of them is
+    a call inside the caller, not to another definition of the same name
+    elsewhere: `lift(...)` in `createInput` is its own `const lift`, not
+    `lift` of another file."""
+    names = set()
+    stack = list(fn_node.children)
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_declaration", "generator_function_declaration",
+                      "function_definition", "local_function_statement"):
+            name = n.child_by_field_name("name")
+            if name is not None:
+                names.add(_text(name, source).lower())
+        elif n.type == "variable_declarator":
+            name, value = n.child_by_field_name("name"), n.child_by_field_name("value")
+            if (name is not None and value is not None and name.type == "identifier"
+                    and value.type in ("arrow_function", "function_expression", "function",
+                                       "generator_function")):
+                names.add(_text(name, source).lower())
+        stack.extend(n.children)
+    return frozenset(names)
+
+
 def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
-                local_index: dict, edges: list, raw_calls: list, file_path: str) -> None:
+                local_index: dict, edges: list, raw_calls: list, file_path: str,
+                local_names: frozenset = frozenset()) -> None:
     """Walk a function body, emitting call edges (resolved or raw)."""
     for child in node.children:
-        # Don't descend into nested function/method definitions — those are
-        # independent callers and the walker handles them at the top level.
-        if child.type in rules.function_boundary_types:
-            continue
+        # A function nested in this one (a closure, a callback, an arrow
+        # function, a local function) is not a graph node: the declaration
+        # walker does not enter function bodies. Its calls are this
+        # function's calls. They used to be skipped as "handled at the top
+        # level", which nothing did: on a 214k-line TypeScript game the
+        # 358-line `createInput`, built of closures, kept 16 of its calls and
+        # none to `pickActor`.
         if child.type in rules.call_types:
             extracted = _extract_callee(child, rules, source)
+            if extracted is not None and not extracted[1] and extracted[0].lower() in local_names:
+                extracted = None             # a function local to the caller
             if extracted is not None:
                 callee_name, is_member = extracted
                 callee_key = callee_name.lower()
@@ -1495,7 +1555,8 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 #   wrong receiver. A self-loop `calls` edge is noise in every
                 #   navigation view, so emit nothing rather than guess.
         # Recurse into the children — body / block / expression-statement etc.
-        _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path)
+        _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path,
+                    local_names)
 
 
 # ---------------------------------------------------------------------------
@@ -1681,7 +1742,8 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     # Second pass: walk every function body collecting call edges.
     raw_calls: list = []
     for caller_id, body in function_bodies:
-        _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm)
+        _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm,
+                    _local_function_names(body, source))
 
     return {
         "file_id": file_id,
