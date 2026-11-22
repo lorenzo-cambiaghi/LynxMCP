@@ -21,6 +21,7 @@ changes, etc.).
 """
 from __future__ import annotations
 
+import bisect
 import os
 from pathlib import Path
 from typing import Callable, Optional
@@ -62,7 +63,7 @@ except ImportError:
 # CRITICAL drift and the user is prompted to rebuild). Bump whenever the
 # chunking logic changes the boundaries / metadata in a backwards-incompatible
 # way.
-CHUNKER_VERSION = 5
+CHUNKER_VERSION = 6
 # History:
 #   1 — SentenceSplitter only (pre-M3 era)
 #   2 — tree-sitter + fallback, naive _extract_name (took first identifier)
@@ -75,16 +76,34 @@ CHUNKER_VERSION = 5
 #       relative path and the symbol name instead of eight metadata lines.
 #       An index of version 4 is re-chunked in place, file by file, and
 #       answers throughout (see CodebaseRAG._load_file_hashes).
+#   6 — in TypeScript and JavaScript, a function longer than the embedding
+#       window gives the named functions declared in its body pieces of
+#       their own (`createInput.pickActors`), see LONG_FUNCTION_CHARS; the
+#       parts of a split piece carry their own lines instead of the whole
+#       parent's span.
 # NOTE: a new language (Bash/SQL/Scala/Lua and Objective-C in 1.6.0, GDScript
 # later) does NOT bump this: chunks of the other languages are unchanged. The
 # SHA cache records `grammar_extensions()`, so the files of an extension that
 # gained (or lost) a grammar are re-chunked in place, and only those.
 
 # Soft cap on chunk size. Anything bigger gets split with SentenceSplitter so
-# huge auto-generated methods don't produce a single 50k-token chunk. ~8000
-# chars ≈ ~2000 tokens, which fits comfortably in the embedding model's
-# context window (BGE-small is 512 but it truncates fine for our purposes).
+# huge auto-generated methods don't produce a single 50k-token chunk. The
+# embedding model does NOT read all of it (512 tokens, see below); pieces of
+# 1,400 characters everywhere were measured and lost more than they gained
+# (lynx-zombie-bench E18, E21), so the cap stays and long functions are
+# handled by structure instead.
 MAX_CHUNK_CHARS = 8000
+
+# The embedding model reads the first 512 tokens of a piece: about 1,440
+# characters of code (2.81 characters per token, measured with its own
+# tokenizer on The Lost Storm). A function longer than that is unseen past
+# that point by the dense half, and BM25 discounts it for its length; on that
+# 214k-line game 41% of the indexed tokens were past the window. The named
+# functions declared directly in such a function's body (`const pickActors =
+# () => ...` in a 358-line `createInput`) get pieces of their own, named after
+# both (`createInput.pickActors`); the outer piece keeps the rest, with one
+# line standing for each of them. Shorter functions stay whole, as before.
+LONG_FUNCTION_CHARS = 1440
 
 # Defaults for the SentenceSplitter fallback (and for over-sized AST chunks).
 FALLBACK_CHUNK_SIZE = 1024     # tokens
@@ -109,6 +128,15 @@ def _ts_language(factory: Callable[[], object]) -> tree_sitter.Language:
     """Wrap a per-language module's `language()` call into a tree_sitter.Language."""
     return tree_sitter.Language(factory())
 
+
+
+# Chunk types whose long bodies are searched for named inner functions (see
+# LONG_FUNCTION_CHARS). Closures are how TypeScript and JavaScript structure a
+# long function; other languages keep their long functions whole for now.
+_JS_NESTED_PARENTS = frozenset({"function_declaration", "method_definition",
+                                "generator_function_declaration"})
+_JS_FUNCTION_VALUES = frozenset({"arrow_function", "function_expression", "function",
+                                 "generator_function"})
 
 _LANG_RULES: dict = {
     "c_sharp": {
@@ -143,6 +171,7 @@ _LANG_RULES: dict = {
     },
     "typescript": {
         "parser_factory": lambda: _ts_language(ts_ts.language_typescript),
+        "nested_function_parents": _JS_NESTED_PARENTS,
         "container_types": {
             "class_declaration",
             "interface_declaration",
@@ -161,6 +190,7 @@ _LANG_RULES: dict = {
     },
     "tsx": {
         "parser_factory": lambda: _ts_language(ts_ts.language_tsx),
+        "nested_function_parents": _JS_NESTED_PARENTS,
         "container_types": {
             "class_declaration",
             "interface_declaration",
@@ -176,6 +206,7 @@ _LANG_RULES: dict = {
     },
     "javascript": {
         "parser_factory": lambda: _ts_language(ts_js.language),
+        "nested_function_parents": _JS_NESTED_PARENTS,
         "container_types": {"class_declaration"},
         "chunk_types": {
             "function_declaration",
@@ -659,6 +690,63 @@ def _type_skeleton(node, source: bytes, rules: dict, start_byte: int) -> str:
     return "\n".join([header] + ["    " + m for m in members])
 
 
+def _nested_functions(node, name_node_types: list) -> list:
+    """The named functions declared directly in a function's body, as
+    (name, declaration node): `function f() {}` and `const f = () => {}` /
+    `const f = function () {}`. One level down only: a function inside
+    those stays in its parent's piece."""
+    body = node.child_by_field_name("body")
+    if body is None:
+        return []
+    found = []
+    for stmt in body.named_children:
+        if stmt.type in ("function_declaration", "generator_function_declaration"):
+            name = _extract_name(stmt, name_node_types)
+            if name:
+                found.append((name, stmt))
+        elif stmt.type in ("lexical_declaration", "variable_declaration"):
+            declarators = [c for c in stmt.named_children if c.type == "variable_declarator"]
+            for decl in declarators:
+                value = decl.child_by_field_name("value")
+                name_node = decl.child_by_field_name("name")
+                if value is None or name_node is None or value.type not in _JS_FUNCTION_VALUES:
+                    continue
+                if name_node.type != "identifier":
+                    continue
+                name = name_node.text.decode("utf-8", errors="replace")
+                found.append((name, stmt if len(declarators) == 1 else decl))
+    return found
+
+
+def _outer_with_nested_folded(source: bytes, start: int, end: int, nested: list) -> tuple:
+    """The outer function's text with each nested function reduced to its
+    first line, so its body is indexed once, in its own piece; and, for each
+    line of that text, the 1-based line of the file it starts on (folding
+    removes lines, so the parts it is later split into cannot count them)."""
+    newlines = [i for i in range(start, end) if source[i] == 10]
+
+    def row_of(byte):                    # 0-based file row of a byte
+        return start_row + bisect.bisect_left(newlines, byte)
+
+    start_row = source.count(b"\n", 0, start)
+    parts, cursor, line_map = [], start, [start_row + 1]
+
+    def keep(a, b):
+        parts.append(source[a:b])
+        for nl_at in newlines[bisect.bisect_left(newlines, a):bisect.bisect_left(newlines, b)]:
+            line_map.append(row_of(nl_at) + 2)
+
+    for _name, decl in sorted(nested, key=lambda item: item[1].start_byte):
+        first_line_end = source.find(b"\n", decl.start_byte, decl.end_byte)
+        if first_line_end == -1:
+            continue                     # a one-line function stays as it is
+        keep(cursor, first_line_end)
+        parts.append(b" ...")
+        cursor = decl.end_byte
+    keep(cursor, end)
+    return b"".join(parts).decode("utf-8", errors="replace"), line_map
+
+
 def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
     """Recursively walk `node`, returning a list of chunk dicts.
 
@@ -689,13 +777,29 @@ def _walk(node, source: bytes, rules: dict, container_path: list) -> list:
                     or default_names.get(child.type) or "<anonymous>")
             full_name = ".".join(container_path + [name]) if container_path else name
             start_byte, start_row = _leading_comment_start(child, prelude)
+            text = source[start_byte:child.end_byte].decode("utf-8", errors="replace")
+            nested, line_map = [], None
+            if (child.type in rules.get("nested_function_parents", ())
+                    and len(text) > LONG_FUNCTION_CHARS):
+                nested = _nested_functions(child, name_node_types)
+            if nested:
+                text, line_map = _outer_with_nested_folded(source, start_byte, child.end_byte, nested)
             chunks.append({
-                "text": source[start_byte:child.end_byte].decode("utf-8", errors="replace"),
+                "text": text,
                 "symbol_name": full_name,
                 "symbol_kind": child.type,
                 "start_line": start_row + 1,
                 "end_line": child.end_point[0] + 1,
+                **({"line_map": line_map} if line_map else {}),
             })
+            for inner_name, decl in nested:
+                chunks.append({
+                    "text": _node_text(source, decl),
+                    "symbol_name": f"{full_name}.{inner_name}",
+                    "symbol_kind": "nested_function",
+                    "start_line": decl.start_point[0] + 1,
+                    "end_line": decl.end_point[0] + 1,
+                })
         elif child.type in container_types:
             container_name = _extract_name(child, name_node_types) or "<container>"
             qualified = ".".join(container_path + [container_name])
@@ -782,9 +886,36 @@ def _split_oversized(chunk: dict, max_chars: int) -> list:
             **chunk,
             "text": piece,
             "symbol_name": f"{base_name}#part{i + 1}",
+            **span,
         }
-        for i, piece in enumerate(pieces)
+        for i, (piece, span) in enumerate(zip(pieces, _part_spans(chunk, pieces)))
     ]
+
+
+def _part_spans(chunk: dict, pieces: list) -> list:
+    """Each part's own first and last line. Parts used to repeat the whole
+    parent's span (the three parts of a 358-line function all said 94-451),
+    so a hit on one sent the reader to all of it. A part is found in the
+    parent text by its opening; one that is not (the splitter rewrote its
+    whitespace) keeps the parent's span."""
+    text, first = chunk["text"], chunk.get("start_line", 1)
+    line_map = chunk.get("line_map")
+    spans, cursor = [], 0
+    for piece in pieces:
+        probe = piece.strip()[:80]
+        at = text.find(probe, cursor) if probe else -1
+        if at == -1:
+            spans.append({})
+            continue
+        row = text.count("\n", 0, at)
+        last = row + piece.strip().count("\n")
+        if line_map:
+            spans.append({"start_line": line_map[min(row, len(line_map) - 1)],
+                          "end_line": line_map[min(last, len(line_map) - 1)]})
+        else:
+            spans.append({"start_line": first + row, "end_line": first + last})
+        cursor = at + 1
+    return spans
 
 
 def _fallback_chunks(abs_path: str, content: str) -> list:
@@ -915,6 +1046,7 @@ def chunk_file(abs_path: str, content: str) -> list:
         sized.extend(_split_oversized(c, MAX_CHUNK_CHARS))
 
     for c in sized:
+        c.pop("line_map", None)          # bookkeeping for the split, not metadata
         c["language"] = lang_key
         c["chunker"] = "tree_sitter"
         c["file_path"] = abs_path_norm
