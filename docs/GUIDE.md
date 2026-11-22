@@ -716,6 +716,7 @@ Minimum useful config (single source):
 | `search.mode` | `"hybrid"` (default), `"dense"`, or `"sparse"`. See [Hybrid retrieval](#hybrid-retrieval). |
 | `search.rrf_k` | Reciprocal Rank Fusion constant (default `60`). |
 | `search.candidate_pool_size` | Per-retriever candidate pool size (default `30`). |
+| `search.secondary_weight` | The fused score of test, data and doc files (`*.test.*`, `*.spec.*`, `tests/`, `__tests__/`, `*.json`, `*.md` and the like) is multiplied by this, so the code a question is about ranks above the tests and data that tell the same story in plain words. Default `0.5`; `1.0` turns it off. On a 214k-line TypeScript game it took the right file from first place in 4 of 76 issue titles to 19. |
 | `search.deep.min_results` | For `deep_search`: minimum results required for a variant to count as "strong" (default `2`). |
 | `search.deep.score_thresholds` | Mode-specific "weak" thresholds. Defaults: `dense=0.45`, `hybrid=0.012`, `sparse=3.0`. |
 
@@ -1183,10 +1184,47 @@ Or edit `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows) directly:
 }
 ```
 
-Restart Claude Code. The next session will list one `search` /
-`deep_search` pair for every configured source, plus the global
-tools (`list_sources`, `search`, `deep_search`,
-`update_source_index`, `get_rag_status`).
+Restart Claude Code. The next session lists the tools of the profile you
+chose (see [Tool profiles](#tool-profiles)); the tool set does not grow with
+the number of sources.
+
+#### The prompt hook
+
+Claude Code with Lynx connected still tends to explore with grep and cat,
+and calls Lynx late or not at all. The prompt hook does not wait for that
+choice. On every request, Claude Code calls the `prompt_hook` tool of the
+Lynx server it is already running and passes it the prompt. Lynx runs one
+search per sentence and answers with a map of the code the request is
+about: up to 12 places, each with file, lines and signature, about 1,300
+characters. The map reaches the model before its first turn.
+
+`lynx connect claude` installs the hook in `~/.claude/settings.json`;
+`--no-hook` leaves it out, and `--disconnect` removes it with the server.
+By hand, in `~/.claude/settings.json` or in a project's
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "mcp_tool", "server": "lynx", "tool": "prompt_hook",
+                  "input": {"prompt": "${prompt}"}}]}
+    ]
+  }
+}
+```
+
+`server` is the name you gave the server in `claude mcp add` (`codebase-rag`
+in the example above). With the index open the hook takes 150 to 450 ms per
+prompt. A prompt with no sentence of four words or more ("yes", "go on")
+gets no map, and a failure (the index still opening, a broken store) adds
+nothing to the context rather than an error.
+
+The tool must answer hook JSON (`hookSpecificOutput.additionalContext`):
+Claude Code drops the plain-text answer of an `mcp_tool` hook. Measured on
+a three.js game of 8,600 lines, two bug fixes from real issues, the hook
+made each run read less, write less and need fewer API calls (10 instead of
+12 to 15).
 
 ### Claude Code extension for VS Code
 
@@ -1678,12 +1716,15 @@ layers the tools in three profiles:
 
 | Profile | Tools | Size of `tools/list` |
 |---|---|---|
-| `core` | search, describe_symbol, find_usages, impact, feedback | 5.2k characters, about 1,300 tokens |
-| `standard` (default) | core + find_definition, find_similar, module_summary, deep_search, graph_query, repo_overview, search_diff | 12.9k characters, about 3,250 tokens |
-| `full` | all 17 | 16.7k characters, about 4,150 tokens |
+| `core` | search, describe_symbol, module_summary, find_usages, impact, prompt_hook | 5.2k characters, about 1,300 tokens |
+| `standard` (default) | core + find_definition, find_similar, graph_query, repo_overview, search_diff | 9.8k characters, about 2,450 tokens |
+| `full` | all 18, adding deep_search, find_tests_for, export_graph, feedback and the maintenance tools | 15.4k characters, about 3,850 tokens |
 
 Measured with two codebase sources, graph and git enabled. Before the
 profiles existed the list weighed 30.7k characters, about 7,700 tokens.
+`prompt_hook` is in every profile because the [prompt hook](#the-prompt-hook)
+calls it; the model is told not to. Claude Code defers MCP tools, so there
+it costs its name only.
 
 Pick a profile in `config.json`, on the command line, or in the
 environment. The command line wins, then the variable, then the file:
@@ -1716,7 +1757,7 @@ handshake instructions and the `lynx://guide` resource name only the
 tools the session has, and tell the model which profile hid the rest, so
 it can ask you for `--profile full` instead of guessing.
 
-### Search tools (`search` in every profile, `deep_search` from `standard`)
+### Search tools (`search` in every profile, `deep_search` in `full`)
 
 #### `search(query, top_k=None, file_glob=None, extensions=None, path_contains=None)`
 
@@ -1784,7 +1825,7 @@ identifier, semantic intent, usage angle). Paraphrases of the same
 phrasing are bad variants. See the "AI integration rules" section for
 examples.
 
-### Global tools (no source name; `feedback` in every profile, the other three in `full`)
+### Global tools (no source name; all four in `full`)
 
 #### `list_sources()`
 
@@ -1941,26 +1982,25 @@ isn't enabled.
 ## Get the most out of it: AI integration rules
 
 Installing the server and registering the MCP tools makes them available
-to your AI assistant. It does not make the assistant use them well. By
-default most AI clients invoke `search` only when the query is obviously
-"find X". They will not, unprompted, search before implementing a new
-utility, interface or architectural pattern, and they may not realize a
-docs source exists for the library they're about to misuse.
+to your AI assistant. It does not make the assistant use them. By default
+an AI client reaches for grep and whole files, even when it is looking for
+where something happens, and it may not realize a docs source exists for
+the library it is about to misuse.
 
-That habit (search before implementing, pick the right source) is where
-this tool pays off most. It is also the workflow your AI client will
-skip unless you ask for it explicitly. The standard way to ask is a
-project rules file the assistant reads at the start of every session.
+The server's handshake instructions already tell the client when to call
+Lynx, and Claude Code reads them. A project rules file says it again for
+clients that don't, and it is loaded into every call, so keep it short.
 
 ### Drop-in template
 
 The template is
 [`integrations/agent-rules/lynx-rules.md`](../integrations/agent-rules/lynx-rules.md).
 Replace `<project>` and `<library-docs>` with your source names and paste it
-into the file your AI client reads (table below). It covers the two questions
-Lynx answers best before code gets written (does this exist already? is my
-draft a duplicate?), the structural tools, how filters behave, and how to read
-the scores. Keep it in your repository rather than copying from an old
+into the file your AI client reads (table below). It tells the agent to find
+code through `search` first, names the lookup and graph tools, and says when
+grep is still the right tool. The manager's **Download CLAUDE.md** button
+writes the same few lines with your source names filled in. Keep it in your
+repository rather than copying from an old
 version of this guide: rules that name tools which no longer exist, such as
 the per-source `search_<name>` of the releases before 1.0, make an agent
 call nothing at all.
