@@ -309,12 +309,14 @@ class PdfBackend(SourceBackend):
         file_glob=None,
         extensions=None,
         path_contains=None,
+        mode=None,
         **_ignored,
     ) -> list[dict]:
         self._before_read()
         return self.rag.search(
             query, top_k=top_k,
             file_glob=file_glob, extensions=extensions, path_contains=path_contains,
+            mode=mode,
         )
 
     def deep_search(

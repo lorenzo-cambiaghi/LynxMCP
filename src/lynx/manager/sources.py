@@ -231,7 +231,12 @@ def write_config(config_dict: dict, config_path) -> Optional[str]:
     truncated config that nothing can load, and the `.bak` written moments
     earlier would be the only copy left.
     """
-    content = json.dumps(config_dict, indent=2) + "\n"
+    return write_config_text(json.dumps(config_dict, indent=2) + "\n", config_path)
+
+
+def write_config_text(content: str, config_path) -> Optional[str]:
+    """`write_config` for text already validated, kept as the user wrote it
+    (the web UI's config editor). Same `.bak` and atomic replace."""
     target = Path(config_path)
     staged = target.with_name(target.name + ".tmp")
     try:

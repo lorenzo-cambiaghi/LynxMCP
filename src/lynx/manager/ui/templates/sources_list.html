@@ -41,8 +41,8 @@
                 <span class="badge bg-orange-50 text-orange-700">Graph</span>
               {% endif %}
             </div>
-            {% if s.path %}
-              <div class="text-xs font-mono text-slate-500 mt-1 truncate" title="{{ s.path }}">{{ s.path }}</div>
+            {% if s.path or s.url %}
+              <div class="text-xs font-mono text-slate-500 mt-1 truncate" title="{{ s.path or s.url }}">{{ s.path or s.url }}</div>
             {% endif %}
           </div>
           <div class="flex items-center gap-2.5 shrink-0">

@@ -21,6 +21,7 @@ from .render import (
     _empty, _err, _html_escape, _render_hits, _render_tool_text,
 )
 from ..._format import (
+    _format_outline_results,
     _format_deep_response,
     _format_describe_symbol,
     _format_impact,
@@ -72,21 +73,28 @@ def _register_playground_routes(app) -> None:
         query: str = Form(...),
         mode: str = Form(""),
         top_k: int = Form(5),
+        identifiers: str = Form(""),
+        outline: str = Form(""),
     ):
+        """The MCP `search` tool's arguments, all of them: the Mode menu was
+        ignored and `identifiers` and `outline` were missing."""
+        from ...source_manager import with_identifiers
         mgr, err = _mgr_or_err()
         if err: return err
         if not query.strip():
             return _err("query is empty")
+        full = with_identifiers(query, identifiers)
+        extra = {"mode": mode} if mode else {}
         try:
-            # NOTE: backend.search() honours the configured mode; per-call
-            # override would require plumbing through search_mode at
-            # backend instantiation. Mode dropdown is reserved for a
-            # future enhancement — kept in UI for visibility.
-            hits = mgr.search(source, query, top_k=int(top_k))
+            hits = mgr.search(source, full, top_k=int(top_k), **extra)
         except KeyError as e:
             return _err(f"unknown source: {e}", status=404)
+        except ValueError as e:
+            return _err(str(e), status=400)
         except Exception as e:
             return _err(f"{type(e).__name__}: {e}", status=500)
+        if outline:
+            return _tool_text(lambda: _format_outline_results(full, hits, source, ""))
         return HTMLResponse(_render_hits(hits))
 
     @app.post("/api/playground/find_definition")
@@ -356,8 +364,8 @@ def _register_playground_routes(app) -> None:
             f'✓ Wrote <code class="font-mono">{_html_escape(str(out_path))}</code>'
             '<div class="mt-2">'
             f'<a href="/api/reports/{name}" target="_blank" '
-            'class="px-3 py-1.5 bg-indigo-600 text-white rounded '
-            'text-sm hover:bg-indigo-700 no-underline">Open the view →</a>'
+            'class="px-3 py-1.5 bg-orange-600 text-white rounded '
+            'text-sm hover:bg-orange-700 no-underline">Open the view →</a>'
             '</div></div>'
         )
 
@@ -368,16 +376,19 @@ def _register_playground_routes(app) -> None:
         callers_limit: int = Form(10),
         callees_limit: int = Form(10),
         tests_limit: int = Form(5),
+        file: str = Form(""),
     ):
         mgr, err = _mgr_or_err()
         if err: return err
         if not symbol.strip():
             return _err("symbol is empty")
         sym = symbol.strip()
+        extra = {"file": file.strip()} if file.strip() else {}
         return _tool_text(
             lambda: _format_describe_symbol(sym, mgr.describe_symbol(
                 source, sym, callers_limit=int(callers_limit),
                 callees_limit=int(callees_limit), tests_limit=int(tests_limit),
+                **extra,
             )),
         )
 

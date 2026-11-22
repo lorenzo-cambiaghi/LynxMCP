@@ -757,6 +757,36 @@ def default_auto_storage_dir(path: Path) -> Path:
     return _user_cache_root() / f"{slug}-{digest}"
 
 
+def scan_codebase(target: "Path | str") -> dict:
+    """What a new codebase source at `target` should index: the formats Lynx
+    reads that the folder holds, and the folders to skip (the shared
+    defaults plus the engine's, `Library/` and `Temp/` for Unity), with the
+    walk capped on huge trees. `lynx serve PATH` and the web UI's Add source
+    both ask this; the UI used to list every extension found (`.meta`,
+    `.png`, `.prefab` on a Unity project) and walk the whole tree.
+
+    Returns {"engine", "extensions", "ignored_path_fragments"}; `extensions`
+    may be empty (nothing readable found)."""
+    from .manager.sources import DEFAULT_CODEBASE_IGNORES
+    from .manager.ui.detect import detect_extensions
+
+    target = Path(target)
+    engine = detect_engine(target)
+    ignores = list(dict.fromkeys([
+        *DEFAULT_CODEBASE_IGNORES,
+        *_ZERO_CONFIG_EXTRA_IGNORES,
+        *_ENGINE_IGNORES.get(engine, ()),
+    ]))
+    extensions = detect_extensions(
+        target,
+        top_n=None,
+        allowed=ZERO_CONFIG_EXTENSIONS,
+        extra_ignored_dirs={frag.strip("/") for frag in ignores},
+        max_files=_ZERO_CONFIG_SCAN_LIMIT,
+    )
+    return {"engine": engine, "extensions": extensions, "ignored_path_fragments": ignores}
+
+
 def build_zero_config(
     path: "Path | str",
     *,
@@ -777,22 +807,11 @@ def build_zero_config(
         raise ValueError(f"path is not a directory: {target}")
     _refuse_broad_directory(target)
 
-    from .manager.sources import DEFAULT_CODEBASE_IGNORES
-    from .manager.ui.detect import detect_extensions, is_git_repo
+    from .manager.ui.detect import is_git_repo
 
-    engine = detect_engine(target)
-    ignores = list(dict.fromkeys([
-        *DEFAULT_CODEBASE_IGNORES,
-        *_ZERO_CONFIG_EXTRA_IGNORES,
-        *_ENGINE_IGNORES.get(engine, ()),
-    ]))
-    extensions = detect_extensions(
-        target,
-        top_n=None,
-        allowed=ZERO_CONFIG_EXTENSIONS,
-        extra_ignored_dirs={frag.strip("/") for frag in ignores},
-        max_files=_ZERO_CONFIG_SCAN_LIMIT,
-    ) or list(_ZERO_CONFIG_FALLBACK_EXTENSIONS)
+    scan = scan_codebase(target)
+    ignores = scan["ignored_path_fragments"]
+    extensions = scan["extensions"] or list(_ZERO_CONFIG_FALLBACK_EXTENSIONS)
 
     source_name = sanitize_source_name(target.name)
     raw_source = {

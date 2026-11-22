@@ -792,5 +792,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--restart-manager", action="store_true",
         help=argparse.SUPPRESS,  # reopen LynxManager after a successful update
     )
+    sp_update.add_argument(
+        "--manager-arg", action="append", default=[], dest="manager_args",
+        help=argparse.SUPPRESS,  # one argument of the manager to reopen (--config, --port, --host)
+    )
 
     return parser

@@ -186,6 +186,11 @@
           <input type="number" name="request_delay_seconds" value="0.5" step="0.1" min="0"
                  class="w-32 px-3 py-2 border border-slate-300 rounded-lg text-sm" />
         </div>
+        <label class="flex items-start gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="render_js" class="accent-orange-600 mt-0.5" />
+          <span>Render JavaScript (for sites that build their pages in the browser).
+            <span class="block text-xs text-slate-500">Needs Playwright: <code class="font-mono">lynx manager install webdoc-js</code>.</span></span>
+        </label>
       </div>
     </details>
   {% endif %}
@@ -305,6 +310,7 @@
   var sourceType = {{ source_type | tojson }};
   var nameInput = $("#name-input");
   var nameTouched = false;
+  var detectedIgnores = null;   // filled by the folder scan (/api/sources/_detect)
   if (nameInput) {
     nameInput.addEventListener("input", function () { nameTouched = !!nameInput.value.trim(); });
   }
@@ -356,6 +362,10 @@
         return;
       }
       var bits = [];
+      // The folders to skip come with the scan (an engine's own: Library/ and
+      // Temp/ for Unity), so the new source does not index them.
+      detectedIgnores = (data.ignored_path_fragments && data.ignored_path_fragments.length)
+        ? data.ignored_path_fragments : null;
       if (data.extensions && data.extensions.length) {
         $("#extensions-input").value = data.extensions.join(",");
         bits.push("<strong>" + data.extensions.length + " extensions</strong> (" + esc(data.extensions.slice(0, 5).join(", ")) + (data.extensions.length > 5 ? "…" : "") + ")");
@@ -495,6 +505,7 @@
             return t.startsWith(".") ? t : "." + t;
           }).filter(Boolean)
         : [];
+      if (detectedIgnores) block.ignored_path_fragments = detectedIgnores;
       block.watcher = {enabled: !!fd.get("watcher"), debounce_seconds: 2.0};
       block.git_integration = {enabled: !!fd.get("git_integration")};
       block.graph = {enabled: !!fd.get("graph")};
@@ -507,7 +518,10 @@
       var exc = (fd.get("exclude_url_patterns") || "").trim();
       if (inc) block.include_url_patterns = inc.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
       if (exc) block.exclude_url_patterns = exc.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-      block.request_delay_seconds = parseFloat(fd.get("request_delay_seconds")) || 0.5;
+      // 0 is a valid delay (min="0"); only an empty or invalid field gets 0.5.
+      var delay = parseFloat(fd.get("request_delay_seconds"));
+      block.request_delay_seconds = Number.isFinite(delay) ? delay : 0.5;
+      if (fd.get("render_js")) block.render_js = true;
     } else if (sourceType === "pdf") {
       block.path = (fd.get("path") || "").trim();
       block.recursive = !!fd.get("recursive");

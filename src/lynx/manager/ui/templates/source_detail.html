@@ -25,7 +25,7 @@
     {% elif source.drift_severity == "warning" %}
       <span class="expert-only-inline expert-only badge bg-amber-100 text-amber-800">drift: warning</span>
     {% endif %}
-    <a href="/playground"
+    <a href="/playground?source={{ source.name | urlencode }}"
        class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">
       Try search →
     </a>
@@ -42,6 +42,11 @@
         <div class="flex justify-between gap-3">
           <dt class="text-slate-500">Folder</dt>
           <dd class="font-mono text-xs text-slate-800 truncate" title="{{ source.path }}">{{ source.path }}</dd>
+        </div>
+      {% elif source.url %}
+        <div class="flex justify-between gap-3">
+          <dt class="text-slate-500">URL</dt>
+          <dd class="font-mono text-xs text-slate-800 truncate" title="{{ source.url }}">{{ source.url }}</dd>
         </div>
       {% endif %}
       {% if source.chunk_count is not none %}
@@ -98,7 +103,8 @@
         {% endif %}
       </dl>
     </div>
-  {% else %}
+  {% elif source.type == 'codebase' %}
+    {# Only a codebase source has a graph to enable; docs and PDFs have none. #}
     <div class="p-5 bg-white border border-dashed border-slate-300 rounded-xl text-sm text-slate-500 flex items-center">
       <div>
         <div class="font-medium text-slate-700 mb-1">Knowledge graph disabled</div>
@@ -130,7 +136,7 @@
   {% endif %}
 
   <form hx-post="/api/sources/{{ source.name }}/build"
-        hx-target="#build-status"
+        hx-target="#build-slot"
         hx-swap="innerHTML">
     <button type="submit"
             {% if source.locked %}disabled
@@ -142,7 +148,34 @@
     </button>
   </form>
 
-  <div id="build-status" class="mt-3"></div>
+  {# A build already running (the one Add source starts, or another tab's)
+     shows here on arrival instead of an empty slot. #}
+  <div id="build-slot" class="mt-3">{{ running_job | safe if running_job else "" }}</div>
+</div>
+
+{# Remove: DELETE /api/sources/{name} existed with no button, so taking a
+   source out meant editing config.json by hand. #}
+<div class="p-5 bg-white border border-slate-200/90 rounded-xl shadow-sm mb-4">
+  <div class="font-semibold text-slate-900 text-sm mb-2">Remove this source</div>
+  <p class="text-xs text-slate-500 mb-3">
+    Takes it out of config.json. Your files are not touched. Deleting the index too frees its disk space; adding the source again rebuilds it.
+  </p>
+  <div class="flex flex-wrap gap-2">
+    <button type="button"
+            hx-delete="/api/sources/{{ source.name }}"
+            hx-target="#toasts" hx-swap="beforeend"
+            hx-confirm="Remove “{{ source.name }}” from config.json? Its index stays on disk."
+            class="px-3.5 py-2 text-sm font-medium border border-slate-300 bg-white text-slate-700 rounded-lg hover:bg-slate-50">
+      Remove from config
+    </button>
+    <button type="button"
+            hx-delete="/api/sources/{{ source.name }}?purge=true"
+            hx-target="#toasts" hx-swap="beforeend"
+            hx-confirm="Remove “{{ source.name }}” and permanently delete its index from disk? Your files are not touched; the index can only come back by rebuilding it."
+            class="px-3.5 py-2 text-sm font-medium border border-red-200 bg-white text-red-700 rounded-lg hover:bg-red-50">
+      Remove and delete its index
+    </button>
+  </div>
 </div>
 
 {% endblock %}

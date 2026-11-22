@@ -64,7 +64,7 @@ def _render_hits(items, *, show_score: bool = True) -> str:
         if symbol:
             label = symbol + (f" ({kind})" if kind else "")
             badge = (f'<span class="inline-block px-2 py-0.5 text-xs '
-                     f'rounded bg-indigo-100 text-indigo-800 font-mono">'
+                     f'rounded bg-orange-100 text-orange-800 font-mono">'
                      f'{_html_escape(label)}</span>')
         score_badge = ""
         if show_score and score is not None:

@@ -26,6 +26,7 @@
                  focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500">
     {% for s in sources_meta %}
       <option value="{{ s.name }}"
+              {% if s.name == selected_source %}selected{% endif %}
               data-type="{{ s.type }}"
               data-graph="{{ 'true' if s.graph else 'false' }}">
         {{ s.name }} ({{ s.type }}{% if s.graph %}, +graph{% endif %})
@@ -78,6 +79,15 @@
         <input type="number" name="top_k" value="5" min="1" max="50"
                class="w-20 px-3 py-2 border border-slate-300 rounded-lg text-sm">
       </div>
+      <div class="expert-only min-w-[180px]">
+        <label class="block text-xs font-medium text-slate-600 mb-1" title="Code names you guess are involved, added to the query as the MCP search tool's identifiers field">Identifiers</label>
+        <input name="identifiers" placeholder="e.g. pickActor, labelHover"
+               class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+      </div>
+      <label class="expert-only-inline expert-only items-center gap-1.5 text-xs text-slate-600 pb-2"
+             title="Signatures and the first doc line instead of whole bodies">
+        <input type="checkbox" name="outline" value="1" class="accent-orange-600"> Outline
+      </label>
       <button type="submit"
               class="px-5 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition">
         Search
@@ -133,7 +143,7 @@
           <input type="number" name="limit" value="10" min="1" max="50"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="find-def-results" class="mt-2"></div>
     </form>
@@ -152,7 +162,7 @@
           <input type="number" name="limit" value="50" min="1" max="200"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="find-uses-results" class="mt-2"></div>
     </form>
@@ -173,7 +183,7 @@
           <input type="number" name="limit" value="20" min="1" max="100"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="find-tests-results" class="mt-2"></div>
     </form>
@@ -192,7 +202,7 @@
           <input type="number" name="top_k" value="10" min="1" max="50"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="find-similar-results" class="mt-2"></div>
     </form>
@@ -205,6 +215,8 @@
       <div class="font-semibold text-slate-800 text-sm">describe_symbol</div>
       <div class="text-xs text-slate-500">Definition + callers + callees + tests, in one call.</div>
       <input name="symbol" required placeholder="symbol name"
+             class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
+      <input name="file" placeholder="file (optional): a path fragment, to pick one of several definitions"
              class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
       <div class="flex gap-2 items-end flex-wrap">
         <div>
@@ -222,7 +234,7 @@
           <input type="number" name="tests_limit" value="5" min="1" max="50"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="describe-results" class="mt-2"></div>
     </form>
@@ -247,7 +259,7 @@
           <input type="number" name="tests_limit" value="10" min="1" max="50"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="impact-results" class="mt-2"></div>
     </form>
@@ -267,7 +279,7 @@
           <input type="number" name="limit" value="40" min="1" max="200"
                  class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
         </div>
-        <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+        <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       </div>
       <div id="module-results" class="mt-2"></div>
     </form>
@@ -281,7 +293,7 @@
       <div class="text-xs text-slate-500">
         Orientation map: languages, frameworks, entry points. No graph needed.
       </div>
-      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
       <div id="repo-results" class="mt-2"></div>
     </form>
 
@@ -328,7 +340,7 @@
                class="w-full px-3 py-2 border border-slate-300 rounded text-sm">
       </div>
       <button type="submit"
-              class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+              class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
     </div>
 
     <div class="flex gap-3 items-end flex-wrap">
@@ -403,7 +415,7 @@
                class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
       </div>
       <button type="submit"
-              class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Export</button>
+              class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Export</button>
     </div>
     <div id="export-results" class="mt-2"></div>
   </form>
@@ -436,7 +448,7 @@
         <input type="number" name="top_k" value="8" min="1" max="50"
                class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
       </div>
-      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Run</button>
+      <button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">Run</button>
     </div>
     <div id="diff-results" class="mt-2"></div>
   </form>
@@ -447,16 +459,27 @@
   // ----- Tab switcher (vanilla JS, no library) -----
   const tabBtns = document.querySelectorAll('.pg-tab-btn');
   const panels  = document.querySelectorAll('.pg-panel');
+  // Only the state classes are toggled: rewriting className used to drop
+  // `expert-only` from the Code-aware, Graph and Diff buttons, so Simple
+  // mode showed them anyway.
+  const ON = ['border-orange-600', 'text-orange-700'];
+  const OFF = ['border-transparent', 'text-slate-500', 'hover:text-slate-700'];
+  let currentTab = 'search';
   function activate(tab) {
+    currentTab = tab;
     tabBtns.forEach(b => {
       const on = b.dataset.tab === tab;
-      b.className = 'pg-tab-btn px-4 py-2 text-sm font-medium border-b-2 ' +
-        (on ? 'border-indigo-600 text-indigo-700'
-            : 'border-transparent text-slate-500 hover:text-slate-700');
+      ON.forEach(c => b.classList.toggle(c, on));
+      OFF.forEach(c => b.classList.toggle(c, !on));
     });
     panels.forEach(p => p.classList.toggle('hidden', p.dataset.panel !== tab));
   }
   tabBtns.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+  // Back to Simple mode with an Expert tab open: its button goes, so the
+  // panel goes with it.
+  document.addEventListener('lynx:ui-mode', e => {
+    if (e.detail && e.detail.mode === 'simple' && currentTab !== 'search') activate('search');
+  });
   activate('search');  // default
 
   // ----- Source hint (graph badge etc) -----

@@ -1202,10 +1202,13 @@ class CodebaseRAG:
         extensions=None,
         path_contains=None,
         paths=None,
+        mode=None,
     ):
         """Hybrid (default) / dense / sparse search over the codebase.
 
-        Mode is set at construction time via `search_mode`. In hybrid mode we
+        Mode is set at construction time via `search_mode`; `mode` overrides
+        it for one call (the CLI's --mode and the web UI's Mode used to
+        swap the shared attribute, or ignore it). In hybrid mode we
         fetch `candidate_pool_size` candidates from each retriever (dense and
         BM25) then fuse rankings via Reciprocal Rank Fusion.
 
@@ -1221,10 +1224,12 @@ class CodebaseRAG:
         """
         # No auto-update here: the watcher keeps the index live and any
         # git-based catch-up is handled on demand by update_codebase_index.
+        if mode is not None and mode not in ("hybrid", "dense", "sparse"):
+            raise ValueError(f"mode must be hybrid, dense or sparse, got {mode!r}")
         return self._search_once(
             query,
             top_k=top_k,
-            mode=self.search_mode,
+            mode=mode or self.search_mode,
             file_glob=file_glob,
             extensions=extensions,
             path_contains=path_contains,

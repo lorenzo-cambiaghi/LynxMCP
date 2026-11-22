@@ -1,0 +1,62 @@
+{#- The 1-click connect control of one AI client: the Integrations page draws
+    it, and the connect/disconnect endpoints answer a click with it. One
+    template for both, so the answer to a click keeps what the page shows
+    (it used to drop "Active in: ...", drawn only here). `c` is a client
+    entry: key, short_label, connected, locations, status_error. -#}
+{% macro connect_ctrl(c, note="", is_error=False) %}
+<div id="connect-ctrl-{{ c.key }}" class="my-3">
+  {% if is_error %}
+    <div class="flex items-center gap-2">
+      <span class="badge bg-red-100 text-red-800">Error</span>
+      <button type="button"
+              hx-post="/api/integrations/{{ c.key }}/connect"
+              hx-target="#connect-ctrl-{{ c.key }}"
+              hx-swap="outerHTML"
+              class="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800">
+        Retry connect
+      </button>
+    </div>
+  {% elif c.connected %}
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Connected
+      </span>
+      <button type="button"
+              hx-post="/api/integrations/{{ c.key }}/connect"
+              hx-target="#connect-ctrl-{{ c.key }}"
+              hx-swap="outerHTML"
+              class="px-2.5 py-1 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50">
+        Update entry
+      </button>
+      <button type="button"
+              hx-post="/api/integrations/{{ c.key }}/disconnect"
+              hx-target="#connect-ctrl-{{ c.key }}"
+              hx-swap="outerHTML"
+              hx-confirm="Remove Lynx from {{ c.short_label }}'s MCP config? (Other MCP servers stay untouched.)"
+              class="px-2.5 py-1 text-xs text-slate-500 hover:text-red-700 rounded-md hover:bg-red-50">
+        Disconnect
+      </button>
+    </div>
+  {% else %}
+    <button type="button"
+            hx-post="/api/integrations/{{ c.key }}/connect"
+            hx-target="#connect-ctrl-{{ c.key }}"
+            hx-swap="outerHTML"
+            class="px-3.5 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700 shadow-sm transition">
+      Connect automatically
+    </button>
+  {% endif %}
+  {% if c.locations and not is_error %}
+    <div class="mt-1.5 text-xs text-slate-500">
+      Active in:
+      {% for w in c.locations %}{{ 'all projects' if w in ('user', 'global') else w }}{% if not loop.last %}; {% endif %}{% endfor %}
+    </div>
+  {% endif %}
+  {% if note %}
+    <div class="mt-1.5 text-xs {{ 'text-red-700' if is_error else 'text-emerald-700' }}">{{ note }}</div>
+  {% endif %}
+  {% if c.status_error %}
+    <div class="mt-1.5 text-xs text-amber-700">{{ c.status_error }}</div>
+  {% endif %}
+</div>
+{% endmacro %}

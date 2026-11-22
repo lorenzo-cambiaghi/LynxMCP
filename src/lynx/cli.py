@@ -383,21 +383,8 @@ def _cmd_search(args) -> int:
     # --mode applies only to single-source search (cross-source uses RRF
     # over per-source default modes).
     with _muted_stdout(as_json):
-        if args.mode is not None:
-            # Temporarily override the backend's mode for this one call.
-            backend = manager.get(source_name)
-            saved = backend.rag.search_mode if hasattr(backend, "rag") else None
-            try:
-                if hasattr(backend, "rag"):
-                    backend.rag.search_mode = args.mode
-                results = manager.search(source_name, args.query,
-                                         top_k=top_k, **filters)
-            finally:
-                if hasattr(backend, "rag") and saved is not None:
-                    backend.rag.search_mode = saved
-        else:
-            results = manager.search(source_name, args.query,
-                                     top_k=top_k, **filters)
+        extra = {"mode": args.mode} if args.mode is not None else {}
+        results = manager.search(source_name, args.query, top_k=top_k, **filters, **extra)
     return _render_search(args, results, f"source {source_name!r}",
                           source_name, as_json,
                           manager.lexical_notice([source_name]))
@@ -1194,7 +1181,7 @@ def _cmd_update(args) -> int:
     if restart_manager and not dry_run:
         # The manager closed itself to let the update through: bring it back
         # whatever happened, and keep the window open if something failed.
-        _reopen_manager()
+        _reopen_manager(getattr(args, "manager_args", None) or [])
         if rc != 0:
             _pause_if_own_window(True)
     return rc
@@ -1232,8 +1219,9 @@ def _check_and_upgrade(*, as_json: bool, check_only: bool, dry_run: bool) -> int
     return rc
 
 
-def _reopen_manager() -> None:
-    """Start LynxManager again, detached, after an update launched from it.
+def _reopen_manager(manager_args=()) -> None:
+    """Start LynxManager again, detached, after an update launched from it,
+    with the arguments it was started with (`--config`, `--port`, `--host`).
     Runs the interpreter of this install, which now carries the new code."""
     import subprocess
 
@@ -1244,7 +1232,7 @@ def _reopen_manager() -> None:
         kwargs["start_new_session"] = True
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "lynx", "manager", "ui"],
+            [sys.executable, "-m", "lynx", "manager", "ui", *manager_args],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             **kwargs,
         )

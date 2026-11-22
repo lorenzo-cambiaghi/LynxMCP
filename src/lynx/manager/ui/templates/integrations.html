@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_connect_ctrl.html" import connect_ctrl %}
 {% block title %}Integrations — LynxManager{% endblock %}
 
 {% block content %}
@@ -43,49 +44,7 @@
         </div>
 
         <!-- 1-click auto-connect controls -->
-        {% if c.supports_auto_connect %}
-          <div id="connect-ctrl-{{ c.key }}" class="my-3">
-            {% if c.connected %}
-              <div class="flex items-center gap-2 flex-wrap">
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Connected
-                </span>
-                <button type="button"
-                        hx-post="/api/integrations/{{ c.key }}/connect"
-                        hx-target="#connect-ctrl-{{ c.key }}"
-                        hx-swap="outerHTML"
-                        class="px-2.5 py-1 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50">
-                  Update entry
-                </button>
-                <button type="button"
-                        hx-post="/api/integrations/{{ c.key }}/disconnect"
-                        hx-target="#connect-ctrl-{{ c.key }}"
-                        hx-swap="outerHTML"
-                        hx-confirm="Remove Lynx from {{ c.short_label }}'s MCP config? (Other MCP servers stay untouched.)"
-                        class="px-2.5 py-1 text-xs text-slate-500 hover:text-red-700 rounded-md hover:bg-red-50">
-                  Disconnect
-                </button>
-              </div>
-            {% else %}
-              <button type="button"
-                      hx-post="/api/integrations/{{ c.key }}/connect"
-                      hx-target="#connect-ctrl-{{ c.key }}"
-                      hx-swap="outerHTML"
-                      class="px-3.5 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700 shadow-sm transition">
-                Connect automatically
-              </button>
-            {% endif %}
-            {% if c.locations %}
-              <div class="mt-1.5 text-xs text-slate-500">
-                Active in:
-                {% for w in c.locations %}{{ 'all projects' if w in ('user', 'global') else w }}{% if not loop.last %}; {% endif %}{% endfor %}
-              </div>
-            {% endif %}
-            {% if c.status_error %}
-              <div class="mt-1.5 text-xs text-amber-700">{{ c.status_error }}</div>
-            {% endif %}
-          </div>
-        {% endif %}
+        {% if c.supports_auto_connect %}{{ connect_ctrl(c) }}{% endif %}
 
         {% if c.notes %}
           <div class="text-xs text-slate-500 leading-relaxed">{{ c.notes }}</div>
@@ -93,7 +52,9 @@
       </div>
 
       <!-- Manual JSON & rules file: collapsible in Simple mode, open in Expert mode -->
-      <details data-expert-open class="border-t border-slate-100 pt-3 mt-1" {% if not c.supports_auto_connect %}open{% endif %}>
+      {# A client without 1-click connect has only this snippet: always open, not
+         governed by the Simple/Expert mode (which used to close it on load). #}
+      <details {% if c.supports_auto_connect %}data-expert-open{% else %}open{% endif %} class="border-t border-slate-100 pt-3 mt-1">
         <summary class="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-900 select-none">
           Manual JSON snippet &amp; rules file
         </summary>
@@ -124,7 +85,9 @@
   {% endfor %}
 </div>
 
-{% set others = clients | rejectattr('detected') | selectattr('supports_auto_connect') | list %}
+{# Not in the first list: neither detected nor connected (a connected client
+   not detected used to be drawn twice, with duplicate ids). #}
+{% set others = clients | rejectattr('detected') | rejectattr('connected') | selectattr('supports_auto_connect') | list %}
 {% if others %}
 <details class="mb-8 group">
   <summary class="cursor-pointer select-none text-sm font-medium text-slate-600 hover:text-slate-900">

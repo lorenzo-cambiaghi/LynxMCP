@@ -249,8 +249,9 @@
           </div>
         </div>
 
-        {% if s.path %}
-          <div class="text-xs font-mono text-slate-500 truncate mb-3" title="{{ s.path }}">{{ s.path }}</div>
+        {# A docs source has a URL, not a folder. #}
+        {% if s.path or s.url %}
+          <div class="text-xs font-mono text-slate-500 truncate mb-3" title="{{ s.path or s.url }}">{{ s.path or s.url }}</div>
         {% endif %}
 
         <!-- Expert-only telemetry -->
@@ -283,7 +284,7 @@
           {% if s.last_update %}Updated {{ s.last_update[:10] }}{% else %}Click Manage to index{% endif %}
         </span>
         <div class="flex items-center gap-2 ml-auto">
-          <a href="/playground" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium">
+          <a href="/playground?source={{ s.name | urlencode }}" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium">
             Search
           </a>
           <a href="/sources/{{ s.name }}" class="px-2.5 py-1 rounded-md bg-slate-100 text-slate-800 hover:bg-slate-200 font-medium">

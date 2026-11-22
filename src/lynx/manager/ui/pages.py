@@ -123,7 +123,7 @@ def register(app) -> None:
     # Phase 6: search playground — exercises all per-source tools the
     # MCP server exposes (search, find_definition, get_callers, ...).
     @app.get("/playground", response_class=HTMLResponse)
-    def playground(request: Request):
+    def playground(request: Request, source: str = ""):
         mgr = _get_manager(app)
         sources_meta: list = []
         if mgr is not None:
@@ -137,6 +137,7 @@ def register(app) -> None:
             request, "playground.html",
             {
                 "sources_meta": sources_meta,
+                "selected_source": source,
                 "manager_error": app.state.manager_error,
                 "config_path": str(app.state.config_path) if app.state.config_path else None,
             },
@@ -249,10 +250,15 @@ def register(app) -> None:
         storage_path = Path(mgr.config.storage_path) / name
         st["locked"] = lock_mod.is_storage_locked(storage_path)
         st["serving"] = serving_info(storage_path, getattr(backend, "is_owner", True))
+        from . import jobs as jobs_mod
+        from .routes import _render_job_widget
+        job = (jobs_mod.has_running_job_for(f"build:{name}")
+               or jobs_mod.has_running_job_for(f"reset:{name}"))
         return app.state.templates.TemplateResponse(
             request, "source_detail.html",
             {
                 "source": st,
+                "running_job": _render_job_widget(job, name) if job is not None else "",
                 "manager_error": app.state.manager_error,
                 "config_path": str(app.state.config_path) if app.state.config_path else None,
             },

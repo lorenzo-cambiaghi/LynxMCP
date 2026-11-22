@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}LynxManager{% endblock %}</title>
+  {# No icon file: an empty one keeps every page from asking for /favicon.ico (a 404 in the console). #}
+  <link rel="icon" href="data:,">
+
   <!-- htmx 2 drops 4xx/5xx responses by default. Every error this UI returns
        is an HTML message meant to be read (a 409 naming the process that owns
        an index, a 422 from the config validator), so swap them in. -->
@@ -242,8 +245,12 @@
   function setLynxUiMode(mode) {
     var isExpert = (mode === 'expert');
     document.body.classList.toggle('expert-mode', isExpert);
+    // Kept on <html> too: a page swapped in by HTMX re-runs the body script,
+    // which reads it (it used to bring back the mode of the first load).
+    document.documentElement.dataset.uiMode = isExpert ? 'expert' : 'simple';
     try { localStorage.setItem('lynx_ui_mode', isExpert ? 'expert' : 'simple'); } catch (e) {}
     syncExpertDetails(isExpert);
+    document.dispatchEvent(new CustomEvent('lynx:ui-mode', {detail: {mode: isExpert ? 'expert' : 'simple'}}));
   }
   document.addEventListener('DOMContentLoaded', function () {
     syncExpertDetails(document.body.classList.contains('expert-mode'));

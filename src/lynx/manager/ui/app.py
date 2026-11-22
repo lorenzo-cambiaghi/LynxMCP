@@ -280,6 +280,12 @@ def run_ui(args) -> int:
         _log(f"[ui] port {requested_port} busy, using {port}")
 
     app = create_app(config_path)
+    # What `lynx update --restart-manager` needs to reopen this same manager
+    # (it used to come back on the default config and port).
+    app.state.relaunch_args = (
+        (["--config", str(config_path.resolve())] if config_path.is_file() else [])
+        + (["--port", str(requested_port)] if requested_port != 8765 else [])
+        + (["--host", host] if host != "127.0.0.1" else []))
     url = f"http://{host}:{port}"
 
     # Pre-warm the SourceManager BEFORE uvicorn starts listening.

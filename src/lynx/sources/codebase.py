@@ -115,6 +115,7 @@ class CodebaseBackend(SourceBackend):
         file_glob=None,
         extensions=None,
         path_contains=None,
+        mode=None,
         **_ignored,
     ) -> list[dict]:
         self._before_read()
@@ -124,6 +125,7 @@ class CodebaseBackend(SourceBackend):
             file_glob=file_glob,
             extensions=extensions,
             path_contains=path_contains,
+            mode=mode,
         )
 
     def search_batch(

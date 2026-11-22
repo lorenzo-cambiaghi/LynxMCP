@@ -494,7 +494,7 @@ def register(app) -> None:
         except Exception as e:
             return HTMLResponse(
                 f'<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
-                f'❌ Invalid request body: {e}</div>',
+                f'❌ Invalid request body: {_html_escape(str(e))}</div>',
                 status_code=400,
             )
         content = payload.get("content", "")
@@ -512,7 +512,7 @@ def register(app) -> None:
         except json.JSONDecodeError as e:
             return HTMLResponse(
                 f'<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
-                f'❌ <strong>JSON syntax error</strong>: {e.msg} '
+                f'❌ <strong>JSON syntax error</strong>: {_html_escape(e.msg)} '
                 f'(line {e.lineno}, col {e.colno})</div>',
                 status_code=422,
             )
@@ -540,7 +540,7 @@ def register(app) -> None:
             except Exception as e:
                 return HTMLResponse(
                     f'<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
-                    f'❌ <strong>Validation error</strong>: {type(e).__name__}: {e}</div>',
+                    f'❌ <strong>Validation error</strong>: {type(e).__name__}: {_html_escape(str(e))}</div>',
                     status_code=422,
                 )
         finally:
@@ -557,15 +557,19 @@ def register(app) -> None:
                 status_code=400,
             )
         target = Path(app.state.config_path)
+        # The same lock and atomic replace as every other config write
+        # (sources.py): `lynx source add` from a terminal at the same moment
+        # cannot interleave, and a crash cannot leave a truncated file.
+        from ..sources import config_lock, write_config_text
         try:
-            if target.exists():
-                backup = target.with_suffix(target.suffix + ".bak")
-                backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
-            target.write_text(content, encoding="utf-8")
-        except OSError as e:
+            with config_lock(target):
+                err = write_config_text(content, target)
+        except TimeoutError as e:
+            err = str(e)
+        if err:
             return HTMLResponse(
                 f'<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
-                f'❌ Couldn\'t write config: {e}</div>',
+                f'❌ {_html_escape(err)}</div>',
                 status_code=500,
             )
 
@@ -648,60 +652,20 @@ def register(app) -> None:
             media_type="text/markdown",
         )
 
-    def _render_connect_badge(client_key: str, connected: bool, note: str = "", is_error: bool = False) -> str:
-        """HTML fragment returned by 1-click connect/disconnect endpoints."""
-        esc_key = _html_escape(client_key)
-        esc_note = _html_escape(note)
-        if is_error:
-            return (
-                f'<div id="connect-ctrl-{esc_key}" class="space-y-2">'
-                f'  <div class="flex items-center gap-2">'
-                f'    <span class="badge bg-red-100 text-red-800">Error</span>'
-                f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
-                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
-                f'      class="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800">'
-                f'      Retry connect'
-                f'    </button>'
-                f'  </div>'
-                f'  <div class="text-xs text-red-700">{esc_note}</div>'
-                f'</div>'
-            )
-        if connected:
-            note_html = f'<div class="text-xs text-emerald-700">{esc_note}</div>' if note else ""
-            return (
-                f'<div id="connect-ctrl-{esc_key}" class="space-y-1.5">'
-                f'  <div class="flex items-center gap-2 flex-wrap">'
-                f'    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">'
-                f'      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Connected'
-                f'    </span>'
-                f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
-                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
-                f'      class="px-2.5 py-1 text-xs font-medium border border-slate-300 text-slate-700 rounded-md hover:bg-slate-50">'
-                f'      Update entry'
-                f'    </button>'
-                f'    <button type="button" hx-post="/api/integrations/{esc_key}/disconnect" '
-                f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
-                f'      hx-confirm="Remove Lynx from this client\'s MCP config? (Other MCP servers stay untouched.)" '
-                f'      class="px-2.5 py-1 text-xs text-slate-500 hover:text-red-700 rounded-md hover:bg-red-50">'
-                f'      Disconnect'
-                f'    </button>'
-                f'  </div>'
-                f'  {note_html}'
-                f'</div>'
-            )
-        note_html = f'<div class="text-xs text-slate-500">{esc_note}</div>' if note else ""
-        return (
-            f'<div id="connect-ctrl-{esc_key}" class="space-y-1.5">'
-            f'  <div class="flex items-center gap-2">'
-            f'    <button type="button" hx-post="/api/integrations/{esc_key}/connect" '
-            f'      hx-target="#connect-ctrl-{esc_key}" hx-swap="outerHTML" '
-            f'      class="px-3.5 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-md hover:bg-orange-700 shadow-sm">'
-            f'      Connect automatically'
-            f'    </button>'
-            f'  </div>'
-            f'  {note_html}'
-            f'</div>'
-        )
+    def _render_connect_badge(client_key: str, note: str = "", is_error: bool = False) -> str:
+        """The client's connect control after a click, drawn by the same
+        template as the Integrations page from the client's state now."""
+        from ...client_connector import _CLIENTS_BY_KEY, inspect_client
+        spec = _CLIENTS_BY_KEY.get(client_key)
+        if spec is None:
+            c = {"key": client_key, "short_label": client_key, "connected": False,
+                 "locations": [], "status_error": None}
+        else:
+            st = inspect_client(spec)
+            c = {"key": spec.key, "short_label": spec.short_label, "connected": st.connected,
+                 "locations": list(st.locations), "status_error": st.error}
+        macro = app.state.templates.env.get_template("_connect_ctrl.html").module.connect_ctrl
+        return str(macro(c, note=note, is_error=is_error))
 
     @app.post("/api/integrations/{client}/connect")
     def api_integrations_connect(client: str):
@@ -714,10 +678,10 @@ def register(app) -> None:
         res = connect_client(client, config_path=cfg_path)
         if not res.ok:
             return HTMLResponse(
-                _render_connect_badge(client, False, note=res.message, is_error=True),
+                _render_connect_badge(client, note=res.message, is_error=True),
                 status_code=400,
             )
-        return HTMLResponse(_render_connect_badge(res.client_key, True, note=res.message))
+        return HTMLResponse(_render_connect_badge(res.client_key, note=res.message))
 
     @app.post("/api/integrations/{client}/disconnect")
     def api_integrations_disconnect(client: str):
@@ -728,10 +692,10 @@ def register(app) -> None:
         res = disconnect_client(client)
         if not res.ok:
             return HTMLResponse(
-                _render_connect_badge(client, True, note=res.message, is_error=True),
+                _render_connect_badge(client, note=res.message, is_error=True),
                 status_code=400,
             )
-        return HTMLResponse(_render_connect_badge(res.client_key, False, note=res.message))
+        return HTMLResponse(_render_connect_badge(res.client_key, note=res.message))
 
     # ------------------------------------------------------------------
     # System self-update check & 1-click upgrade (explicit user click only)
@@ -821,9 +785,12 @@ def register(app) -> None:
             if others:
                 text = _html_escape(describe_blockers(others)).replace("\n", "<br>")
                 return _banner("warn", text, 409)
+            relaunch = []
+            for arg in getattr(app.state, "relaunch_args", None) or []:
+                relaunch += ["--manager-arg", arg]
             subprocess.Popen(
                 [sys.executable, "-m", "lynx", "update", "--wait-pid", str(os.getpid()),
-                 "--restart-manager"],
+                 "--restart-manager", *relaunch],
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
             threading.Timer(1.0, lambda: signal.raise_signal(signal.SIGINT)).start()
@@ -834,7 +801,7 @@ def register(app) -> None:
         if rc == 0:
             return HTMLResponse(
                 '<div id="update-banner" class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900">'
-                f'<strong>✓ Updated!</strong> {_html_escape(output.splitlines()[0])}'
+                f'<strong>✓ Updated!</strong> {_html_escape((output.strip().splitlines() or [""])[0])}'
                 '</div>'
             )
         return HTMLResponse(
@@ -895,7 +862,10 @@ def _render_job_widget(job, source_name: str) -> str:
         )
 
     return (
-        f'<div id="build-status" class="p-3 border rounded text-sm {color}" {poll_attrs}>'
+        # One id per job: two widgets on a page (two sources reset at once on
+        # the dashboard) used to share id="build-status", and the detail page
+        # put this one inside a div of the same id.
+        f'<div id="job-{_html_escape(job.id)}" class="p-3 border rounded text-sm {color}" {poll_attrs}>'
         f'  <div class="flex items-center justify-between">'
         f'    <div>{icon} <strong>{_html_escape(msg)}</strong></div>'
         f'    <div class="text-xs opacity-70">job {job.id}</div>'
@@ -937,7 +907,7 @@ def _register_build_routes(app) -> None:
         backend = mgr.backends.get(name)
         if backend is not None and not getattr(backend, "is_owner", True):
             return HTMLResponse(
-                '<div id="build-status" class="p-3 border rounded text-sm '
+                '<div class="p-3 border rounded text-sm '
                 'bg-amber-50 border-amber-200 text-amber-900">'
                 '🔒 <strong>Another process owns this index.</strong> '
                 f'{ownership.describe(storage_path)}. It keeps the index up to '
@@ -950,7 +920,7 @@ def _register_build_routes(app) -> None:
         lock_mod.invalidate_cache(storage_path)
         if lock_mod.is_storage_locked(storage_path):
             return HTMLResponse(
-                '<div id="build-status" class="p-3 border rounded text-sm '
+                '<div class="p-3 border rounded text-sm '
                 'bg-amber-50 border-amber-200 text-amber-900">'
                 '🔒 <strong>Locked.</strong> Another process is writing to this '
                 f'source. Stop <code>lynx serve</code> first, then retry.'
@@ -959,8 +929,11 @@ def _register_build_routes(app) -> None:
             )
         # Also guard against double-clicking the button — refuse if we
         # already have a build job in flight for this source.
-        existing = jobs_mod.has_running_job_for(f"build:{name}")
+        existing = (jobs_mod.has_running_job_for(f"build:{name}")
+                    or jobs_mod.has_running_job_for(f"reset:{name}"))
         if existing is not None:
+            # A build already running, or a reset rebuilding the index: show
+            # that job instead of starting a second writer.
             return HTMLResponse(
                 _render_job_widget(existing, name),
                 status_code=200,
@@ -999,7 +972,9 @@ def _register_build_routes(app) -> None:
         if name not in mgr.config.sources:
             return _err(f"source {name!r} not found", status=404)
 
-        existing = jobs_mod.has_running_job_for(f"reset:{name}")
+        # A build in flight writes the index this would wipe: show that job.
+        existing = (jobs_mod.has_running_job_for(f"reset:{name}")
+                    or jobs_mod.has_running_job_for(f"build:{name}"))
         if existing is not None:
             return HTMLResponse(_render_job_widget(existing, name), status_code=200)
 
@@ -1046,7 +1021,7 @@ def _register_build_routes(app) -> None:
         j = jobs_mod.get_job(job_id)
         if j is None:
             return HTMLResponse(
-                '<div id="build-status" class="p-3 border rounded text-sm '
+                '<div class="p-3 border rounded text-sm '
                 'bg-slate-50 border-slate-200 text-slate-500">'
                 f'Job {_html_escape(job_id)} no longer in memory.</div>',
                 status_code=404,
@@ -1244,11 +1219,15 @@ def _register_source_crud_routes(app) -> None:
                 "extensions": [],
                 "is_git": False,
             })
+        from ...config import scan_codebase
+        scan = scan_codebase(resolved)
         return JSONResponse({
             "path": str(resolved),
             "exists": True,
             "is_dir": True,
-            "extensions": detect.detect_extensions(resolved, top_n=10),
+            "extensions": scan["extensions"],
+            "ignored_path_fragments": scan["ignored_path_fragments"],
+            "engine": scan["engine"],
             "is_git": detect.is_git_repo(resolved),
         })
 
