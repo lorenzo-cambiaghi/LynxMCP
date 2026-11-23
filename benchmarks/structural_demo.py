@@ -1,22 +1,18 @@
 """Structural-query demo: class relations on Django 5.2.
 
-The question an agent actually asks during refactoring is: "what inherits
-from X?" — directly (one level) and TRANSITIVELY (the whole descendant
-tree, i.e. everything that would break).
+The question: "what inherits from `Field`?", directly and transitively
+(the whole descendant tree, everything a change to it can reach).
 
   - Lynx graph layer: `get_subclasses` returns resolved inheritance edges
-    with file + line. Direct answer = 1 tool call. The full descendant
-    tree = BFS over already-loaded edges (still one `graph_query` call
-    per level, all served from the local graph in milliseconds).
+    with file and line. `graph_query subclasses` takes one symbol, so the
+    whole tree is one call per class found.
 
-  - grep: the agent must INVENT a regex (`class \\w+\\(.*\\bField\\b`),
-    triage false positives (comments, strings, re-exports), and — the
-    structural killer — repeat one grep round per discovered subclass to
-    walk the tree, because `AutoField(IntegerField)` does not contain the
-    word "Field"... wait, it does here, but `CharField` subclasses like
-    `SlugField(CharField)` do NOT textually mention `Field`'s own name in
-    a way that links them to Field: each level requires new greps with the
-    newly discovered names.
+  - grep: a regex over class declarations (`class \\w+\\(.*\\bField\\b`).
+    Counted two ways: one round per class found, and one round per level
+    with every name of the level in one alternation.
+
+Both sides are counted with exact base names (no fuzzy matching), and both
+need a last call that finds nothing to know the tree is complete.
 
 This script measures both and appends a section to RESULTS.md.
 
@@ -69,6 +65,13 @@ def graph_descendants(layer):
             out.add((e["source"].get("label") or "?").split(".")[-1])
         return out
 
+    calls = [0]
+    _children = children
+
+    def children(name):
+        calls[0] += 1
+        return _children(name)
+
     direct = children(ROOT_SYMBOL)
     visited = {ROOT_SYMBOL.lower()}
     frontier = set(direct)
@@ -87,7 +90,7 @@ def graph_descendants(layer):
         all_desc |= next_frontier
         frontier = next_frontier
         levels += 1
-    return direct, all_desc, levels
+    return direct, all_desc, levels, calls[0]
 
 
 def grep_direct(symbol):
@@ -116,6 +119,21 @@ def grep_closure(symbol):
     return found, grep_calls
 
 
+def grep_closure_by_level(symbol):
+    """The same closure with one grep round per level: every name found at
+    the previous level in one alternation. Counts the rounds."""
+    texts = [p.read_text(encoding="utf-8", errors="ignore") for p in TARGET.rglob("*.py")]
+    found, frontier, rounds = set(), {symbol}, 0
+    while frontier:
+        rounds += 1
+        alt = "|".join(sorted(map(re.escape, frontier)))
+        pat = re.compile(rf"^\s*class\s+(\w+)\([^)]*\b(?:{alt})\b", re.M)
+        nxt = {m.group(1) for t in texts for m in pat.finditer(t)} - found
+        found |= nxt
+        frontier = nxt
+    return found, rounds
+
+
 def main():
     if not TARGET.is_dir():
         sys.exit("clone the target first (see run_benchmark.py docstring)")
@@ -126,40 +144,44 @@ def main():
     print(f"graph ready in {build_s:.0f}s", file=sys.stderr)
 
     t0 = time.time()
-    direct, all_desc, levels = graph_descendants(layer)
+    direct, all_desc, levels, graph_calls = graph_descendants(layer)
     graph_query_s = time.time() - t0
 
     t0 = time.time()
     grep_l1 = grep_direct(ROOT_SYMBOL)
     grep_all, grep_calls = grep_closure(ROOT_SYMBOL)
     grep_s = time.time() - t0
+    level_all, level_rounds = grep_closure_by_level(ROOT_SYMBOL)
+    assert level_all == grep_all
 
     missed_by_grep = sorted(all_desc - grep_all)
     missed_by_graph = sorted(grep_all - all_desc)
 
+    def names(items):
+        shown = ", ".join(items[:8]) + ("..." if len(items) > 8 else "")
+        return f"{len(items)}: {shown}" if items else "0"
+
     md = [
         "",
-        "## Structural queries: class relations (where grep dies)",
+        "## Structural queries: class relations",
         "",
-        f"Question: *\"what inherits from `{ROOT_SYMBOL}` (django.db.models) — "
-        "i.e. what breaks if I change it?\"*",
+        f"Question: *\"what inherits from `{ROOT_SYMBOL}` (django.db.models), "
+        "that is, what can a change to it reach?\"*",
         "",
-        "| | grep (regex + manual closure) | Lynx graph_query |",
+        "| | grep (regex and manual closure) | Lynx `graph_query subclasses` |",
         "|---|---|---|",
-        f"| direct subclasses found | {len(grep_l1)} | {len(direct)} (each with file + line) |",
+        f"| direct subclasses found | {len(grep_l1)} | {len(direct)}, each with file and line |",
         f"| full descendant tree | {len(grep_all)} classes | {len(all_desc)} classes, {levels} levels |",
-        f"| tool calls required | **{grep_calls} grep rounds** (one per discovered class) | **1 per level ({levels} total)** — or 1 `get_neighbors(depth=N)` |",
-        f"| wall clock (this harness; a real `rg` would be faster, the call "
-        f"count would not change) | {grep_s:.1f}s | {graph_query_s:.2f}s |",
-        f"| symbol metadata (file:line, kind) | none — more reads needed | included in every edge |",
-        f"| descendants the regex closure missed | {len(missed_by_grep)}{': ' + ', '.join(missed_by_grep[:8]) if missed_by_grep else ''}{'...' if len(missed_by_grep) > 8 else ''} | — |",
-        f"| found by grep but not in graph (false positives / unresolved) | {len(missed_by_graph)}{': ' + ', '.join(missed_by_graph[:8]) if missed_by_graph else ''}{'...' if len(missed_by_graph) > 8 else ''} | — |",
+        f"| calls, one per class found | {grep_calls} grep rounds | {graph_calls} calls (one symbol per call) |",
+        f"| calls, one per level | {level_rounds} grep rounds (the level's names in one alternation) | not available: the tool takes one symbol |",
+        f"| wall clock in this harness | {grep_s:.1f}s | {graph_query_s:.2f}s |",
+        "| what each match carries | a matching line; the file has to be read for the rest | a resolved edge with file, line and kind |",
+        f"| descendants the regex closure missed | {names(missed_by_grep)} | |",
+        f"| found by grep but not in the graph | {names(missed_by_graph)} | |",
         "",
-        f"The grep numbers are the BEST case: they assume the agent writes a "
-        f"correct multi-name regex on the first try and never loses track of "
-        f"the frontier across {grep_calls} rounds. Each of those rounds is a "
-        "full model inference in a real agent loop. One-time graph build for "
-        f"this corpus: {build_s:.0f}s (incremental afterwards).",
+        "On this question grep needs fewer calls than the graph tool, because a "
+        "regex can name a whole level at once. What the graph adds is edges "
+        "resolved at index time, with no comment or string matches to sort out.",
     ]
     results_md = BENCH_DIR / "RESULTS.md"
     content = results_md.read_text(encoding="utf-8")
@@ -169,8 +191,8 @@ def main():
     results_md.write_text(content + "\n".join(md) + "\n", encoding="utf-8")
     print("appended structural section to RESULTS.md", file=sys.stderr)
     print(f"direct: grep={len(grep_l1)} graph={len(direct)} | "
-          f"closure: grep={len(grep_all)} in {grep_calls} calls, "
-          f"graph={len(all_desc)} in {levels} levels | "
+          f"closure: grep={len(grep_all)} in {grep_calls} calls or {level_rounds} by level, "
+          f"graph={len(all_desc)} in {levels} levels, {graph_calls} calls | "
           f"missed_by_grep={len(missed_by_grep)}", file=sys.stderr)
 
 

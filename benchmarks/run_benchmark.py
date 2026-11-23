@@ -1,4 +1,4 @@
-"""Reproducible retrieval benchmark: Lynx hybrid search vs simulated agentic grep.
+"""Reproducible retrieval benchmark: Lynx hybrid search vs a simulated keyword grep.
 
 What this measures
 ------------------
@@ -7,21 +7,18 @@ model instance performs an INSERT or an UPDATE") with a known ground-truth
 file, both pipelines return a ranked list of files:
 
   - LYNX:  one `search()` call against the hybrid (dense+BM25+RRF) index.
-  - GREP:  a faithful simulation of what a grep-driven agent does first —
-           extract content keywords from the question, match them across the
-           tree, rank files by weighted match counts (rare words count more,
-           an IDF-style weight). This is *generous* to grep: a real agent
-           often needs several grep rounds to get this far.
+  - GREP:  the question's content keywords matched across the tree, files
+           ranked by weighted match counts (rare words count more, an
+           IDF-style weight). One retrieval, not an agent's whole search.
 
 Metrics per pipeline:
   - hit@K        ground-truth file present in the top-K results
   - MRR@K        mean reciprocal rank of the first ground-truth hit
   - tool tokens  size of the text the tool hands back to the model
-                 (chars/4 approximation). NOTE: Lynx output *contains the
-                 relevant code chunks*; grep output is only match lines —
-                 the agent still has to open files afterwards, which costs
-                 additional tokens not charged here. The comparison is
-                 therefore conservative in grep's favor.
+                 (chars/4 approximation). Lynx output contains the code
+                 pieces; grep output is match lines plus, in the follow-up
+                 figure, one 150-line read of the top file. Agent sessions
+                 (lynx-zombie-bench) grep with narrower patterns than this.
   - latency      median wall-clock seconds per query (Lynx timed after the
                  model is warm; index build time is reported separately).
 
@@ -173,7 +170,10 @@ def build_lynx_backend(index_dir: Path, storage_dir: Path, ext: str = ".py"):
         rrf_k=60,
         candidate_pool_size=30,
     )
-    rag.update(force=rag.vector_store._collection.count() == 0)
+    # `force` is a pass over the SHA cache, as `lynx serve` makes at startup:
+    # after a chunker change it re-chunks every file in place. Without it a
+    # store left by an older Lynx is measured as that Lynx cut it.
+    rag.update(force=True)
     build_seconds = time.time() - t0
     return rag, build_seconds
 
@@ -310,73 +310,51 @@ def main():
     tref = spec["target"].get("ref", "")
     k = args.top_k
     md = [
-        f"# Lynx retrieval benchmark — {tname}",
+        f"# Lynx retrieval benchmark: {tname}",
         "",
         f"Target: `{spec['target']['index_subdir']}` of "
-        f"[{tname} {tref}]({spec['target']['repo']}) — "
+        f"[{tname} {tref}]({spec['target']['repo']}): "
         f"{n_files} files, {n_lines:,} lines, {results['chunks']:,} indexed chunks "
-        f"(one-time index build: {build_seconds:.0f}s on CPU).",
+        f"(index build: {build_seconds:.0f}s on CPU, incremental afterwards).",
         "",
         f"{len(tasks)} natural-language tasks with known ground-truth files. "
-        "Both pipelines return a ranked file list; see `run_benchmark.py` for "
-        "the exact methodology (the grep baseline is deliberately generous).",
+        "Both pipelines return a ranked file list; `run_benchmark.py` has the "
+        "exact method.",
         "",
-        f"| Metric | Agentic grep (simulated) | Lynx hybrid search |",
-        f"|---|---|---|",
+        "| Metric | Keyword grep (simulated) | Lynx hybrid search |",
+        "|---|---|---|",
         f"| hit@{k} (ground truth in top {k}) | {grep_summary['hit_at_k']:.0%} | {lynx_summary['hit_at_k']:.0%} |",
         f"| hit@1 (top result is correct) | {grep_summary['hit_at_1']:.0%} | {lynx_summary['hit_at_1']:.0%} |",
         f"| MRR | {grep_summary['mrr']:.2f} | {lynx_summary['mrr']:.2f} |",
-        f"| median tool output (tokens) | {grep_summary['median_tool_tokens']:,} | {lynx_summary['median_tool_tokens']:,} |",
-        f"| median tokens **to answer** (incl. required follow-up read) | {grep_summary['median_answer_tokens']:,} | {lynx_summary['median_answer_tokens']:,} |",
-        f"| tool round-trips to reach code | 2 (grep, then read file) | 1 (chunks included) |",
-        f"| median latency / query | {grep_summary['median_latency_s']}s | {lynx_summary['median_latency_s']}s |",
+        f"| median tool output, tokens | {grep_summary['median_tool_tokens']:,} | {lynx_summary['median_tool_tokens']:,} |",
+        f"| median tokens with one follow-up read of the top file | {grep_summary['median_answer_tokens']:,} | {lynx_summary['median_answer_tokens']:,} |",
+        f"| median latency per query | {grep_summary['median_latency_s']}s | {lynx_summary['median_latency_s']}s |",
         "",
         "Notes:",
-        "- Lynx tool output already CONTAINS the relevant code chunks with file:line.",
-        "  The grep output is match lines only, so its 'to answer' figure adds ONE",
-        "  conservative follow-up read (150 lines around the first match in the top",
-        "  file); real agents often need several reads and several grep refinements.",
-        "- The grep baseline is intentionally strong (IDF-weighted multi-keyword",
-        "  ranking with ideal stopword removal — closer to BM25 than to what an",
-        "  agent's first `rg` attempt looks like).",
-        "- A well-documented, English-identifier corpus is a favorable case for",
-        "  lexical search. Codebases with sparser comments or non-obvious naming",
-        "  shift results further toward semantic retrieval.",
+        "- The grep baseline ranks files by IDF-weighted counts of the question's",
+        "  content words, stopwords removed: closer to BM25 than to a first `rg`.",
+        "- Its output is up to 5 matching lines per keyword for each top file; the",
+        "  follow-up figure adds one 150-line read of the top file. Lynx's output",
+        "  is the top pieces with their code. Both simulate one retrieval, not an",
+        "  agent session: agents grep with narrower patterns, and read the files",
+        "  they change whatever found them.",
         "- Tokens approximated as chars/4.",
         "",
-        "## Beyond ranking: what one tool call hands the model",
-        "",
-        "The ranking metrics above understate the practical gap, because the two",
-        "outputs are not the same *kind* of thing:",
+        "## What one result carries",
         "",
         "| Per result | grep | Lynx |",
         "|---|---|---|",
-        "| matching line(s) | ✅ | ✅ (whole AST chunk: the full function/class body) |",
-        "| file + line range of the enclosing symbol | ❌ | ✅ (`db/models/base.py L767-881`) |",
-        "| qualified symbol name (`Model._save_table`) | ❌ | ✅ — citable directly in the answer |",
-        "| relevance score (when to stop trusting results) | ❌ | ✅ |",
-        "| works when the query shares NO words with the code | ❌ | ✅ (dense embeddings) |",
+        "| matching line(s) | yes | the whole piece: the function or class body |",
+        "| file and line range of the enclosing symbol | no | yes (`db/models/base.py L767-881`) |",
+        "| qualified symbol name (`Model._save_table`) | no | yes |",
+        "| relevance score | no | yes |",
+        "| a match when the question shares no word with the code | no | possible, through the dense embeddings |",
         "",
-        "And there is a whole class of questions grep cannot answer at any number",
-        "of calls, that Lynx answers in ONE (`graph_query` / `find_usages`):",
-        "*who calls X? what implements this interface? what breaks if I change",
-        "this?* — polymorphic dispatch leaves no textual trace, so grepping the",
-        "method name finds the definition and the textual mentions, not the",
-        "runtime callers through base classes.",
-        "",
-        "## The round-trip economy",
-        "",
-        "Tool execution time is noise (both pipelines answer in well under a",
-        "second). The real cost is that **every tool round-trip is a full model",
-        "inference over the entire growing context**: seconds of wall-clock and",
-        "the whole conversation re-billed in input tokens, every time.",
-        "",
-        "| Typical flow | model inferences before the code is in context |",
-        "|---|---|",
-        "| grep: search → read top file → (often) refine search → read again | 3-5 |",
-        "| Lynx `search`: chunks arrive with the first response | **1** |",
-        "| grep: reconstruct callers of a symbol (N textual hits to triage) | 2 + N reads, dispatch still missed |",
-        "| Lynx `graph_query(\"callers\")`: resolved edges with file:line | **1** |",
+        "Questions about structure (who calls X, what breaks if it changes) go to",
+        "the code graph (`find_usages`, `impact`, `graph_query`). A call through a",
+        "base class or an interface names the base type at the call site, so a",
+        "grep for the concrete method finds its definition and its mentions, not",
+        "those callers.",
         "",
         "## Per-task results",
         "",
@@ -386,7 +364,7 @@ def main():
     for g_row, l_row in zip(grep_summary["rows"], lynx_summary["rows"]):
         md.append(
             f"| {g_row['id']} | {g_row['query'][:70]} "
-            f"| {g_row['rank'] or '—'} | {l_row['rank'] or '—'} |"
+            f"| {g_row['rank'] or 'miss'} | {l_row['rank'] or 'miss'} |"
         )
     Path(args.results_md).write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"\nwrote {args.results_md} and {args.results_json}", file=sys.stderr)

@@ -175,3 +175,8 @@ where = ["src"]
     "static/*.js",
     "static/*.css",
 ]
+
+[tool.pytest.ini_options]
+# A bare `pytest` from the root would also collect the suites of the
+# benchmark checkouts in benchmarks/_target (Django ships thousands).
+testpaths = ["tests"]

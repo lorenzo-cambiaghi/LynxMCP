@@ -109,6 +109,12 @@ Tool profiles: `core` is `search`, `describe_symbol`, `module_summary`,
 was 12.9k in 1.11.0). Optional arguments are advertised without the null
 branch, and the tool texts and answers are shorter.
 
+The README explains how an indexed search differs from keyword grep
+instead of promising token savings, and its benchmark table carries the
+1.12.0 numbers. The yearly savings table is gone: it multiplied a
+per-retrieval figure from a simulated grep, and the agent sessions measured
+since did not show that saving.
+
 ### Fixed
 
 Importing Lynx drops an `SSLKEYLOGFILE` that an antivirus injected into the
@@ -128,6 +134,12 @@ and ignores. A running build shows on its source's page, and a build and a
 reset of the same source can no longer start together. Config saves from
 the page go through the same lock as the rest of Lynx, and a save that
 fails shows why. The Update page shows the command's output.
+
+`benchmarks/run_benchmark.py` measured an existing index as an older Lynx
+had cut it; it now makes the pass over the SHA cache that `lynx serve`
+makes at startup. `benchmarks/structural_demo.py` counted one graph call
+per level where `graph_query subclasses` needs one per class; both sides
+are now counted the same way, and grep with one alternation per level too.
 
 ## 1.11.0 - 2026-11-20
 
