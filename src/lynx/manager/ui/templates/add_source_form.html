@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Add {{ source_type }} source — LynxManager{% endblock %}
+{% block title %}Add {{ source_type }} source · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -10,7 +10,7 @@
 {% if source_type == "codebase" %}
   <h1 class="text-2xl font-bold text-slate-900 tracking-tight mb-1">Add a codebase</h1>
   <p class="text-sm text-slate-500 mb-6 max-w-2xl">
-    Pick your project folder — Lynx auto-detects languages, sets up the file watcher, and builds the code knowledge graph automatically.
+    Pick your project folder. Lynx auto-detects languages, sets up the file watcher, and builds the code knowledge graph automatically.
   </p>
 {% elif source_type == "webdoc" %}
   <h1 class="text-2xl font-bold text-slate-900 tracking-tight mb-1">Add web docs</h1>
@@ -271,7 +271,7 @@
     <div id="fp-breadcrumb" class="px-5 py-2.5 border-b border-slate-100 bg-slate-50 text-xs font-mono text-slate-700 overflow-x-auto whitespace-nowrap"></div>
     <div id="fp-list" class="flex-1 overflow-y-auto px-3 py-2 text-sm"></div>
     <div class="px-5 py-3.5 border-t border-slate-200 flex items-center justify-between gap-2 bg-slate-50/70 rounded-b-xl">
-      <div class="text-xs text-slate-500 font-mono truncate flex-1" id="fp-current">—</div>
+      <div class="text-xs text-slate-500 font-mono truncate flex-1" id="fp-current"></div>
       <button type="button" id="fp-cancel"
               class="px-3.5 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50">
         Cancel

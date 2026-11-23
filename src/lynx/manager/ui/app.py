@@ -87,7 +87,7 @@ def create_app(config_path: Optional[Path] = None):
 
     app = FastAPI(
         title="LynxManager",
-        description="Local web UI for Lynx — config, monitoring, playground.",
+        description="Local web UI for Lynx: config, monitoring, playground.",
         version=_lynx_version(),
         # No /docs / /redoc — they're MCP-irrelevant noise on a local UI
         docs_url=None,
@@ -286,7 +286,7 @@ def run_ui(args) -> int:
     if config_path.is_file():
         _log(f"[ui] using config: {config_path.resolve()}")
     else:
-        _log(f"[ui] no config at {config_path.resolve()} — "
+        _log(f"[ui] no config at {config_path.resolve()}; "
              f"launching with empty manager (pass --config or run "
              f"`lynx manager init` to create one)")
 

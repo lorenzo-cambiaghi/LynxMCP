@@ -155,7 +155,7 @@ def register(app) -> None:
         config_path = app.state.config_path
         if config_path is None or not Path(config_path).exists():
             content = (
-                "{\n  // No config.json loaded — run `lynx manager init` or\n"
+                "{\n  // No config.json loaded: run `lynx manager init` or\n"
                 "  // pass --config to `lynx manager ui` to point at one.\n}"
             )
         else:

@@ -77,7 +77,7 @@ def check_python_version() -> CheckResult:
     return CheckResult(
         name="Python version",
         status=STATUS_ERROR,
-        summary=f"Python {v.major}.{v.minor}.{v.micro} — Lynx requires >= 3.10",
+        summary=f"Python {v.major}.{v.minor}.{v.micro}: Lynx requires >= 3.10",
         details=["Install Python 3.10 or newer (3.12 recommended)."],
     )
 
@@ -177,7 +177,7 @@ def check_hf_endpoint() -> CheckResult:
         summary = f"using mirror {endpoint}"
     else:
         details.append(
-            "HF_ENDPOINT not set — downloads go to huggingface.co. On a "
+            "HF_ENDPOINT not set: downloads go to huggingface.co. On a "
             "restricted network, set it to a reachable mirror, or import a "
             "shared archive via `lynx manager install --from-archive`."
         )
@@ -381,7 +381,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
             if verdict == "in_use":
                 details.append(
                     "Index: open in another running Lynx process (usually "
-                    "`lynx serve`) — healthy; verdicts that need the store "
+                    "`lynx serve`), healthy; verdicts that need the store "
                     "are skipped"
                 )
                 if wal and wal["pending_ops"]:
@@ -406,7 +406,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                     return CheckResult(
                         name=f"Source {name!r}",
                         status=STATUS_ERROR,
-                        summary=(f"index WAL is wedged — {wal['unapplied_ops']} "
+                        summary=(f"index WAL is wedged: {wal['unapplied_ops']} "
                                  f"write(s) stuck for {mins} min and the index "
                                  f"never answered the probe"),
                         details=details + [
@@ -415,7 +415,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                             "surfacing as probe timeouts / 'index not verified').",
                             f"Files awaiting re-index: {len(wal['affected_files'])}",
                             f"Fix: stop every Lynx process, then run "
-                            f"`lynx manager doctor --heal-wal {name}` — it purges "
+                            f"`lynx manager doctor --heal-wal {name}`: it purges "
                             f"the stuck writes and queues the affected files for "
                             f"re-indexing. `lynx reset --source {name}` also "
                             f"works but rebuilds the whole index.",
@@ -442,7 +442,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                     details.append(
                         f"WAL: {wal['pending_ops']} queued write(s), "
                         f"{wal['unapplied_ops']} awaiting replay by a segment "
-                        f"(normal — the index answered the probe)"
+                        f"(normal: the index answered the probe)"
                     )
             if wal and wal["discarding_writes"] and verdict != "in_use":
                 return CheckResult(
@@ -458,7 +458,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                         "Nothing raises: indexing logs success, count() stays "
                         "healthy, and the index never moves again.",
                         f"Fix: stop every Lynx process, then run "
-                        f"`lynx manager doctor --heal-wal {name}` — it anchors "
+                        f"`lynx manager doctor --heal-wal {name}`: it anchors "
                         f"the queue above the watermark so writes land again.",
                     ],
                 )
@@ -525,7 +525,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
                         f"id' even though count() looks healthy.")
                 findings.append(
                     f"Fix: stop every Lynx process, then run "
-                    f"`lynx manager doctor --heal-coverage {name}` — it drops "
+                    f"`lynx manager doctor --heal-coverage {name}`: it drops "
                     f"just those entries so the next update re-indexes them.")
                 return CheckResult(
                     name=f"Source {name!r}",
@@ -565,7 +565,7 @@ def check_source(name: str, src_cfg: dict, storage_path: Path) -> CheckResult:
         else:
             details.append(f"ChromaDB: not yet built (run `lynx build --source {name}`)")
     else:
-        details.append("Storage dir not created yet — run `lynx build` to bootstrap.")
+        details.append("Storage dir not created yet: run `lynx build` to bootstrap.")
 
     # 3. Watcher status (for codebase + pdf)
     if src_type in ("codebase", "pdf"):
@@ -647,10 +647,10 @@ def check_optional_extras() -> CheckResult:
     for extra, package, what_for in known:
         try:
             __import__(package)
-            extras_status.append(f"[installed] {extra} — {what_for}")
+            extras_status.append(f"[installed] {extra}: {what_for}")
         except ImportError:
             extras_status.append(
-                f"[not installed] {extra} — install with "
+                f"[not installed] {extra}: install with "
                 f"`lynx manager install {extra}` ({what_for})"
             )
     return CheckResult(
@@ -686,7 +686,7 @@ def check_disk_space(storage_path: Path) -> CheckResult:
         return CheckResult(
             name="Disk space",
             status=STATUS_WARN,
-            summary=f"{free_mb:.0f} MB free at {target} (under 1 GB — tight for indexing)",
+            summary=f"{free_mb:.0f} MB free at {target} (under 1 GB, tight for indexing)",
         )
     free_gb = free_mb / 1024
     return CheckResult(
@@ -772,9 +772,9 @@ def _format_human(results: list) -> str:
     if worst == STATUS_OK:
         out.append(success(bold("All checks passed.")))
     elif worst == STATUS_WARN:
-        out.append(warn(bold("Some checks have warnings — review above.")))
+        out.append(warn(bold("Some checks have warnings: review them above.")))
     else:
-        out.append(error(bold("Some checks failed — fix the errors above.")))
+        out.append(error(bold("Some checks failed: fix the errors above.")))
     return "\n".join(out)
 
 
@@ -810,7 +810,7 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
     stuck writes, queues the affected files for re-indexing, then proves
     the result with the out-of-process integrity probe."""
     if config_path is None:
-        print("[doctor] no config file found — pass --config PATH", file=sys.stderr)
+        print("[doctor] no config file found: pass --config PATH", file=sys.stderr)
         return 2
     from ..config import load_config
     cfg = load_config(config_path)
@@ -824,13 +824,13 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
 
     wal = inspect_wal(storage_dir)
     if wal is None:
-        print(f"[doctor] source {name!r} has no index yet — nothing to heal.")
+        print(f"[doctor] source {name!r} has no index yet: nothing to heal.")
         return 0
     if not wal["wedged"] and not wal["discarding_writes"]:
         queued = (f" ({wal['pending_ops']} queued write(s) are the tail a "
-                  f"segment replays on its next open — normal)"
+                  f"segment replays on its next open, which is normal)"
                   if wal["pending_ops"] else "")
-        print(f"[doctor] source {name!r}: WAL is clean{queued} — nothing to heal.")
+        print(f"[doctor] source {name!r}: WAL is clean{queued}: nothing to heal.")
         return 0
     if wal["discarding_writes"]:
         print(f"[doctor] segments parked at seq {wal['watermark']} with an "
@@ -848,7 +848,7 @@ def _run_heal_wal(name: str, config_path: Optional[Path]) -> int:
             print(f"[doctor] source {name!r}: the index answers the probe"
                   + (f" ({count} chunks)" if count else "")
                   + f"; the {wal['unapplied_ops']} queued write(s) are the tail "
-                  f"the vector segment replays on open, not a wedge — nothing "
+                  f"the vector segment replays on open, not a wedge: nothing "
                   f"to heal.")
             return 0
         if probe["status"] == "in_use":
@@ -897,7 +897,7 @@ def _run_heal_coverage(name: str, config_path: Optional[Path]) -> int:
     build re-indexes exactly those. The alternative for this state used to be a
     full rebuild, because nothing detected it in the first place."""
     if config_path is None:
-        print("[doctor] no config file found — pass --config PATH", file=sys.stderr)
+        print("[doctor] no config file found: pass --config PATH", file=sys.stderr)
         return 2
     from ..config import load_config
     cfg = load_config(config_path)
@@ -911,12 +911,12 @@ def _run_heal_coverage(name: str, config_path: Optional[Path]) -> int:
 
     report = inspect_coverage(storage_dir)
     if report is None:
-        print(f"[doctor] source {name!r} has no readable index yet — "
+        print(f"[doctor] source {name!r} has no readable index yet: "
               f"nothing to heal.")
         return 0
     if not report["drifted"]:
         print(f"[doctor] source {name!r}: hash cache agrees with the index "
-              f"({report['indexed_files']} file(s) indexed) — nothing to heal.")
+              f"({report['indexed_files']} file(s) indexed): nothing to heal.")
         return 0
 
     try:
@@ -930,7 +930,7 @@ def _run_heal_coverage(name: str, config_path: Optional[Path]) -> int:
               f"but absent from the index.")
     if outcome["unvectorized"]:
         print(f"[doctor] {outcome['unvectorized']} chunk(s) across "
-              f"{outcome['unvectorized_files']} file(s) had no vector — the "
+              f"{outcome['unvectorized_files']} file(s) had no vector: the "
               f"state that makes every search fail with 'Error querying knn'.")
     print(f"[doctor] dropped {len(outcome['reindex_files'])} cache entry(ies).")
     print(f"[doctor] they will be re-indexed on the next build / watcher pass "

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — LynxManager{% endblock %}
+{% block title %}Dashboard · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -8,7 +8,7 @@
   <div>
     <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Dashboard</h1>
     <p class="text-sm text-slate-500 mt-0.5">
-      Local semantic search &amp; code graph for your AI editor — 100% on your machine.
+      Local semantic search &amp; code graph for your AI editor, 100% on your machine.
     </p>
   </div>
   <div class="flex items-center gap-2.5">
@@ -47,7 +47,7 @@
           {% if step1_done %}
             {{ total_sources }} source{{ '' if total_sources == 1 else 's' }} configured
           {% else %}
-            Pick a folder — languages &amp; code graph are detected automatically.
+            Pick a folder: languages &amp; code graph are detected automatically.
           {% endif %}
         </div>
       </div>
@@ -177,7 +177,7 @@
         </div>
         <span class="badge bg-sky-100 text-sky-800">Active in editor</span>
       </div>
-      <p class="text-xs text-slate-600 mb-3">Everything is fine — your AI editor's Lynx server is actively serving this project.</p>
+      <p class="text-xs text-slate-600 mb-3">Everything is fine: your AI editor's Lynx server is actively serving this project.</p>
       <button
         hx-post="/api/manager/reload"
         hx-swap="none"

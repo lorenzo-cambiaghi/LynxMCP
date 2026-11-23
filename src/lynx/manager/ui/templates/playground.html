@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Playground — LynxManager{% endblock %}
+{% block title %}Playground · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -7,7 +7,7 @@
   <div>
     <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Search playground</h1>
     <p class="text-sm text-slate-500 mt-0.5">
-      Test semantic search and code-graph queries directly — same engine your AI uses over MCP.
+      Test semantic search and code-graph queries directly, with the same engine your AI uses over MCP.
     </p>
   </div>
 </div>
@@ -106,7 +106,7 @@
         class="expert-only mt-6 p-4 bg-white border border-slate-200/90 rounded-xl shadow-sm space-y-2">
     <div class="font-semibold text-slate-900 text-sm">deep_search</div>
     <div class="text-xs text-slate-500">
-      One phrasing per line — 2-4 genuinely different angles, not paraphrases.
+      One phrasing per line: 2-4 genuinely different angles, not paraphrases.
       Each is tried in order until one returns strong results.
     </div>
     <textarea name="queries" rows="3" required
@@ -322,16 +322,16 @@
         <label class="block text-xs text-slate-600 mb-1">Operation</label>
         <select name="operation" id="pg-graph-op"
                 class="px-3 py-2 border border-slate-300 rounded text-sm">
-          <option value="callers">callers — who calls this?</option>
-          <option value="callees">callees — what does it call?</option>
-          <option value="subclasses">subclasses — who inherits from it?</option>
-          <option value="superclasses">superclasses — what does it extend?</option>
-          <option value="imports">imports — a file's import edges</option>
-          <option value="neighbors">neighbors — everything around it</option>
-          <option value="shortest_path">shortest_path — how does A reach B?</option>
-          <option value="overview">overview — hubs and communities</option>
-          <option value="surprising_connections">surprising_connections — bridge edges</option>
-          <option value="status">status — node/edge counts, freshness</option>
+          <option value="callers">callers: who calls this?</option>
+          <option value="callees">callees: what does it call?</option>
+          <option value="subclasses">subclasses: who inherits from it?</option>
+          <option value="superclasses">superclasses: what does it extend?</option>
+          <option value="imports">imports: a file's import edges</option>
+          <option value="neighbors">neighbors: everything around it</option>
+          <option value="shortest_path">shortest_path: how does A reach B?</option>
+          <option value="overview">overview: hubs and communities</option>
+          <option value="surprising_connections">surprising_connections: bridge edges</option>
+          <option value="status">status: node/edge counts, freshness</option>
         </select>
       </div>
       <div class="flex-1 min-w-[12rem]" data-graph-field="symbol">
@@ -392,7 +392,7 @@
         class="mt-4 p-4 bg-white border border-slate-200 rounded space-y-2">
     <div class="font-semibold text-slate-800 text-sm">export_graph</div>
     <div class="text-xs text-slate-500">
-      A shareable, offline graph view in one self-contained file — a symbol's
+      A shareable, offline graph view in one self-contained file: a symbol's
       blast radius, or a file's import hub. Attach it to a PR.
     </div>
     <div class="flex gap-3 items-end flex-wrap">
@@ -400,8 +400,8 @@
         <label class="block text-xs text-slate-600 mb-1">Mode</label>
         <select name="mode" id="pg-export-mode"
                 class="px-3 py-2 border border-slate-300 rounded text-sm">
-          <option value="symbol">symbol — blast radius</option>
-          <option value="module">module — file hub</option>
+          <option value="symbol">symbol: blast radius</option>
+          <option value="module">module: file hub</option>
         </select>
       </div>
       <div class="flex-1 min-w-[12rem]">

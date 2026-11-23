@@ -434,7 +434,8 @@ def main() -> int:
         if r.status_code != 200:
             print(f"[test] FAIL [20/27]: /sources/demo returned {r.status_code}")
             return 20
-        for needle in ("demo", "Status", "Rebuild index", "build-status"):
+        # The rebuild button swaps the job widget into #build-slot.
+        for needle in ("demo", "Status", "Rebuild index", 'id="build-slot"', 'hx-target="#build-slot"'):
             if needle not in r.text:
                 print(f"[test] FAIL [20/27]: detail page missing {needle!r}")
                 return 20
@@ -457,12 +458,13 @@ def main() -> int:
         if r.status_code != 200:
             print(f"[test] FAIL [22/27]: build returned {r.status_code}: {r.text[:200]}")
             return 22
-        if "build-status" not in r.text or "job " not in r.text:
+        # The widget is `<div id="job-XXXXXXXX" hx-get="/api/jobs/XXXXXXXX/widget...">`,
+        # polling itself until the job is over.
+        if 'id="job-' not in r.text or "/widget" not in r.text:
             print(f"[test] FAIL [22/27]: build response missing widget shape: {r.text[:300]}")
             return 22
-        # Extract job id from the response (format: "job XXXXXXXX")
         import re
-        m = re.search(r"job ([a-f0-9]{8})", r.text)
+        m = re.search(r'id="job-([a-f0-9]{8})"', r.text)
         if not m:
             print(f"[test] FAIL [22/27]: couldn't extract job id from: {r.text[:300]}")
             return 22

@@ -553,7 +553,7 @@ def register(app) -> None:
         if app.state.config_path is None:
             return HTMLResponse(
                 '<div class="p-3 bg-red-50 border border-red-200 rounded text-red-900 text-sm">'
-                '❌ No config path configured — launch UI with --config PATH.</div>',
+                '❌ No config path configured: launch the UI with --config PATH.</div>',
                 status_code=400,
             )
         target = Path(app.state.config_path)
@@ -710,14 +710,14 @@ def register(app) -> None:
         if not st.checked:
             return HTMLResponse(
                 '<div id="update-banner" class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between gap-3">'
-                f'<div><strong>Offline / could not check PyPI</strong> — {_html_escape(st.error or "")} '
+                f'<div><strong>Offline / could not check PyPI</strong>: {_html_escape(st.error or "")} '
                 f'(installed: <code>v{_html_escape(st.current_version)}</code>)</div>'
                 '</div>'
             )
         if not st.update_available:
             return HTMLResponse(
                 '<div id="update-banner" class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 flex items-center justify-between gap-3">'
-                f'<div><strong>Up to date</strong> — Lynx <code>v{_html_escape(st.current_version)}</code> is the latest release.</div>'
+                f'<div><strong>Up to date</strong>: Lynx <code>v{_html_escape(st.current_version)}</code> is the latest release.</div>'
                 '</div>'
             )
 
@@ -1104,14 +1104,14 @@ def _register_source_crud_routes(app) -> None:
     def _require_config_path():
         if app.state.config_path is None:
             return None, HTMLResponse(
-                _toast_err("No config path configured — launch the UI with --config PATH."),
+                _toast_err("No config path configured: launch the UI with --config PATH."),
                 status_code=400,
             )
         from pathlib import Path
         p = Path(app.state.config_path)
         if not p.exists():
             return None, HTMLResponse(
-                _toast_err(f"Config not found at {p} — run `lynx manager init` first."),
+                _toast_err(f"Config not found at {p}: run `lynx manager init` first."),
                 status_code=404,
             )
         return p, None

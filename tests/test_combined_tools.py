@@ -102,7 +102,7 @@ def _shared(reranker_enabled=False):
     return SimpleNamespace(
         embedding=SimpleNamespace(model_name="stub"),
         search=SimpleNamespace(
-            mode="hybrid", rrf_k=60, candidate_pool_size=30,
+            mode="hybrid", rrf_k=60, candidate_pool_size=30, secondary_weight=0.5,
             deep=SimpleNamespace(score_thresholds={"hybrid": 0.012}),
             reranker=SimpleNamespace(enabled=reranker_enabled, model_name="", top_n_before_rerank=30),
         ),

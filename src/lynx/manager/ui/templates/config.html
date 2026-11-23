@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Config — LynxManager{% endblock %}
+{% block title %}Config · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -11,7 +11,7 @@
 </div>
 
 <div class="mb-4 p-3.5 bg-white border border-slate-200/90 rounded-xl text-xs text-slate-600 shadow-sm">
-  Validated against the exact schema Lynx uses on startup — invalid configs are rejected without touching disk.
+  Validated against the exact schema Lynx uses on startup: invalid configs are rejected without touching disk.
   A backup is saved to <code class="font-mono bg-slate-100 px-1 rounded">{{ config_path }}.bak</code> on every save.
 </div>
 
@@ -26,7 +26,7 @@
 
   <div class="mt-3 flex items-center justify-between">
     <div class="text-xs text-slate-500">
-      Lines: <span id="line-count">—</span> · Characters: <span id="char-count">—</span>
+      Lines: <span id="line-count">0</span> · Characters: <span id="char-count">0</span>
     </div>
     <div class="flex gap-2">
       <button type="button"

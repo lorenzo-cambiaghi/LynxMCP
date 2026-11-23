@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Doctor — LynxManager{% endblock %}
+{% block title %}Doctor · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -21,7 +21,7 @@
 <!-- Overall summary -->
 {% if worst_status == "ok" %}
   <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded">
-    <div class="font-semibold text-green-900">✓ All checks passed — Lynx is healthy.</div>
+    <div class="font-semibold text-green-900">✓ All checks passed: Lynx is healthy.</div>
     <div class="text-sm text-green-700 mt-1">
       {{ counts.ok }} ok
       {% if counts.warn %} · {{ counts.warn }} warning(s){% endif %}
@@ -30,14 +30,14 @@
   </div>
 {% elif worst_status == "warn" %}
   <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded">
-    <div class="font-semibold text-amber-900">⚠ Some warnings — review below.</div>
+    <div class="font-semibold text-amber-900">⚠ Some warnings: review them below.</div>
     <div class="text-sm text-amber-700 mt-1">
       {{ counts.ok }} ok · {{ counts.warn }} warning(s){% if counts.error %} · {{ counts.error }} error(s){% endif %}
     </div>
   </div>
 {% else %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded">
-    <div class="font-semibold text-red-900">✗ Errors detected — fix them before relying on Lynx.</div>
+    <div class="font-semibold text-red-900">✗ Errors detected: fix them before relying on Lynx.</div>
     <div class="text-sm text-red-700 mt-1">
       {{ counts.ok }} ok · {{ counts.warn }} warning(s) · {{ counts.error }} error(s)
     </div>
@@ -79,7 +79,7 @@
 
 <div class="mt-6 text-xs text-slate-500">
   Equivalent CLI: <code class="bg-slate-100 px-1 rounded">lynx manager doctor</code>
-  — exit code 0 = ok, 1 = warn, 2 = error.
+  (exit code 0 = ok, 1 = warn, 2 = error).
 </div>
 
 {% endblock %}

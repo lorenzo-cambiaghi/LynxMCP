@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ source.name }} — LynxManager{% endblock %}
+{% block title %}{{ source.name }} · LynxManager{% endblock %}
 
 {% block content %}
 
@@ -144,7 +144,7 @@
             {% else %}
               class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 shadow-sm transition"
             {% endif %}>
-      {% if source.locked %}Locked — active in editor{% else %}Rebuild index{% endif %}
+      {% if source.locked %}Locked: active in editor{% else %}Rebuild index{% endif %}
     </button>
   </form>
 
