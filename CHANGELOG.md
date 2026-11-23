@@ -1,5 +1,134 @@
 # Changelog
 
+## 1.12.0 - 2026-11-23
+
+Upgrading from 1.11.0: the chunker moves to version 6 (see Changed), so the
+first start after this upgrade embeds every codebase source again, in the
+background, while the source keeps answering. Builds now embed about 1.7
+times faster, so count roughly half an hour for a source of 50,000 chunks on
+a CPU and a few minutes for a small one. The code graph is rebuilt once too,
+because its extractor changed. The tool profiles moved around a little:
+`deep_search` and `feedback` are in `full` only, `module_summary` is in
+`core`, and the two hook tools are in every profile. The default `standard`
+list is smaller than in 1.11.0 all the same.
+
+### Added
+
+`lynx serve PATH` needs no config file. It indexes that folder as one
+codebase source, with the extensions and ignores it finds there, keeps the
+index in your user cache folder so the repository stays clean, and turns the
+code graph on. It refuses a home folder or a drive root.
+
+`lynx connect <client>` registers Lynx with Claude Code, Cursor, Claude
+Desktop, Windsurf, Antigravity or VS Code. It adds one entry to the client's
+MCP config, keeps a timestamped backup, leaves every other server alone, and
+updates an existing Lynx entry instead of adding a second one. Claude Code
+gets Lynx at user scope, so every project you open has its own index, plus
+the prompt hook in `~/.claude/settings.json` (`--no-hook` leaves it out,
+`--disconnect` removes both). LynxManager's Integrations page does the same
+with one button per client.
+
+`lynx update` recognises uv, pipx, pip and uvx installs and upgrades them in
+place; config and indexes stay as they are. On Windows it lists the running
+Lynx processes that hold files open and stops before touching anything. The
+update button in LynxManager closes the manager, updates in its own window
+and reopens it.
+
+Two tools that Claude Code's hooks call, not the model. `prompt_hook`
+answers the `UserPromptSubmit` hook with a short map of the code a request
+is about: up to 12 places, with file, lines and signature, from one search
+per sentence. `read_guard` answers an optional `PreToolUse` hook on `Read`
+and `Bash`: it refuses once a read of more than 200 lines of an indexed
+file, with the file's outline as the reason, and lets the same read through
+when it is asked again. Both answer with nothing rather than an error when
+the index is not ready. `docs/GUIDE.md` has the hook settings.
+
+`search` takes `identifiers`, the names you would grep for (`labelHover,
+hoverLabel`), added to the query. Agents wrote such names when there was a
+slot for them and never inside the query itself; on 22 bug reports they
+raised the MRR of the file to fix from 0.626 to 0.684. `lynx search
+--identifiers` does the same from the command line.
+
+`describe_symbol` takes `file`, to pick one of several definitions of a name
+(a test helper defined in 15 files). The others are listed, and the callers
+shown are those of the chosen definition only.
+
+`lynx status --json` and `lynx list-sources --json`. With a source that
+does not exist, `status` answers `"ok": false` and exits with 1.
+
+The LynxManager Playground takes the search mode, identifiers and outline,
+and a file for `describe_symbol`. A source can be removed from its page.
+
+### Changed
+
+Code ranks above tests, data and docs. After fusion, the score of a test,
+data or doc file is multiplied by `search.secondary_weight` (0.5 by default;
+1.0 turns it off). On 76 issue titles of a TypeScript game, with the files
+their fixes changed as the answers, MRR went from 0.185 to 0.362. BM25 also
+reads the last four segments of each chunk's path and its symbol name.
+
+Chunker 6. A long TypeScript or JavaScript function gives its named nested
+functions chunks of their own, so a helper defined inside a 300-line
+function is found by its own name. The parts of a function split across
+several chunks carry their own line numbers instead of the whole
+function's.
+
+The code graph knows much more of a TypeScript or JavaScript project.
+Relative imports point at files (an `index` file included), `export ...
+from` re-exports are followed to the file that defines the name, and
+`paths` and `baseUrl` aliases are read from `tsconfig.json` or
+`jsconfig.json`, `extends` included. Arrow functions and function-valued
+class fields are nodes. Calls inside closures and callbacks count for the
+function they are written in. A call `obj.f()` lands only on a method `f` in
+a file the caller imports, and a name defined in several files resolves to
+the one it can reach. On a game of 214,000 lines this took the ambiguous
+call edges from 3,899 to 467.
+
+Beyond TS/JS: Python imports resolve to the project's own files (package
+roots found through `pyproject.toml`, `setup.py`, `setup.cfg`, `.git` or a
+`src/` folder; the standard library is left out), imports inside function
+bodies count in every language, and Java calls on a receiver are member
+calls. On Lynx's own source, resolved calls went from 311 to 448 and imports
+of project files from 0 to 165. An incremental update now gives the graph a
+full build gives: the files that import a changed file are read again, and a
+removed file takes its edges with it.
+
+Index builds embed about 1.7 times faster, with the same vectors. Chunks of
+many files go to the embedder together, 512 at a time, sorted by length and
+run 32 at a time, where before each file's few chunks went alone. Measured
+on 2,202 chunks of a TypeScript project, the old and new way alternating on
+a busy machine: 1.70 times faster in wall time, 1.68 in CPU time. The
+vectors are equal to the bit. If a group fails, its files are retried one
+at a time, so a bad file is still the only one left out.
+
+Tool profiles: `core` is `search`, `describe_symbol`, `module_summary`,
+`find_usages`, `impact` and the two hook tools (7); `standard` adds
+`find_definition`, `find_similar`, `graph_query`, `repo_overview` and
+`search_diff` (12); `full` has all 19. Their `tools/list` weighs 6.0k,
+10.6k and 16.2k characters, about 1,500, 2,650 and 4,050 tokens (standard
+was 12.9k in 1.11.0). Optional arguments are advertised without the null
+branch, and the tool texts and answers are shorter.
+
+### Fixed
+
+Importing Lynx drops an `SSLKEYLOGFILE` that an antivirus injected into the
+environment. Python builds without `OPENSSL_Applink`, uv's among them,
+crashed at the first TLS connection with it set, so hooks and scripts that
+import Lynx died where `lynx serve` did not.
+
+A client folder that cannot be read is now that client's error, instead of
+a crash of `lynx connect` and of the Integrations page.
+
+A search mode chosen for one search (`lynx search --mode`, the Playground)
+no longer sticks to the source for the searches after it.
+
+LynxManager: Simple mode stays simple in the Playground and on Doctor. Add
+source scans a folder the way `lynx serve` does, with the same extensions
+and ignores. A running build shows on its source's page, and a build and a
+reset of the same source can no longer start together. Config saves from
+the page go through the same lock as the rest of Lynx, and a save that
+fails shows why. The Update page shows the command's output.
+
 ## 1.11.0 - 2026-11-20
 
 Upgrading from 1.10.0: on a source that lists `.gd`, the first start

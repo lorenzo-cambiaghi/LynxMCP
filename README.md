@@ -22,7 +22,7 @@ uv tool install lynx-mcp       # or: pipx install lynx-mcp
 lynx connect claude
 ```
 
-Every project you open in Claude Code now gets its own index, built in the background the first time. `lynx connect claude` also adds a prompt hook to `~/.claude/settings.json`: each request reaches Claude with a short map of the code it is about (up to 12 places, file, lines and signature, about 1,300 characters), so the first turn already knows where to look instead of grepping for it. `--no-hook` leaves it out. Restart Claude Code (or run `/mcp`) and ask about your code.
+Every project you open in Claude Code now gets its own index, built in the background the first time. `lynx connect claude` also adds a prompt hook to `~/.claude/settings.json`: each request reaches Claude with a short map of the code it is about (up to 12 places, file, lines and signature, about 1,300 characters), before its first turn. `--no-hook` leaves it out. Restart Claude Code (or run `/mcp`) and ask about your code.
 
 Just want to try it in one project first?
 
@@ -132,7 +132,7 @@ python benchmarks/run_benchmark.py --tasks benchmarks/tasks_guava.json \
 
 ### Token & API cost impact
 
-Each retrieval keeps **2,600 to 5,400 tokens** out of the context window. With `outline=true`, a broad search returns signatures only and gets another **2.4×** smaller ([measured](docs/OUTLINE.md)). The tool definitions come in three sizes so a session pays only for what it loads: `core` has 6 tools, `standard` (the default) 11, `full` all 18. Whatever the size, the session pays for that schema on every turn after the first retrieval.
+Each retrieval keeps **2,600 to 5,400 tokens** out of the context window. With `outline=true`, a broad search returns signatures only and gets another **2.4×** smaller ([measured](docs/OUTLINE.md)). The tool definitions come in three sizes so a session pays only for what it loads: `core` has 7 tools, `standard` (the default) 12, `full` all 19. Whatever the size, the session pays for that schema on every turn after the first retrieval.
 
 For a 25-engineer team (60 retrievals per developer per day), the measured yearly API savings across the three benchmarked codebases:
 
@@ -213,7 +213,7 @@ The tool set is fixed. It does not grow with the number of sources, and it comes
 Pick one with `--profile core|standard|full`, `LYNX_TOOL_PROFILE`, or `tools.profile` / `tools.include` in `config.json`. Every MCP tool is also a CLI subcommand (`lynx find-definition ApplyDamage`, `lynx impact ApplyDamage`, `lynx graph query --op callers --symbol ApplyDamage`); add `--json` for scripts.
 
 <details>
-<summary><b>All 18 tools and what each answers</b></summary>
+<summary><b>All 19 tools and what each answers</b></summary>
 
 | Tool | Profile | What it answers |
 |---|---|---|
@@ -223,6 +223,7 @@ Pick one with `--profile core|standard|full`, `LYNX_TOOL_PROFILE`, or `tools.pro
 | `find_usages(symbol)` | core | Every use of X: graph calls, subtypes and textual references with line numbers. |
 | `impact(symbol)` | core | The transitive blast radius through the call graph, with hop distance, plus the tests to re-run. |
 | `prompt_hook(prompt)` | core | Not for the model. Claude Code's prompt hook calls it with each request and gets back the map of the code that request is about. |
+| `read_guard(file_path?, offset?, limit?, command?)` | core | Not for the model. An optional hook before `Read` and `Bash` calls it; a read of more than 200 lines of an indexed file is refused once, with the file's outline. |
 | `find_definition(symbol)` | standard | Where X is defined. The first match with its body, the others with their signature. |
 | `find_similar(snippet)` | standard | Whether a draft duplicates existing code, with the parallel implementations ranked. |
 | `graph_query(operation, symbol?)` | standard | `callers`, `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `status`. |

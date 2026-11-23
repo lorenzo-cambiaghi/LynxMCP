@@ -1224,7 +1224,36 @@ The tool must answer hook JSON (`hookSpecificOutput.additionalContext`):
 Claude Code drops the plain-text answer of an `mcp_tool` hook. Measured on
 a three.js game of 8,600 lines, two bug fixes from real issues, the hook
 made each run read less, write less and need fewer API calls (10 instead of
-12 to 15).
+12 to 15). On a game of 214,000 lines, where every task named the code it
+was about, it saved nothing measurable: grep found the file in two to four
+calls anyway, and a map that pointed elsewhere made the search dearer.
+
+#### The read guard
+
+An experiment, off unless you add it. Before a `Read` or a `Bash` command
+that reads a file (`cat`, `sed -n 'A,Bp'`, `head`, `tail`), Claude Code
+calls the `read_guard` tool. When the read would return more than 200 lines
+of a file Lynx indexes, the guard refuses it once and gives the file's
+outline as the reason, one line per symbol with its lines, so the next read
+can be narrower. The same read asked again goes through. In
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Read", "hooks": [{"type": "mcp_tool", "server": "lynx",
+        "tool": "read_guard", "input": {"file_path": "${tool_input.file_path}",
+        "offset": "${tool_input.offset}", "limit": "${tool_input.limit}"}}]},
+      {"matcher": "Bash", "hooks": [{"type": "mcp_tool", "server": "lynx",
+        "tool": "read_guard", "input": {"command": "${tool_input.command}"}}]}
+    ]
+  }
+}
+```
+
+In our runs Claude rarely read more than 200 lines at once, so the guard
+seldom fired and saved nothing measurable. `lynx connect` does not add it.
 
 ### Claude Code extension for VS Code
 
@@ -1716,15 +1745,16 @@ layers the tools in three profiles:
 
 | Profile | Tools | Size of `tools/list` |
 |---|---|---|
-| `core` | search, describe_symbol, module_summary, find_usages, impact, prompt_hook | 5.2k characters, about 1,300 tokens |
-| `standard` (default) | core + find_definition, find_similar, graph_query, repo_overview, search_diff | 9.8k characters, about 2,450 tokens |
-| `full` | all 18, adding deep_search, find_tests_for, export_graph, feedback and the maintenance tools | 15.4k characters, about 3,850 tokens |
+| `core` | search, describe_symbol, module_summary, find_usages, impact, prompt_hook, read_guard | 6.0k characters, about 1,500 tokens |
+| `standard` (default) | core + find_definition, find_similar, graph_query, repo_overview, search_diff | 10.6k characters, about 2,650 tokens |
+| `full` | all 19, adding deep_search, find_tests_for, export_graph, feedback and the maintenance tools | 16.2k characters, about 4,050 tokens |
 
-Measured with two codebase sources, graph and git enabled. Before the
+Measured with a codebase source, graph and git enabled. Before the
 profiles existed the list weighed 30.7k characters, about 7,700 tokens.
-`prompt_hook` is in every profile because the [prompt hook](#the-prompt-hook)
-calls it; the model is told not to. Claude Code defers MCP tools, so there
-it costs its name only.
+`prompt_hook` and `read_guard` are in every profile because the
+[prompt hook](#the-prompt-hook) and the [read guard](#the-read-guard) call
+them; the model is told not to. Claude Code defers MCP tools, so there they
+cost their names only.
 
 Pick a profile in `config.json`, on the command line, or in the
 environment. The command line wins, then the variable, then the file:
