@@ -196,9 +196,14 @@ def query_graph(
             "superclasses": ("get_superclasses", "Superclasses of {s!r} in {src!r}:"),
             "imports": ("get_imports", "Imports from {s!r} in {src!r}:"),
         }[op]
-        edges = getattr(manager, method)(source, symbol, limit=limit)
-        return _edges_result(manager, source, op, symbol, edges,
-                             label.format(s=symbol, src=source))
+        if op in ("subclasses", "superclasses") and depth and depth > 1:
+            # The whole hierarchy in one call, level by level.
+            edges = getattr(manager, method)(source, symbol, limit=limit, depth=depth)
+            header = label.format(s=symbol, src=source).rstrip(":") + f" depth={depth}:"
+        else:
+            edges = getattr(manager, method)(source, symbol, limit=limit)
+            header = label.format(s=symbol, src=source)
+        return _edges_result(manager, source, op, symbol, edges, header)
 
     if op == "neighbors":
         edges = manager.get_neighbors(

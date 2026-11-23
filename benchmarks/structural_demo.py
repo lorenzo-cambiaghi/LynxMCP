@@ -147,6 +147,12 @@ def main():
     direct, all_desc, levels, graph_calls = graph_descendants(layer)
     graph_query_s = time.time() - t0
 
+    # The same tree in one call: `graph_query subclasses` with `depth`.
+    from lynx.graph.query import get_subclasses
+    one_call = get_subclasses(layer._graph, ROOT_SYMBOL, limit=10_000, depth=10)
+    one_call_classes = {(e["source"].get("label") or "").split(".")[-1] for e in one_call}
+    one_call_levels = max((e["hop"] for e in one_call), default=0)
+
     t0 = time.time()
     grep_l1 = grep_direct(ROOT_SYMBOL)
     grep_all, grep_calls = grep_closure(ROOT_SYMBOL)
@@ -173,17 +179,18 @@ def main():
         f"| direct subclasses found | {len(grep_l1)} | {len(direct)}, each with file and line |",
         f"| full descendant tree | {len(grep_all)} classes | {len(all_desc)} classes, {levels} levels |",
         f"| calls, one per class found | {grep_calls} grep rounds | {graph_calls} calls (one symbol per call) |",
-        f"| calls, one per level | {level_rounds} grep rounds (the level's names in one alternation) | not available: the tool takes one symbol |",
+        f"| calls, one per level | {level_rounds} grep rounds (the level's names in one alternation) | |",
+        f"| one call with `depth` | | 1 call: {len(one_call_classes)} classes over {one_call_levels} levels"
+        f"{', the same set' if one_call_classes == all_desc else ', a DIFFERENT set'} |",
         f"| wall clock in this harness (Python regex over every file per round; `rg` is faster) | {grep_s:.1f}s | {graph_query_s:.2f}s |",
         "| what each match carries | a matching line; the file has to be read for the rest | a resolved edge with file, line and kind |",
         f"| descendants the regex closure missed | {names(missed_by_grep)} | |",
         f"| found by grep but not in the graph | {names(missed_by_graph)} | |",
         "",
-        "Both find the same 100 classes. The graph answers from edges resolved "
-        "at index time, each with file, line and kind, so nothing is left to "
-        "check by hand. Grep returns matching lines, comments and strings "
-        "included; a regex that names a whole level per round needs 5 rounds "
-        "here.",
+        "Both find the same 100 classes. The graph answers in one call with "
+        "`depth`, from edges resolved at index time, each with file, line, kind "
+        "and level, so nothing is left to check by hand. Grep returns matching "
+        "lines, comments and strings included, and needs a round per level.",
     ]
     results_md = BENCH_DIR / "RESULTS.md"
     content = results_md.read_text(encoding="utf-8")

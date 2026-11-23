@@ -356,7 +356,7 @@
       </div>
       <div data-graph-field="depth" class="hidden">
         <label class="block text-xs text-slate-600 mb-1">Depth</label>
-        <input type="number" name="depth" value="1" min="1" max="6"
+        <input type="number" name="depth" value="1" min="1" max="10"
                class="w-20 px-3 py-1.5 border border-slate-300 rounded text-sm">
       </div>
       <div data-graph-field="max_hops" class="hidden">
@@ -503,8 +503,8 @@
   const GRAPH_FIELDS = {
     callers:                {symbol: 1, limit: 1},
     callees:                {symbol: 1, limit: 1},
-    subclasses:             {symbol: 1, limit: 1},
-    superclasses:           {symbol: 1, limit: 1},
+    subclasses:             {symbol: 1, limit: 1, depth: 1},
+    superclasses:           {symbol: 1, limit: 1, depth: 1},
     imports:                {symbol: 1, limit: 1},
     neighbors:              {symbol: 1, limit: 1, relation: 1, depth: 1},
     shortest_path:          {symbol: 1, target: 1, max_hops: 1},

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+`graph_query` `subclasses` and `superclasses` take `depth` (1-10): the whole
+hierarchy in one call, level by level, each type once with its level. On
+Django 5.2 the tree under `Field`, 100 classes over 4 levels, took one call
+per class (101); now it takes one. The Playground and `/api/v1/graph` take
+it too.
+
 ## 1.12.0 - 2026-11-23
 
 Upgrading from 1.11.0: the chunker moves to version 6 (see Changed), so the

@@ -309,7 +309,7 @@ def register(app) -> None:
         symbol: str = Query(description="Symbol name, e.g. `ApplyDamage` or `Player.take_damage`."),
         source: Optional[str] = Query(None, description="Source name; omitted when only one source has the graph."),
         relation: Optional[str] = Query(None, description="For `neighbors`: only `calls`, `inherits`, `imports` or `contains`."),
-        depth: int = Query(1, description="For `neighbors`: hops, clamped to 1-6."),
+        depth: int = Query(1, description="For `neighbors`: hops, clamped to 1-6. For `subclasses` / `superclasses`: levels of the hierarchy, 1-10."),
         limit: int = Query(50, description="Number of edges, clamped to 1-200."),
         fmt: str = _FORMAT,
     ):
@@ -372,10 +372,11 @@ def register(app) -> None:
                 edges = mgr.get_callers(source, symbol, limit=k)
             elif op == "callees":
                 edges = mgr.get_callees(source, symbol, limit=k)
-            elif op == "subclasses":
-                edges = mgr.get_subclasses(source, symbol, limit=k)
-            elif op == "superclasses":
-                edges = mgr.get_superclasses(source, symbol, limit=k)
+            elif op in ("subclasses", "superclasses"):
+                walk = getattr(mgr, "get_" + op)
+                # depth only when asked for, as the MCP tool does
+                edges = (walk(source, symbol, limit=k, depth=int(depth)) if int(depth) > 1
+                         else walk(source, symbol, limit=k))
             elif op == "imports":
                 edges = mgr.get_imports(source, symbol, limit=k)
             else:  # neighbors

@@ -325,6 +325,8 @@ def _format_edge_lines(edges: list, header: str, root=None, far: str | None = No
                 bits = []
                 if e.get("relation") == "inherits" and e.get("base_kind"):
                     bits.append(e["base_kind"])
+                if (e.get("hop") or 1) > 1:
+                    bits.append(f"level {e['hop']}")
                 if e.get("relation") in ("imports", "imports_from") and e.get("module"):
                     bits.append(f"module {e['module']}")
                 line = e.get("from_line")

@@ -171,7 +171,7 @@ PARAM_DESCRIPTIONS = {
     "graph_query.symbol": "Symbol the operation acts on (not needed by overview / status).",
     "graph_query.target": "Destination symbol for shortest_path.",
     "graph_query.relation_filter": "neighbors: calls | inherits | imports | imports_from | contains.",
-    "graph_query.depth": "neighbors: hops out (1-6).",
+    "graph_query.depth": "neighbors: hops (1-6). subclasses/superclasses: levels (1-10).",
     "graph_query.limit": "Max edges.",
     "graph_query.max_hops": "shortest_path: max path length.",
     "graph_query.top_n": "overview / surprising_connections: items to return.",

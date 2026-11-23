@@ -227,47 +227,90 @@ def nodes_in_file(G: nx.DiGraph, file_substring: str, limit: int = 200) -> list:
 # (C#, C++).
 
 
-def get_subclasses(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
+# How many levels of a hierarchy one call may walk.
+MAX_INHERIT_DEPTH = 10
+
+
+def _inherits_walk(G: nx.DiGraph, symbol: str, down: bool, limit: int, depth: int) -> list:
+    """The `inherits` edges around `symbol`, level by level.
+
+    `down` follows them to the types that inherit from the seeds (subclasses),
+    otherwise to the types the seeds inherit from. Past the first level the
+    walk goes from node to node over resolved edges, never back through a
+    name, so two classes that share a name in different modules stay apart.
+    Each edge carries `hop`, its level (1 = direct).
+
+    At depth 1 every edge comes back, as it always did. Deeper, the answer is
+    a set of types, so each type comes once, through its first edge, a
+    resolved one when it has one: a base the resolver could not tell apart
+    from its namesakes is linked to all of them as `ambiguous` (on Django,
+    `CICharField` to both `CharField`s), and listing it once per namesake
+    made the tree of `Field` 338 lines for 100 classes."""
+    seeds = find_symbols(G, symbol)
+    if not seeds:
+        return []
+    depth = max(1, min(int(depth or 1), MAX_INHERIT_DEPTH))
+    out, seen = [], set(seeds)
+    frontier = list(seeds)
+    for hop in range(1, depth + 1):
+        found = {}
+        for nid in frontier:
+            edges = G.in_edges(nid, data=True) if down else G.out_edges(nid, data=True)
+            for src, tgt, data in edges:
+                if data.get("relation") != "inherits":
+                    continue
+                other = src if down else tgt
+                if depth == 1:
+                    edge = _edge_to_dict(G, src, tgt, data)
+                    edge["hop"] = hop
+                    out.append(edge)
+                    if len(out) >= limit:
+                        return out
+                    continue
+                if other in seen:
+                    continue
+                best = found.get(other)
+                if best is None or (best[2].get("confidence") == "ambiguous"
+                                    and data.get("confidence") != "ambiguous"):
+                    found[other] = (src, tgt, data)
+        if depth == 1:
+            break
+        for other, (src, tgt, data) in found.items():
+            seen.add(other)
+            edge = _edge_to_dict(G, src, tgt, data)
+            edge["hop"] = hop
+            out.append(edge)
+            if len(out) >= limit:
+                return out
+        if not found:
+            break
+        frontier = list(found)
+    return out
+
+
+def get_subclasses(G: nx.DiGraph, symbol: str, limit: int = 50, depth: int = 1) -> list:
     """Classes / interfaces / structs that inherit FROM `symbol`.
 
     Returns the in-edges of every node matching `symbol` whose relation is
     "inherits". Answers "what concrete types extend or implement X?".
-    Useful when X is an abstract base class or an interface — the typical
-    discovery question structural search cannot reliably answer.
+    Useful when X is an abstract base class or an interface, the typical
+    discovery question structural search cannot reliably answer. With
+    `depth` > 1 it also returns their subclasses, level by level: on Django
+    5.2, `Field` at depth 4 gives the whole tree of 100 classes in one call,
+    where one call per class needed 101.
     """
-    seeds = find_symbols(G, symbol)
-    if not seeds:
-        return []
-    out = []
-    for nid in seeds:
-        for src, _tgt, data in G.in_edges(nid, data=True):
-            if data.get("relation") != "inherits":
-                continue
-            out.append(_edge_to_dict(G, src, nid, data))
-            if len(out) >= limit:
-                return out
-    return out
+    return _inherits_walk(G, symbol, True, limit, depth)
 
 
-def get_superclasses(G: nx.DiGraph, symbol: str, limit: int = 50) -> list:
-    """Types that `symbol` inherits from. Out-edge mirror of get_subclasses.
+def get_superclasses(G: nx.DiGraph, symbol: str, limit: int = 50, depth: int = 1) -> list:
+    """Types that `symbol` inherits from. Out-edge mirror of get_subclasses,
+    `depth` included.
 
     For languages that distinguish them (Java, TypeScript), each edge's
     `base_kind` attribute is `"extends"` for the concrete superclass and
     `"implements"` for interfaces.
     """
-    seeds = find_symbols(G, symbol)
-    if not seeds:
-        return []
-    out = []
-    for nid in seeds:
-        for _src, tgt, data in G.out_edges(nid, data=True):
-            if data.get("relation") != "inherits":
-                continue
-            out.append(_edge_to_dict(G, nid, tgt, data))
-            if len(out) >= limit:
-                return out
-    return out
+    return _inherits_walk(G, symbol, False, limit, depth)
 
 
 # ---------------------------------------------------------------------------

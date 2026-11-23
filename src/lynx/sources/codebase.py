@@ -471,14 +471,14 @@ class CodebaseBackend(SourceBackend):
         return _q(self.graph.graph, symbol, limit=limit)
 
     @_rel_paths
-    def get_subclasses(self, symbol: str, limit: int = 50) -> list:
+    def get_subclasses(self, symbol: str, limit: int = 50, depth: int = 1) -> list:
         from ..graph import get_subclasses as _q
-        return _q(self.graph.graph, symbol, limit=limit)
+        return _q(self.graph.graph, symbol, limit=limit, depth=depth)
 
     @_rel_paths
-    def get_superclasses(self, symbol: str, limit: int = 50) -> list:
+    def get_superclasses(self, symbol: str, limit: int = 50, depth: int = 1) -> list:
         from ..graph import get_superclasses as _q
-        return _q(self.graph.graph, symbol, limit=limit)
+        return _q(self.graph.graph, symbol, limit=limit, depth=depth)
 
     @_rel_paths
     def get_imports(self, file_or_symbol: str, limit: int = 100) -> list:
