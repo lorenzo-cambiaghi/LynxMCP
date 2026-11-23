@@ -208,6 +208,45 @@ def _source_catalog(manager, with_paths: bool = True) -> str:
     return "; ".join(parts)
 
 
+_LANGUAGE_NAMES = {
+    "en": "English", "it": "Italian", "de": "German", "fr": "French", "es": "Spanish",
+    "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "cs": "Czech", "sv": "Swedish",
+    "da": "Danish", "fi": "Finnish", "no": "Norwegian", "ru": "Russian", "uk": "Ukrainian",
+    "tr": "Turkish", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+}
+
+
+def language_name(code: str) -> str:
+    return _LANGUAGE_NAMES.get(code, code)
+
+
+def _language_note(manager) -> str:
+    """The sentence that keeps the agent searching in the code's language.
+
+    People write to the agent in their own language and expect it to search
+    in the code's. On a private C# library, requests in Italian found the
+    right file in the first five for none of the 65 that named no
+    identifier; the same requests in English, for 32 (lynx-zombie-bench D5).
+    The language comes from each source's `language` setting."""
+    from .config import DEFAULT_LANGUAGE
+    langs = {name: (b.source_config.get("language") or DEFAULT_LANGUAGE)
+             for name, b in manager.backends.items() if _is_codebase(b)}
+    if not langs:
+        return ""
+    codes = {lang["code"] for lang in langs.values()}
+    if len(codes) == 1:
+        note = (f"Write the query in {language_name(codes.pop())}, the code's language, "
+                "whatever language the user writes in")
+    else:
+        each = ", ".join(f"{n}: {language_name(lang['code'])}" for n, lang in langs.items())
+        note = f"Write the query in the code's language ({each}), whatever language the user writes in"
+    comments = [(n, lang["comments"]) for n, lang in langs.items() if lang["comments"] != lang["code"]]
+    if comments:
+        each = ", ".join(f"{language_name(c)} in {n}" for n, c in comments)
+        note += f"; the comments ({each}) are found in their own language"
+    return note + ". "
+
+
 def _capabilities(manager) -> dict:
     """What the configured sources support; decides which tools exist at all."""
     backends = list(manager.backends.values())
@@ -275,6 +314,7 @@ def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
             "the best with its code, the rest as signatures: read only the lines you "
             "need. "
         )
+        parts.append(_language_note(manager))
     gloss = {"find_usages": " (callers, overrides, mentions)",
              "describe_symbol": " (code, callers, subtypes)"}
     lookups = [n + gloss.get(n, "") for n in ("find_usages", "find_definition", "describe_symbol")
@@ -633,6 +673,11 @@ def _register_global_tools(mcp, manager):
             )
             if status.get("path"):
                 line += f"\n      path: {status['path']}"
+            backend = manager.backends.get(status["name"])
+            lang = getattr(backend, "source_config", {}).get("language") if backend else None
+            if lang:
+                line += (f"\n      language: code {language_name(lang['code'])}, "
+                         f"comments {language_name(lang['comments'])}")
             if status.get("drift_severity"):
                 line += f"\n      drift: {status['drift_severity'].upper()}"
             lines.append(line)

@@ -10,6 +10,14 @@ Django 5.2 the tree under `Field`, 100 classes over 4 levels, took one call
 per class (101); now it takes one. The Playground and `/api/v1/graph` take
 it too.
 
+A codebase source can say what its code and comments are written in:
+`"language": {"code": "en", "comments": "it"}`, ISO 639-1 codes, English by
+default. The instructions Lynx sends at startup tell the agent to write its
+search queries in the code's language, whatever language the user writes
+in, and `list_sources` shows it. On a private C# library, requests in
+Italian found the right file in the first five for none of the 65 that
+named no identifier; the same requests in English, for 32.
+
 ## 1.12.0 - 2026-11-23
 
 Upgrading from 1.11.0: the chunker moves to version 6 (see Changed), so the

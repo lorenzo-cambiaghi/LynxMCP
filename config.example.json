@@ -83,6 +83,11 @@
       "git_integration": {
         "enabled": true
       },
+      "_language_comment": "What the code and its comments are written in, as ISO 639-1 codes (default English). Lynx tells the AI to write its search queries in the code's language, whatever language you write to it in.",
+      "language": {
+        "code": "en",
+        "comments": "en"
+      },
       "_graph_comment": "Code knowledge graph layer (call graph + import graph + inheritance graph + community detection). Enabled by default for new codebase sources to power graph_query, transitive impact, describe_symbol, and export_graph. Set enabled=false if you only need plain semantic search.",
       "graph": {
         "enabled": true

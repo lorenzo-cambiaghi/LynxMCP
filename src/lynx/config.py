@@ -198,6 +198,38 @@ def _resolve_path(value: str, base: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+_LANGUAGE_CODE = re.compile(r"^[a-z]{2}$")
+DEFAULT_LANGUAGE = {"code": "en", "comments": "en"}
+
+
+def _language(name: str, raw: dict) -> dict:
+    """`language`: what a codebase's code and comments are written in, as
+    ISO 639-1 codes, English by default. Lynx tells the agent to write its
+    search queries in the code's language whatever language the user writes
+    in: on a private C# library, requests in Italian found the right file
+    for none of the 65 that named no identifier, the same requests in
+    English for 32 (lynx-zombie-bench D5)."""
+    lang = raw.get("language")
+    if lang is None:
+        return dict(DEFAULT_LANGUAGE)
+    if not isinstance(lang, dict):
+        _config_error(
+            f"source {name!r}: 'language' must be an object like "
+            f"{{\"code\": \"en\", \"comments\": \"it\"}}, got {lang!r}")
+    unknown = sorted(set(lang) - set(DEFAULT_LANGUAGE))
+    if unknown:
+        _config_error(f"source {name!r}: unknown key(s) in 'language': {', '.join(unknown)} "
+                      f"(only 'code' and 'comments')")
+    out = {}
+    for key, default in DEFAULT_LANGUAGE.items():
+        value = str(lang.get(key, default)).strip().lower()
+        if not _LANGUAGE_CODE.match(value):
+            _config_error(f"source {name!r}: language.{key} must be a two-letter "
+                          f"ISO 639-1 code such as \"en\" or \"it\", got {lang.get(key)!r}")
+        out[key] = value
+    return out
+
+
 def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
     """Validate and normalize a `type=codebase` source entry."""
     path_raw = raw.get("path")
@@ -251,6 +283,7 @@ def _validate_codebase_source(name: str, raw: dict, base_dir: Path) -> dict:
         "watcher": watcher,
         "git_integration": git_integration,
         "graph": graph,
+        "language": _language(name, raw),
     }
 
 

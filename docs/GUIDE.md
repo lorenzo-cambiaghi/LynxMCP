@@ -681,6 +681,7 @@ client will recognise in its tool list (e.g. `myproject`, `unityDoc`,
 | `watcher.enabled` | Set to `false` to disable the live file watcher for this source. |
 | `watcher.debounce_seconds` | Time to wait after a save before re-indexing. Default `2.0`. |
 | `git_integration.enabled` | When `true`, drift / status reports include the last indexed git commit for this source. |
+| `language` | What the code and its comments are written in, as two-letter ISO 639-1 codes, such as `{"code": "en", "comments": "it"}`. Both default to English. Lynx tells the agent at startup to write its search queries in the code's language, whatever language you write to it in: a query in another language finds little. Set it when the code or its comments are not in English. |
 
 To use a different config location, three options in priority order:
 
