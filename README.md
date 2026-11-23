@@ -120,11 +120,11 @@ One `config.json` holds all sources. You can scope any editor window to a subset
 </p>
 
 <p align="center">
-  <a href="docs/GUIDE.md#lynxmanager-guided-setup-web-ui-diagnostics-new-in-v09">
-    <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/readmeData/LynxManagerV.gif" alt="LynxManager: guided setup, query playground, and diagnostics in the browser" width="820">
+  <a href="docs/MANAGER.md">
+    <img src="https://raw.githubusercontent.com/lorenzo-cambiaghi/LynxMCP/main/docs/img/manager/tour.gif" alt="LynxManager: add a project, search it and connect your editor, in the browser" width="820">
   </a>
   <br>
-  <sub>LynxManager: guided setup and one-click editor connection in Simple mode; full config editor, playground and diagnostics in Expert mode.</sub>
+  <sub>LynxManager in Simple mode: add a project, try a search, connect your editor. <a href="docs/MANAGER.md">The full tour</a> covers Expert mode too.</sub>
 </p>
 
 ---
@@ -262,6 +262,7 @@ Search and the code graph are also exposed over a local HTTP API (`/api/v1`) wit
 
 | | |
 |---|---|
+| [LynxManager](docs/MANAGER.md) | The web UI step by step, with pictures of the current version |
 | [Full guide](docs/GUIDE.md) | Configuration, codebase / webdoc / PDF sources, retrieval internals, tool profiles, hooks, air-gapped setup |
 | [Outline mode](docs/OUTLINE.md) | Signatures instead of bodies: 2.4× smaller output, measured data & chart |
 | [Coral](docs/CORAL.md) | Code search and code graph as typed tools in Coral 1.x |

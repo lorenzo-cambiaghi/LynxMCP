@@ -59,6 +59,12 @@ does not exist, `status` answers `"ok": false` and exits with 1.
 The LynxManager Playground takes the search mode, identifiers and outline,
 and a file for `describe_symbol`. A source can be removed from its page.
 
+`docs/MANAGER.md`, the LynxManager guide, with pictures of the current UI.
+`scripts/manager_guide.py` takes them by driving the real interface in a
+headless browser on a sample project (first launch, adding a project, a
+search, connecting an editor, the Expert pages) and writes the guide and the
+README's tour from the same scenes, so they change when the UI does.
+
 ### Changed
 
 Code ranks above tests, data and docs. After fusion, the score of a test,
@@ -131,6 +137,11 @@ and ignores. A running build shows on its source's page, and a build and a
 reset of the same source can no longer start together. Config saves from
 the page go through the same lock as the rest of Lynx, and a save that
 fails shows why. The Update page shows the command's output.
+
+The first project added from LynxManager is built. Right after it was
+added, the build and the page's own requests each opened the new index at
+once, and the manager reported it as corrupt; now one request opens it and
+the others wait for it.
 
 Benchmark scripts now always re-check existing indexes against the current
 chunker and count graph and grep calls consistently.
