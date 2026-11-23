@@ -339,8 +339,6 @@ def main():
         "  agent session: agents grep with narrower patterns, and read the files",
         "  they change whatever found them.",
         "- Tokens approximated as chars/4.",
-        "- The dense half uses approximate nearest-neighbour search (HNSW): a",
-        "  rebuilt index can move a borderline task by a few ranks.",
         "",
         "## What one result carries",
         "",
