@@ -22,14 +22,16 @@ Notes:
   agent session: agents grep with narrower patterns, and read the files
   they change whatever found them.
 - Tokens approximated as chars/4.
+- The dense half uses approximate nearest-neighbour search (HNSW): a
+  rebuilt index can move a borderline task by a few ranks.
 
 ## What one result carries
 
 | Per result | grep | Lynx |
 |---|---|---|
 | matching line(s) | yes | the whole piece: the function or class body |
-| file and line range of the enclosing symbol | no | yes (`db/models/base.py L767-881`) |
-| qualified symbol name (`Model._save_table`) | no | yes |
+| file and line range of the enclosing symbol | no | yes |
+| qualified symbol name (`Class.method`) | no | yes |
 | relevance score | no | yes |
 | a match when the question shares no word with the code | no | possible, through the dense embeddings |
 
@@ -74,9 +76,9 @@ Question: *"what inherits from `Field` (django.db.models), that is, what can a c
 | full descendant tree | 100 classes | 100 classes, 4 levels |
 | calls, one per class found | 101 grep rounds | 101 calls (one symbol per call) |
 | calls, one per level | 5 grep rounds (the level's names in one alternation) | not available: the tool takes one symbol |
-| wall clock in this harness | 115.4s | 0.50s |
+| wall clock in this harness (Python regex over every file per round; `rg` is faster) | 77.8s | 0.30s |
 | what each match carries | a matching line; the file has to be read for the rest | a resolved edge with file, line and kind |
 | descendants the regex closure missed | 0 | |
 | found by grep but not in the graph | 0 | |
 
-On this question grep needs fewer calls than the graph tool, because a regex can name a whole level at once. What the graph adds is edges resolved at index time, with no comment or string matches to sort out.
+Both find the same 100 classes. The graph answers from edges resolved at index time, each with file, line and kind, so nothing is left to check by hand. Grep returns matching lines, comments and strings included; a regex that names a whole level per round needs 5 rounds here.

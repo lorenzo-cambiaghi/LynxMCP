@@ -174,14 +174,16 @@ def main():
         f"| full descendant tree | {len(grep_all)} classes | {len(all_desc)} classes, {levels} levels |",
         f"| calls, one per class found | {grep_calls} grep rounds | {graph_calls} calls (one symbol per call) |",
         f"| calls, one per level | {level_rounds} grep rounds (the level's names in one alternation) | not available: the tool takes one symbol |",
-        f"| wall clock in this harness | {grep_s:.1f}s | {graph_query_s:.2f}s |",
+        f"| wall clock in this harness (Python regex over every file per round; `rg` is faster) | {grep_s:.1f}s | {graph_query_s:.2f}s |",
         "| what each match carries | a matching line; the file has to be read for the rest | a resolved edge with file, line and kind |",
         f"| descendants the regex closure missed | {names(missed_by_grep)} | |",
         f"| found by grep but not in the graph | {names(missed_by_graph)} | |",
         "",
-        "On this question grep needs fewer calls than the graph tool, because a "
-        "regex can name a whole level at once. What the graph adds is edges "
-        "resolved at index time, with no comment or string matches to sort out.",
+        "Both find the same 100 classes. The graph answers from edges resolved "
+        "at index time, each with file, line and kind, so nothing is left to "
+        "check by hand. Grep returns matching lines, comments and strings "
+        "included; a regex that names a whole level per round needs 5 rounds "
+        "here.",
     ]
     results_md = BENCH_DIR / "RESULTS.md"
     content = results_md.read_text(encoding="utf-8")

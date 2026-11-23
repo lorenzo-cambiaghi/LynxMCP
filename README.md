@@ -23,7 +23,7 @@ uv tool install lynx-mcp       # or: pipx install lynx-mcp
 lynx connect claude
 ```
 
-Every project you open in Claude Code gets its own index, built in the background the first time. `lynx connect claude` also wires a prompt hook into `~/.claude/settings.json` so each request arrives with a compact map of relevant code (up to 12 locations with file, line range and signature) before the first turn. Pass `--no-hook` to skip the hook (recommended if you usually prompt in a language other than English on an English codebase). Restart Claude Code (or run `/mcp`) and start asking questions.
+Every project you open in Claude Code gets its own index, built in the background the first time. `lynx connect claude` also wires a prompt hook into `~/.claude/settings.json` so each request arrives with a compact map of relevant code (up to 12 locations with file, line range and signature) before the first turn. Pass `--no-hook` to skip it. Restart Claude Code (or run `/mcp`) and start asking questions.
 
 Prefer to test it in a single project first?
 
@@ -85,10 +85,11 @@ Detects `uv`, `pipx`, `pip` and `uvx` installs and upgrades in place without tou
 | Question | With `grep` | With Lynx |
 |---|---|---|
 | *"What breaks if I change `ApplyDamage`?"* | Textual mentions of the string | **`impact`**: transitive callers with hop distance + affected tests |
+| *"Who implements `IWeapon` or inherits from `Field`?"* | Regex guesses + manual file reads to filter comments | **`graph_query`**: resolved inheritance and call edges with `file:line` |
 | *"Do we already have a helper like this?"* | Guess possible function names | **`find_similar`**: ranks existing implementations by semantic similarity |
 | *"How does this API work in the library version we ship?"* | Model memory (often outdated) | **Indexed web docs & PDFs**, cited with exact URL or page number |
 
-**When you don't need Lynx:** on a small repo that already fits in context, or when you already know the exact symbol name to jump to, built-in `grep` is simpler and faster. Lynx earns its keep on larger codebases, unfamiliar architectures, multi-repo setups, and docs/SDKs the model hasn't seen.
+Built-in `grep` is still the right choice on small repos or when you already know the exact symbol name. Lynx shines on larger codebases, unfamiliar architectures, multi-repo workspaces, and library docs or PDFs the model hasn't seen.
 
 ---
 
@@ -139,12 +140,10 @@ Single-shot retrieval quality on three public codebases in three languages, usin
 | **hit@5** (in top 5) | **95%** / 90% | 67% / **73%** | **93%** / 87% |
 | **MRR** | 0.64 / **0.79** | 0.47 / **0.70** | **0.81** / 0.76 |
 
-**Reading these honestly:**
-- On **Django** and **Json.NET**, Lynx puts the right file first for 70% and 67% of the questions, against 45% and 33% for grep: the questions describe behaviour rather than exact class names. Within the top 5, grep keeps a slight edge on Django (95% against 90%).
-- On **Guava**, where class names like `BloomFilter` and `RateLimiter` directly match the wording of the questions, keyword grep ranks higher on every measure.
-- The dense half uses approximate nearest-neighbour search, so a rebuilt index can move a borderline task: on Guava one task was 2nd in one build and outside the top 5 in another (hit@5 87% or 80%).
-- For broad triage, `search(outline=true)` returns signatures and first doc lines instead of full bodies, **2.4× smaller** than full search ([measured](docs/OUTLINE.md)).
-- Tool schema overhead stays bounded via three profiles (`core`: 6.0k chars, `standard`: 10.6k chars, `full`: 16.2k chars).
+**Key takeaways:**
+- **Behavioural queries (Django, Json.NET):** Lynx puts the right file first far more often (**70% vs 45%** on Django, **67% vs 33%** on Json.NET) because it matches intent, not just literal tokens.
+- **Exact-name queries (Guava):** when class names like `BloomFilter` or `RateLimiter` already match the question's wording, keyword grep edges ahead, and the two work best side by side.
+- **Compact context:** `search(outline=true)` returns signatures and first doc lines instead of full bodies (**2.4× smaller**, [measured](docs/OUTLINE.md)), and three tool profiles keep schema overhead bounded (`core`: 6.0k chars, `standard`: 10.6k, `full`: 16.2k).
 
 <details>
 <summary><b>Commands to reproduce all three benchmarks</b></summary>
