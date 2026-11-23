@@ -165,12 +165,30 @@ def serving_info(storage_dir, is_owner) -> dict:
     }
 
 
+# One SourceManager at a time. FastAPI runs the plain route functions in a
+# thread pool, and after a source is added the build request and the page's
+# own requests arrive together. Each of them used to build a manager of its
+# own and open the new index at the same moment; chromadb's per-path client
+# cache then handed one a client still starting (AttributeError
+# 'RustBindingsAPI' ... 'bindings') and another an entry already removed
+# (KeyError), both reported as a corrupt index, so the first project added
+# from the UI was never built. Found by scripts/manager_guide.py, 2026-11-23.
+_MANAGER_LOCK = threading.RLock()
+
+
 def _get_manager(app):
     """Lazy-construct the SourceManager. Cached on app.state so subsequent
     requests are cheap. Errors are stashed on app.state.manager_error so
     pages can surface them gracefully (instead of every request raising)."""
     if app.state.manager is not None:
         return app.state.manager
+    with _MANAGER_LOCK:
+        return _build_manager_locked(app)
+
+
+def _build_manager_locked(app):
+    if app.state.manager is not None:
+        return app.state.manager  # built by the request we waited for
     if app.state.manager_error is not None:
         # We already tried and failed — don't retry on every request
         return None
@@ -210,10 +228,11 @@ def _drop_manager(app) -> None:
     again, and would otherwise find a live claim with our own pid on it,
     take it for another Lynx process and refuse every build until the UI is
     restarted."""
-    if app.state.manager is not None:
-        app.state.manager.close()
-    app.state.manager = None
-    app.state.manager_error = None
+    with _MANAGER_LOCK:
+        if app.state.manager is not None:
+            app.state.manager.close()
+        app.state.manager = None
+        app.state.manager_error = None
 
 
 def _dispose_manager(app) -> None:

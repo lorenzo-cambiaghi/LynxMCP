@@ -29,6 +29,7 @@ Covered:
   7. /api/manager/reload releases them too (a reload that keeps the old
      locks alive defeats its own purpose) and redirects
   8. /api/manager/reload lets a manager that failed to build be retried
+  9. requests that arrive together build one manager, not one each
 """
 from __future__ import annotations
 
@@ -242,3 +243,41 @@ def test_reload_lets_a_failed_manager_be_retried(app, cache_clears):
 
     assert r.status_code == 200
     assert app.state.manager_error is None
+
+
+def test_concurrent_requests_build_one_manager(app, monkeypatch):
+    """After a source is added from the UI, the build request and the page's
+    own requests reach `_get_manager` together. Each used to build a manager
+    and open the new index at once, which chromadb reported as a corrupt
+    index, so the first project added from the UI was never built. One
+    request builds; the others wait and get the same manager."""
+    import threading
+    import time
+
+    import lynx.source_manager as source_manager
+    from lynx.manager.ui.app import _get_manager
+
+    made = []
+
+    class _SlowManager(_LoadedManager):
+        def __init__(self, cfg):
+            super().__init__()
+            made.append(self)
+            time.sleep(0.2)  # opening the indexes takes a while
+
+    monkeypatch.setattr(source_manager, "SourceManager", _SlowManager)
+    gate = threading.Barrier(8)
+    got = []
+
+    def request():
+        gate.wait()
+        got.append(_get_manager(app))
+
+    threads = [threading.Thread(target=request) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(made) == 1
+    assert len(got) == 8 and all(m is made[0] for m in got)
