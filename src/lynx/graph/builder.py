@@ -794,6 +794,8 @@ class GraphLayer:
         caller = rc["caller"]
         owner = cs["owner"].get(caller)
         recv = rc.get("recv")
+        if recv == "typeref":
+            return self._resolve_csharp_type_ref(rc, file_path, cs, owner)
         start = []
         if recv in ("self", "this", "base") and owner is not None:
             mine = self._type_key(owner)
@@ -855,6 +857,38 @@ class GraphLayer:
             })
             added += 1
         return added
+
+    def _resolve_csharp_type_ref(self, rc: dict, file_path: str, cs: dict, owner) -> int:
+        """`new T()`, `typeof(T)`, a generic argument, a parameter, return,
+        field or property type: a `uses_type` edge to the one type the file
+        can see by that name (to its first declaration when it is partial)."""
+        caller = rc["caller"]
+        scope = owner if owner is not None else (
+            caller if (self._nodes_by_id.get(caller) or {}).get("kind") == "class" else None)
+        if scope is None:
+            return 0
+        types = [c for c in (self._symbol_index.get(rc["callee_name"].lower()) or [])
+                 if (self._nodes_by_id.get(c) or {}).get("kind") == "class"
+                 and (self._nodes_by_id.get(c) or {}).get("subkind") not in CSHARP_NAMESPACE_KINDS]
+        if not types:
+            return 0
+        types = self._csharp_base_candidates({"child": scope, "base_name": rc["callee_name"]},
+                                             file_path, types, cs["usings"])
+        if not types or len({self._type_key(t) for t in types}) != 1:
+            return 0
+        target = min(types, key=lambda t: ((self._nodes_by_id.get(t) or {}).get("file") or "", t))
+        if target in (caller, scope) or self._graph.has_edge(caller, target):
+            return 0
+        self._add_edge_inplace({
+            "source": caller,
+            "target": target,
+            "relation": "uses_type",
+            "confidence": "resolved",
+            "ref": rc.get("ref"),
+            "from_file": file_path,
+            "from_line": rc.get("line"),
+        })
+        return 1
 
     def _imported_files(self) -> dict:
         """file path -> the project files it imports (resolved imports), and
@@ -1109,7 +1143,11 @@ class GraphLayer:
                 confidence = "resolved" if len({self._type_key(c) for c in candidates}) == 1 else "ambiguous"
                 for target in candidates:
                     if self._graph.has_edge(ri["child"], target):
-                        continue
+                        # One edge per pair: a field of the base's type does
+                        # not hide the inheritance.
+                        if self._graph.edges[ri["child"], target].get("relation") != "uses_type":
+                            continue
+                        self._graph.remove_edge(ri["child"], target)
                     edge = {
                         "source": ri["child"],
                         "target": target,

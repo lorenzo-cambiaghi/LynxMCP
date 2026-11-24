@@ -1963,6 +1963,8 @@ def _local_function_names(fn_node, source: bytes) -> frozenset:
 
 _CS_TYPE_DECLS = ("class_declaration", "struct_declaration", "record_declaration",
                   "record_struct_declaration", "interface_declaration")
+METHOD_LIKE_CS = frozenset({"method_declaration", "constructor_declaration", "property_declaration",
+                            "local_function_statement", "operator_declaration", "indexer_declaration"})
 
 
 def _cs_type_name(node, source: bytes) -> Optional[str]:
@@ -2064,6 +2066,50 @@ def _cs_member_types(fn_node, source: bytes, cache: dict) -> dict:
     return out
 
 
+def _cs_type_ref(source_id: str, type_node, kind: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    name = _cs_type_name(type_node, source)
+    if name:
+        raw_calls.append({"caller": source_id, "callee_name": name, "is_member": False, "file": file_path,
+                          "line": type_node.start_point[0] + 1, "recv": "typeref", "ref": kind})
+
+
+def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    """The types a C# body names in `new T()`, `typeof(T)` and generic
+    arguments (`Add<Bullets>()`, `GetService<T>()`): the resolver turns them
+    into `uses_type` edges, so a type registered by its name is not an orphan."""
+    t = node.type
+    if t == "object_creation_expression":
+        _cs_type_ref(source_id, node.child_by_field_name("type"), "new", source, raw_calls, file_path)
+    elif t == "typeof_expression":
+        _cs_type_ref(source_id, node.child_by_field_name("type"), "typeof", source, raw_calls, file_path)
+    elif t == "type_argument_list":
+        for arg in node.named_children:
+            _cs_type_ref(source_id, arg, "generic", source, raw_calls, file_path)
+
+
+def _cs_signature_refs(fn, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    """A C# method's parameter and return types: what it depends on."""
+    ret = fn.child_by_field_name("returns")
+    if ret is not None:
+        _cs_type_ref(source_id, ret, "signature", source, raw_calls, file_path)
+    plist = next((c for c in fn.children if c.type == "parameter_list"), None)
+    for p in (plist.named_children if plist is not None else ()):
+        if p.type == "parameter":
+            _cs_type_ref(source_id, p.child_by_field_name("type"), "signature", source, raw_calls, file_path)
+
+
+def _cs_member_refs(type_node, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    """A C# type's field and property types: what its state depends on."""
+    body = next((c for c in type_node.children if c.type == "declaration_list"), None)
+    for m in (body.named_children if body is not None else ()):
+        if m.type == "property_declaration":
+            _cs_type_ref(source_id, m.child_by_field_name("type"), "member", source, raw_calls, file_path)
+        elif m.type in ("field_declaration", "event_field_declaration"):
+            var = next((x for x in m.named_children if x.type == "variable_declaration"), None)
+            if var is not None:
+                _cs_type_ref(source_id, var.child_by_field_name("type"), "member", source, raw_calls, file_path)
+
+
 def _cs_receiver(call_node, source: bytes, declared: dict) -> tuple:
     """What a C# call is made on: ("self",) for `Foo()`, ("this",), ("base",),
     ("type", T) for a variable, field or property of a known type,
@@ -2108,6 +2154,8 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
     body can see and their types) every call goes to the resolver with what
     it is made on, which decides by type, not by name."""
     for child in node.children:
+        if cs_declared is not None:
+            _cs_type_refs(child, caller_id, source, raw_calls, file_path)
         # An import inside a function (Python's lazy `from .x import y`, kept
         # out of module load for start-up time) is the file's import all the
         # same. The declaration walker never entered function bodies, so on
@@ -2450,8 +2498,22 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
         declared = None
         if lang_key == "c_sharp":
             declared = _cs_declared_types(body, source, _cs_member_types(body, source, members_cache))
+            _cs_signature_refs(body, caller_id, source, raw_calls, abs_path_norm)
         _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm,
                     _local_function_names(body, source), file_id, declared)
+    if lang_key == "c_sharp":
+        # Field and property types, from each type declaration to its node.
+        by_line = {(n["start_line"], n["label"].rsplit(".", 1)[-1]): n["id"] for n in nodes
+                   if n.get("kind") == "class" and n.get("subkind") not in CSHARP_NAMESPACE_KINDS}
+        stack = [tree.root_node]
+        while stack:
+            n = stack.pop()
+            if n.type in _CS_TYPE_DECLS:
+                nid = by_line.get((n.start_point[0] + 1, _name_of(n, source) or ""))
+                if nid:
+                    _cs_member_refs(n, nid, source, raw_calls, abs_path_norm)
+            if n.type not in METHOD_LIKE_CS:
+                stack.extend(n.children)
 
     # Every import the file tries, resolved or not, travels on its file node:
     # when another file appears or goes, the builder finds the files whose

@@ -18,6 +18,13 @@ in, and `list_sources` shows it. On a private C# library, requests in
 Italian found the right file in the first five for none of the 65 that
 named no identifier; the same requests in English, for 32.
 
+C# type references are graph edges, `uses_type`, resolved by the same
+namespace and `using` rules as bases: `new T()`, `typeof(T)`, generic
+arguments (`Add<Bullets>()`, `GetService<T>()`), parameter and return
+types, field and property types. A type registered by its name is no
+longer an orphan, and who depends on a type no longer needs a text
+search. On the 1.4-million-line library: 99,177 edges.
+
 ### Fixed
 
 Base classes are resolved the way the language resolves them, not by name

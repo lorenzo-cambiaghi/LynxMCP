@@ -96,6 +96,30 @@ def test_a_csharp_call_binds_by_the_receivers_type_not_by_name(tmp_path):
     assert _calls(G, "Match.Tick") == ["LoopExtensions.AddBullets", "Server.Poll", "Server.Run", "Systems.Add"]
 
 
+def test_a_type_named_by_new_typeof_generics_and_signatures_is_used(tmp_path):
+    # A system registered as `Add<Rain>()` or `typeof(Fog)` is used even if
+    # nothing calls its methods: those references are `uses_type` edges.
+    G = _graph(tmp_path, {
+        "Weather/Kinds.cs": ("namespace Weather;\npublic class Rain { }\npublic class Fog { }\npublic class Wind { }\n"
+                             "public class Hail { }\npublic class Snow { }\n"),
+        "Other/Rain.cs": "namespace Other;\npublic class Rain { }\n",
+        "Setup.cs": ("using Weather;\nnamespace Game;\npublic class Setup {\n  private Snow _snow;\n"
+                     "  public Hail Make(Wind w) {\n    systems.Add<Rain>();\n    var t = typeof(Fog);\n"
+                     "    return new Hail();\n  }\n}\n"),
+    })
+    used = sorted((G.nodes[u].get("label"), G.nodes[v].get("label"), (G.nodes[v].get("file") or "").replace("\\", "/").split("/")[-2])
+                  for u, v, d in G.edges(data=True) if d.get("relation") == "uses_type")
+    assert used == [("Setup", "Snow", "Weather"), ("Setup.Make", "Fog", "Weather"), ("Setup.Make", "Hail", "Weather"),
+                    ("Setup.Make", "Rain", "Weather"), ("Setup.Make", "Wind", "Weather")], used
+
+
+def test_a_field_of_the_base_type_does_not_hide_the_inheritance(tmp_path):
+    G = _graph(tmp_path, {
+        "Node.cs": "namespace Tree;\npublic class Node { }\npublic class Group : Node { private Node _first; }\n",
+    })
+    assert _bases(G, "Group") == [("Node", "resolved")]
+
+
 def test_an_extension_block_holds_methods_not_one_long_function(tmp_path):
     G = _graph(tmp_path, {
         "Ext.cs": ("namespace Util;\npublic static class SizeExtensions {\n"
