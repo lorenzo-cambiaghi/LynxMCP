@@ -23,8 +23,9 @@ namespace and `using` rules as bases: `new T()`, `typeof(T)`, generic
 arguments (`Add<Bullets>()`, `GetService<T>()`), parameter and return
 types, field and property types. A type registered by its name is no
 longer an orphan, and who depends on a type no longer needs a text
-search. On the 1.4-million-line library: 99,177 edges. Static member
-access (`Kind.Rain`, `JsonContext.Default`) counts too.
+search. Static member access (`Kind.Rain`, `JsonContext.Default`)
+counts too. On the 1.4-million-line library: 134,499 edges, 36,098 of
+them from static member access.
 
 `graph_query` `audit` (symbol = a C# package folder) says where the
 package breaks SOLID: types far larger than the codebase's own norm and
@@ -85,7 +86,7 @@ only when one visible type declares the name. `Add<T>()` is no longer
 lost, and a call on a type outside the codebase (`Assert`, `string`) gets
 no edge. On the 1.4-million-line library the call edges went from
 1,115,634, 91% of them ambiguous (a plain `Foo()` was linked to every
-method named `Foo`, 46 on average), to 145,721, all resolved.
+method named `Foo`, 46 on average), to 145,320, none ambiguous.
 
 ## 1.12.0 - 2026-11-23
 
