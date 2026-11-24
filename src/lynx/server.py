@@ -329,6 +329,11 @@ def _compose_instructions(manager, tools, profile, *, detail: str) -> str:
             f"Who calls X, what breaks if X changes: {' / '.join(structural)}; they read "
             "the code graph, which text search cannot see. "
         )
+    if caps["has_graph"] and has("graph_query"):
+        # E35: on six feature tasks no session asked the graph, and neither
+        # arm found the extension points the author used.
+        parts.append("Adding a type: list the base's subclasses (`graph_query` subclasses "
+                     "with depth) and follow how one is built and registered. ")
     if has("find_similar"):
         parts.append("Before writing a new helper, run `find_similar` on your draft: it "
                      "returns the code that already does it. ")

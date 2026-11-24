@@ -33,6 +33,12 @@ jobs:
       - name: Run pytest
         run: pytest tests -q
 
+      # The tests/test_*.py files with a main() are scripts conftest keeps out
+      # of pytest; the runner finds them the same way and runs each one. Three
+      # of them were broken for a day in November 2026 and nothing noticed.
+      - name: Run the script suites
+        run: python tests/run_script_suites.py
+
       - name: CLI smoke test
         run: |
           lynx --version

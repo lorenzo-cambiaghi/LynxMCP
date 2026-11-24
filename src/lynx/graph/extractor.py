@@ -2157,7 +2157,7 @@ def _cs_receiver(call_node, source: bytes, declared: dict) -> tuple:
 def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 local_index: dict, edges: list, raw_calls: list, file_path: str,
                 local_names: frozenset = frozenset(), file_id: Optional[str] = None,
-                cs_declared: Optional[dict] = None) -> None:
+                cs_declared: Optional[dict] = None, cs_labels: Optional[dict] = None) -> None:
     """Walk a function body, emitting call edges (resolved or raw), and the
     file's imports written inside it. For C# (`cs_declared`, the names the
     body can see and their types) every call goes to the resolver with what
@@ -2186,7 +2186,14 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 callee_name, is_member = extracted
                 callee_name = callee_name.split("<", 1)[0].strip()
                 recv = _cs_receiver(child, source, cs_declared)
-                if callee_name:
+                local = local_index.get(callee_name.lower()) if recv[0] in ("self", "this") else None
+                same_type = (local is not None and local != caller_id and cs_labels is not None
+                             and cs_labels.get(local, "").rsplit(".", 1)[0] == cs_labels.get(caller_id, "").rsplit(".", 1)[0])
+                if same_type:
+                    # `Foo()` on a method of the caller's own type, in this file.
+                    edges.append({"source": caller_id, "target": local, "relation": "calls",
+                                  "confidence": "extracted"})
+                elif callee_name:
                     rc = {
                         "caller": caller_id,
                         "callee_name": callee_name,
@@ -2230,7 +2237,7 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 #   navigation view, so emit nothing rather than guess.
         # Recurse into the children — body / block / expression-statement etc.
         _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path,
-                    local_names, file_id, cs_declared)
+                    local_names, file_id, cs_declared, cs_labels)
 
 
 # ---------------------------------------------------------------------------
@@ -2503,13 +2510,14 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     # Second pass: walk every function body collecting call edges.
     raw_calls: list = []
     members_cache: dict = {}
+    labels = {n["id"]: n["label"] for n in nodes} if lang_key == "c_sharp" else None
     for caller_id, body in function_bodies:
         declared = None
         if lang_key == "c_sharp":
             declared = _cs_declared_types(body, source, _cs_member_types(body, source, members_cache))
             _cs_signature_refs(body, caller_id, source, raw_calls, abs_path_norm)
         _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm,
-                    _local_function_names(body, source), file_id, declared)
+                    _local_function_names(body, source), file_id, declared, labels)
     if lang_key == "c_sharp":
         # Field and property types, from each type declaration to its node.
         by_line = {(n["start_line"], n["label"].rsplit(".", 1)[-1]): n["id"] for n in nodes

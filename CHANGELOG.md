@@ -42,6 +42,19 @@ named two classes of 2,376 and 1,943 lines with the jobs in their names
 (broadcast, drain, frame, peer, handshake, resume), three handshake
 methods over 90 lines and a transport whose `ConnectAsync` only throws.
 
+### Changed
+
+With the graph on, the startup instructions send a new type to its
+siblings: list the base's subclasses with `graph_query` and `depth`, and
+follow how one is built and registered. On six feature tasks of a private
+C# library no session asked the graph, and neither arm found the
+extension points the author had used.
+
+CI runs the script suites too (the `tests/test_*.py` files with a `main()`
+that pytest leaves out), through `tests/run_script_suites.py`, which finds
+them as conftest does; the six that need the embedding model run where it
+is installed.
+
 ### Fixed
 
 Base classes are resolved the way the language resolves them, not by name

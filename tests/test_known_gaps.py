@@ -99,14 +99,12 @@ class _Manager:
         self.backends = {"lib": _Backend()}
 
 
-@pytest.mark.xfail(strict=True, reason="T2: the instructions do not send new types to the graph")
 def test_t2_instructions_send_a_new_type_to_the_graph():
     from lynx.server import _build_instructions
     text = _build_instructions(_Manager())
     assert re.search(r"subclasses[^.]*depth", text), "no route from 'add a type' to graph_query subclasses"
 
 
-@pytest.mark.xfail(strict=True, reason="T6: CI runs pytest only")
 def test_t6_every_script_suite_runs_in_ci():
     """One runner finds the script suites with the probe conftest.py uses and
     runs every one but the three that open the real config; CI calls it. A
