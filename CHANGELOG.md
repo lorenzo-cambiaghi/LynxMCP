@@ -60,8 +60,11 @@ extension points the author had used.
 
 CI runs the script suites too (the `tests/test_*.py` files with a `main()`
 that pytest leaves out), through `tests/run_script_suites.py`, which finds
-them as conftest does; the six that need the embedding model run where it
-is installed.
+them as conftest does; the three that need the embedding model run where
+it is installed, and the six that need a configured index are left out.
+Every suite runs with `RAG_CONFIG_PATH` naming a file that does not
+exist, so none can fall back on `./config.json` and open the real
+indexes, and with UTF-8 output.
 
 ### Fixed
 

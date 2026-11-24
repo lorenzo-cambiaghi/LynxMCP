@@ -458,9 +458,10 @@ def main() -> int:
         if r.status_code != 200:
             print(f"[test] FAIL [22/27]: build returned {r.status_code}: {r.text[:200]}")
             return 22
-        # The widget is `<div id="job-XXXXXXXX" hx-get="/api/jobs/XXXXXXXX/widget...">`,
-        # polling itself until the job is over.
-        if 'id="job-' not in r.text or "/widget" not in r.text:
+        # The widget is `<div id="job-XXXXXXXX" ...>`: polling itself through
+        # `/api/jobs/XXXXXXXX/widget` while the job runs, or already done when
+        # the stub build finished first (CI on Linux, 2026-11-24).
+        if 'id="job-' not in r.text:
             print(f"[test] FAIL [22/27]: build response missing widget shape: {r.text[:300]}")
             return 22
         import re
