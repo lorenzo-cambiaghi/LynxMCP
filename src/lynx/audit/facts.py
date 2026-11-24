@@ -31,6 +31,24 @@ BRANCH_NODES = {"if_statement", "for_statement", "foreach_statement", "while_sta
 TYPE_TEST_NODES = {"is_pattern_expression", "as_expression", "cast_expression", "declaration_pattern",
                    "type_pattern", "recursive_pattern"}
 NOT_IMPLEMENTED = ("NotImplementedException", "NotSupportedException")
+# Calls that change the collection they are made on.
+MUTATORS = {"Add", "AddRange", "Remove", "RemoveAt", "RemoveAll", "RemoveRange", "RemoveWhere", "Clear",
+            "Insert", "InsertRange", "TryAdd", "TryRemove", "TryUpdate", "AddOrUpdate", "GetOrAdd",
+            "Enqueue", "Dequeue", "TryDequeue", "Push", "Pop", "TryPop", "Sort", "Reverse",
+            "UnionWith", "ExceptWith", "IntersectWith", "SymmetricExceptWith", "AddFirst", "AddLast",
+            "RemoveFirst", "RemoveLast"}
+
+
+def _last_name(node, src: bytes) -> Optional[str]:
+    """`X`, `this.X`, `Type.X`: X."""
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return _text(node, src)
+    if node.type == "member_access_expression":
+        n = node.child_by_field_name("name")
+        return _text(n, src) if n is not None else None
+    return None
 
 
 @dataclass
@@ -44,6 +62,8 @@ class Method:
     body: str              # "normal", "empty", "throws" (only throws NotImplemented/NotSupported), "none"
     names: set             # identifiers used in the body
     type_tests: int
+    writes: set = field(default_factory=set)   # names the body changes: `X.Add(..)`, `X[k] = v`, `X = ..`
+    explicit: bool = False                     # `void IFoo.Bar()`: an interface member, private by syntax
 
 
 @dataclass
@@ -77,6 +97,7 @@ class TypeDecl:
     properties: list = field(default_factory=list)
     switches: list = field(default_factory=list)
     members: int = 0       # declared members (methods, properties, events, indexers)
+    writes: set = field(default_factory=set)   # names its members change after construction (static constructors left out)
 
 
 def _text(node, src: bytes) -> str:
@@ -138,9 +159,34 @@ def _body_kind(body, src: bytes) -> str:
     return "normal"
 
 
+def _writes(node, src: bytes) -> set:
+    """The names a body changes: `X.Add(..)` and the other mutators,
+    `X[k] = v`, `X = ..` (with `this.` or a type in front, too)."""
+    out = set()
+    for n in _walk(node):
+        t = n.type
+        if t == "invocation_expression":
+            fn = n.child_by_field_name("function")
+            if fn is not None and fn.type == "member_access_expression":
+                verb = fn.child_by_field_name("name")
+                if verb is not None and _text(verb, src) in MUTATORS:
+                    target = _last_name(fn.child_by_field_name("expression"), src)
+                    if target:
+                        out.add(target)
+        elif t == "assignment_expression":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type == "element_access_expression":
+                left = left.child_by_field_name("expression")
+            target = _last_name(left, src)
+            if target:
+                out.add(target)
+    return out
+
+
 def _method(node, src: bytes, name: Optional[str] = None) -> Method:
     body = _body_of(node)
     branches, tests, names = 0, 0, set()
+    writes = _writes(body, src) if body is not None else set()
     if body is not None:
         for n in _walk(body):
             t = n.type
@@ -160,7 +206,8 @@ def _method(node, src: bytes, name: Optional[str] = None) -> Method:
     params = sum(1 for c in plist.named_children if c.type == "parameter") if plist is not None else 0
     return Method(name=name or _name(node, src) or "?", line=node.start_point[0] + 1, end=node.end_point[0] + 1,
                   params=params, branches=branches, modifiers=_modifiers(node, src), body=_body_kind(body, src),
-                  names=names, type_tests=tests)
+                  names=names, type_tests=tests, writes=writes,
+                  explicit=any(c.type == "explicit_interface_specifier" for c in node.children))
 
 
 def _bases(node, src: bytes) -> list:
@@ -196,9 +243,13 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
                 if inner.type in METHOD_NODES:
                     decl.methods.append(_method(inner, src))
                     decl.members += 1
+                    decl.writes |= decl.methods[-1].writes
         elif t in METHOD_NODES:
-            decl.methods.append(_method(m, src))
+            meth = _method(m, src)
+            decl.methods.append(meth)
             decl.members += 1
+            if not (t == "constructor_declaration" and "static" in meth.modifiers):
+                decl.writes |= meth.writes
         elif t == "field_declaration":
             mods = _modifiers(m, src)
             var = next((c for c in m.children if c.type == "variable_declaration"), None)
@@ -213,6 +264,9 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
                                              modifiers=mods, type=typ_text, attributes=attrs))
         elif t in ("property_declaration", "event_declaration", "event_field_declaration", "indexer_declaration"):
             decl.members += 1
+            for acc in m.children:
+                if acc.type in ("accessor_list", "arrow_expression_clause"):
+                    decl.writes |= _writes(acc, src)
             pname = _name(m, src)
             if pname:
                 decl.properties.append((pname, _modifiers(m, src)))

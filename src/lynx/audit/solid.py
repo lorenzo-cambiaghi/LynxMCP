@@ -265,8 +265,16 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
         if first.kind == "interface" and iface_members > big_iface:
             findings.append(Finding("I", f"{first.name} is a wide interface", at,
                                     f"{iface_members} members (95% of this codebase's interfaces have {big_iface} or fewer)", key, 2.0))
+        writes = set().union(*(t.writes for t in ts))
         for t in ts:
             for m in t.methods:
+                # A private helper that throws is how a type says "not here";
+                # only a member a caller can reach through a contract breaks
+                # substitution.
+                reachable = (m.explicit or first.kind == "interface"
+                             or m.modifiers & {"public", "protected", "internal", "override", "virtual", "abstract"})
+                if not reachable:
+                    continue
                 if m.body == "throws" or (m.body == "empty" and "override" in m.modifiers):
                     what = "only throws NotImplemented/NotSupported" if m.body == "throws" else "is an empty override"
                     findings.append(Finding("L", f"{first.name}.{m.name} {what}", f"{t.file}:{m.line}",
@@ -278,7 +286,11 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 if "readonly" not in f.modifiers:
                     findings.append(Finding("D", f"{first.name}.{f.name} is mutable global state", f"{t.file}:{f.line}",
                                             f"static and not readonly ({f.type}): every user shares it and can change it", key, 2.0))
-                elif f.type.startswith(MUTABLE_COLLECTIONS):
+                elif f.type.startswith(MUTABLE_COLLECTIONS) and (
+                        f.name in writes or f.modifiers & {"public", "protected", "internal"}):
+                    # A private table filled once by its initializer is a
+                    # constant in practice; one a member adds to, or one
+                    # anybody can reach, is global state.
                     findings.append(Finding("D", f"{first.name}.{f.name} is a shared mutable collection", f"{t.file}:{f.line}",
                                             f"static readonly {f.type}: the reference is fixed, the contents are global state", key, 1.5))
     # O: one switch subject in several places.

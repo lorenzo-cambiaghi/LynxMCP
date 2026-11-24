@@ -14,8 +14,10 @@ CODE = {
         "  [ThreadStatic] private static int t_scratch;\n"
         "  private static readonly int _limit = 4;\n"
         "  private static readonly List<int> _seen = new();\n"
-        "  public void Send() { }\n"
+        "  private static readonly Dictionary<int, string> _names = new() { [1] = \"one\" };\n"
+        "  public void Send() { _seen.Add(_names.Count); }\n"
         "  public void ConnectAsync() => throw new NotSupportedException();\n"
+        "  private static void NotHere() => throw new NotSupportedException();\n"
         "  void Route(Kind kind) { switch (kind) { case Kind.A: break; case Kind.B: break; case Kind.C: break; case Kind.D: break; } }\n"
         "}\n"),
     "src/Pkg/Router.cs": (
@@ -52,9 +54,11 @@ def test_the_checks_name_what_breaks_and_leave_the_harmless_alone(tmp_path):
     assert rel == "src/Pkg"
     titles = [f.title for f in findings]
     assert "Server._count is mutable global state" in titles
-    assert "Server._seen is a shared mutable collection" in titles
+    assert "Server._seen is a shared mutable collection" in titles      # Send adds to it
     assert not any("t_scratch" in t or "_limit" in t for t in titles), titles
+    assert not any("_names" in t for t in titles), "a private table nothing writes after its initializer"
     assert "Server.ConnectAsync only throws NotImplemented/NotSupported" in titles
+    assert not any("NotHere" in t for t in titles), "a private helper that throws is no contract"
     assert "Dead is used by nothing" in titles                # never named anywhere
     assert "Helper is used by nothing" not in titles          # `new Helper()` uses it
     switch = [f for f in findings if f.principle == "O"]
@@ -105,6 +109,41 @@ def test_partial_and_nested_types_are_read_as_one_type_each(tmp_path):
     assert not [f for f in findings if f.principle == "O"], "a nested type's switches counted twice"
     unused = {f.title for f in findings if f.title.endswith("is used by nothing")}
     assert not unused & {"AttributedPublic is used by nothing", "SplitPublic is used by nothing"}, unused
+
+
+USED = {
+    "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+    # Named only by an attribute.
+    "src/Pkg/Tagged.cs": ("namespace Pkg;\n[Marker]\npublic class Tagged { }\n"
+                          "internal sealed class MarkerAttribute : System.Attribute { }\n"),
+    # Named only in a static field's initializer.
+    "src/Pkg/Json.cs": ("namespace Pkg;\npublic class Json {\n"
+                        "  private static readonly Options O = new Options { Converters = { new Conv() } };\n"
+                        "  private sealed class Conv { }\n}\npublic class Options { public object Converters; }\n"),
+    # Each runner makes its own Registration.
+    "src/Pkg/Runners.cs": ("namespace Pkg;\npublic class SharedRunner {\n  public object Add() => new Registration();\n"
+                           "  private sealed class Registration { }\n}\n"
+                           "public class StepRunner {\n  public object Add() => new Registration();\n"
+                           "  private sealed class Registration { }\n}\n"),
+    # Named only by its outer type, as a generic argument of a field.
+    "src/Pkg/Codec.cs": ("namespace Pkg;\npublic static class Codec {\n  private readonly record struct MsgInfo(int Length);\n"
+                         "  private static readonly System.Collections.Generic.Dictionary<int, MsgInfo> Info = new();\n"
+                         "  public static int Length(int id) => Info[id].Length;\n}\n"),
+}
+
+
+def test_a_type_named_by_an_attribute_an_initializer_or_its_outer_type_is_used(tmp_path):
+    root = tmp_path / "code"
+    for rel, text in USED.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    findings, _ = audit(layer.graph, root, "Pkg")
+    unused = sorted(f.title for f in findings if f.title.endswith("is used by nothing"))
+    assert unused == [], unused
 
 
 def test_method_names_point_to_the_jobs_of_a_type():
