@@ -480,6 +480,14 @@ class CodebaseBackend(SourceBackend):
         from ..graph import get_superclasses as _q
         return _q(self.graph.graph, symbol, limit=limit, depth=depth)
 
+    def audit(self, path: str, per_principle: int = 5) -> str:
+        """SOLID findings for the package at `path`, each with its fence (see
+        lynx.audit.solid)."""
+        from ..audit.solid import audit as _audit, render
+        root = Path(str(self.source_config["path"]))
+        findings, rel = _audit(self.graph.graph, root, path, repo=root)
+        return render(rel, findings, per_principle=per_principle)
+
     @_rel_paths
     def get_imports(self, file_or_symbol: str, limit: int = 100) -> list:
         from ..graph import get_imports as _q

@@ -2073,12 +2073,21 @@ def _cs_type_ref(source_id: str, type_node, kind: str, source: bytes, raw_calls:
                           "line": type_node.start_point[0] + 1, "recv": "typeref", "ref": kind})
 
 
-def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
-    """The types a C# body names in `new T()`, `typeof(T)` and generic
-    arguments (`Add<Bullets>()`, `GetService<T>()`): the resolver turns them
-    into `uses_type` edges, so a type registered by its name is not an orphan."""
+def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_path: str,
+                  declared: Optional[dict] = None) -> None:
+    """The types a C# body names in `new T()`, `typeof(T)`, generic
+    arguments (`Add<Bullets>()`, `GetService<T>()`) and static member access
+    (`Kind.Rain`, `JsonContext.Default`): the resolver turns them into
+    `uses_type` edges, so a type registered or read by its name is not an
+    orphan."""
     t = node.type
-    if t == "object_creation_expression":
+    if t == "member_access_expression":
+        expr = node.child_by_field_name("expression")
+        if expr is not None and expr.type == "identifier":
+            name = _text(expr, source).strip()
+            if name[:1].isupper() and name not in (declared or {}):
+                _cs_type_ref(source_id, expr, "static", source, raw_calls, file_path)
+    elif t == "object_creation_expression":
         _cs_type_ref(source_id, node.child_by_field_name("type"), "new", source, raw_calls, file_path)
     elif t == "typeof_expression":
         _cs_type_ref(source_id, node.child_by_field_name("type"), "typeof", source, raw_calls, file_path)
@@ -2155,7 +2164,7 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
     it is made on, which decides by type, not by name."""
     for child in node.children:
         if cs_declared is not None:
-            _cs_type_refs(child, caller_id, source, raw_calls, file_path)
+            _cs_type_refs(child, caller_id, source, raw_calls, file_path, cs_declared)
         # An import inside a function (Python's lazy `from .x import y`, kept
         # out of module load for start-up time) is the file's import all the
         # same. The declaration walker never entered function bodies, so on

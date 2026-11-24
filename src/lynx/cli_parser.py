@@ -34,7 +34,7 @@ _PROFILE_SIZES = ", ".join(
 _GRAPH_OPERATIONS = (
     "callers", "callees", "subclasses", "superclasses", "imports",
     "neighbors", "shortest_path", "overview", "surprising_connections",
-    "status",
+    "status", "audit",
 )
 
 # Source types `lynx source add --type` accepts, mirroring the v2 config

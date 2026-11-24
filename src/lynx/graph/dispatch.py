@@ -31,7 +31,7 @@ from .._format import EDGE_FAR_END, _format_edge_lines, _format_node_brief
 # Operations that are meaningless without a symbol to act on.
 SYMBOL_OPS = frozenset({
     "callers", "callees", "subclasses", "superclasses",
-    "imports", "neighbors", "shortest_path",
+    "imports", "neighbors", "shortest_path", "audit",
 })
 
 # Every operation `query_graph` accepts, in the order they're listed to
@@ -40,7 +40,7 @@ SYMBOL_OPS = frozenset({
 OPERATIONS = (
     "callers", "callees", "subclasses", "superclasses", "imports",
     "neighbors", "shortest_path", "overview", "surprising_connections",
-    "status",
+    "status", "audit",
 )
 
 
@@ -204,6 +204,12 @@ def query_graph(
             edges = getattr(manager, method)(source, symbol, limit=limit)
             header = label.format(s=symbol, src=source)
         return _edges_result(manager, source, op, symbol, edges, header)
+
+    if op == "audit":
+        # `symbol` names a package folder; `limit` below its default caps the
+        # findings per principle.
+        text = manager.audit(source, symbol, per_principle=limit if limit and limit < 50 else 5)
+        return GraphQueryResult(True, op, text, {"operation": op, "source": source, "package": symbol})
 
     if op == "neighbors":
         edges = manager.get_neighbors(

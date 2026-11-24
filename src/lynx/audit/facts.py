@@ -1,0 +1,250 @@
+"""Facts about C# types that the code graph does not record, for the audit.
+
+The graph knows symbols, their lines, calls, imports and bases. A SOLID
+audit also needs what a declaration says about itself: modifiers, fields
+and whether they can change, how many branches a method has, a body that
+only throws, the `switch`es and the type tests. They come from the same
+tree-sitter grammar the chunker uses, read once per file.
+
+A C# 14 `extension(T x) { ... }` block parses as a constructor named
+`extension`; its members are read as methods of the enclosing type, not as
+one long method.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+TYPE_NODES = {
+    "class_declaration": "class",
+    "struct_declaration": "struct",
+    "record_declaration": "record",
+    "record_struct_declaration": "record",
+    "interface_declaration": "interface",
+    "enum_declaration": "enum",
+}
+METHOD_NODES = {"method_declaration", "constructor_declaration", "operator_declaration",
+                "conversion_operator_declaration", "destructor_declaration", "local_function_statement"}
+BRANCH_NODES = {"if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement",
+                "switch_section", "switch_expression_arm", "catch_clause", "conditional_expression"}
+TYPE_TEST_NODES = {"is_pattern_expression", "as_expression", "cast_expression", "declaration_pattern",
+                   "type_pattern", "recursive_pattern"}
+NOT_IMPLEMENTED = ("NotImplementedException", "NotSupportedException")
+
+
+@dataclass
+class Method:
+    name: str
+    line: int
+    end: int
+    params: int
+    branches: int
+    modifiers: set
+    body: str              # "normal", "empty", "throws" (only throws NotImplemented/NotSupported), "none"
+    names: set             # identifiers used in the body
+    type_tests: int
+
+
+@dataclass
+class Field:
+    name: str
+    line: int
+    modifiers: set
+    type: str
+    attributes: str = ""
+
+
+@dataclass
+class Switch:
+    subject: str
+    line: int
+    cases: int
+
+
+@dataclass
+class TypeDecl:
+    name: str              # qualified within the file: Outer.Inner
+    kind: str
+    file: str
+    namespace: str
+    line: int
+    end: int
+    modifiers: set
+    bases: list
+    methods: list = field(default_factory=list)
+    fields: list = field(default_factory=list)
+    properties: list = field(default_factory=list)
+    switches: list = field(default_factory=list)
+    members: int = 0       # declared members (methods, properties, events, indexers)
+
+
+def _text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _modifiers(node, src: bytes) -> set:
+    return {_text(c, src) for c in node.children if c.type == "modifier"}
+
+
+def _name(node, src: bytes) -> Optional[str]:
+    n = node.child_by_field_name("name")
+    if n is None:
+        for c in node.children:
+            if c.type == "identifier":
+                n = c
+                break
+    return _text(n, src) if n is not None else None
+
+
+def _walk(node):
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        yield n
+        stack.extend(n.children)
+
+
+def _body_of(node):
+    for c in node.children:
+        if c.type in ("block", "arrow_expression_clause"):
+            return c
+    return None
+
+
+def _body_kind(body, src: bytes) -> str:
+    if body is None:
+        return "none"
+    inner = [c for c in body.named_children if c.type != "comment"]
+    if body.type == "block" and not inner:
+        return "empty"
+    if len(inner) == 1:
+        one = inner[0]
+        if one.type == "expression_statement" and one.named_children:
+            one = one.named_children[0]
+        if one.type in ("throw_statement", "throw_expression") and any(w in _text(one, src) for w in NOT_IMPLEMENTED):
+            return "throws"
+    return "normal"
+
+
+def _method(node, src: bytes, name: Optional[str] = None) -> Method:
+    body = _body_of(node)
+    branches, tests, names = 0, 0, set()
+    if body is not None:
+        for n in _walk(body):
+            t = n.type
+            if t in BRANCH_NODES:
+                branches += 1
+            elif t == "binary_expression":
+                op = n.child_by_field_name("operator")
+                if op is not None and _text(op, src) in ("&&", "||", "??"):
+                    branches += 1
+            elif t in TYPE_TEST_NODES:
+                tests += 1
+            elif t == "identifier":
+                names.add(_text(n, src))
+    plist = node.child_by_field_name("parameters")
+    if plist is None:
+        plist = next((c for c in node.children if c.type == "parameter_list"), None)
+    params = sum(1 for c in plist.named_children if c.type == "parameter") if plist is not None else 0
+    return Method(name=name or _name(node, src) or "?", line=node.start_point[0] + 1, end=node.end_point[0] + 1,
+                  params=params, branches=branches, modifiers=_modifiers(node, src), body=_body_kind(body, src),
+                  names=names, type_tests=tests)
+
+
+def _bases(node, src: bytes) -> list:
+    out = []
+    for c in node.children:
+        if c.type == "base_list":
+            for b in c.named_children:
+                text = _text(b, src).strip()
+                if b.type == "primary_constructor_base_type":
+                    text = text.split("(")[0].strip()
+                out.append(text)
+    return out
+
+
+def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: list) -> None:
+    name = _name(node, src) or "?"
+    qual = f"{outer}.{name}" if outer else name
+    decl = TypeDecl(name=qual, kind=TYPE_NODES[node.type], file=file, namespace=namespace,
+                    line=node.start_point[0] + 1, end=node.end_point[0] + 1,
+                    modifiers=_modifiers(node, src), bases=_bases(node, src))
+    out.append(decl)
+    body = next((c for c in node.children if c.type in ("declaration_list", "enum_member_declaration_list")), None)
+    if body is None:
+        return
+    for m in body.named_children:
+        t = m.type
+        if t in TYPE_NODES:
+            _read_type(m, src, file, namespace, qual, out)
+        elif t == "constructor_declaration" and _name(m, src) == "extension":
+            # C# 14 extension block: its members belong to the enclosing type.
+            block = _body_of(m)
+            for inner in (block.named_children if block is not None else ()):
+                if inner.type in METHOD_NODES:
+                    decl.methods.append(_method(inner, src))
+                    decl.members += 1
+        elif t in METHOD_NODES:
+            decl.methods.append(_method(m, src))
+            decl.members += 1
+        elif t == "field_declaration":
+            mods = _modifiers(m, src)
+            var = next((c for c in m.children if c.type == "variable_declaration"), None)
+            if var is None:
+                continue
+            typ = var.child_by_field_name("type")
+            typ_text = _text(typ, src) if typ is not None else ""
+            attrs = " ".join(_text(c, src) for c in m.children if c.type == "attribute_list")
+            for v in var.named_children:
+                if v.type == "variable_declarator":
+                    decl.fields.append(Field(name=_name(v, src) or "?", line=v.start_point[0] + 1,
+                                             modifiers=mods, type=typ_text, attributes=attrs))
+        elif t in ("property_declaration", "event_declaration", "event_field_declaration", "indexer_declaration"):
+            decl.members += 1
+            pname = _name(m, src)
+            if pname:
+                decl.properties.append((pname, _modifiers(m, src)))
+    for n in _walk(node):
+        if n.type in ("switch_statement", "switch_expression"):
+            subj = n.child_by_field_name("value")
+            if subj is None:
+                subj = next((c for c in n.named_children if c.type not in ("switch_body", "switch_expression_arm")), None)
+            cases = sum(1 for c in _walk(n) if c.type in ("switch_section", "switch_expression_arm"))
+            if subj is not None:
+                decl.switches.append(Switch(subject=_text(subj, src).strip("() "), line=n.start_point[0] + 1, cases=cases))
+
+
+def read_file(path: Path, rel: str) -> tuple[str, set, list]:
+    """(namespace, using namespaces, type declarations) of one C# file."""
+    from ..chunking import _get_parser
+    src = path.read_bytes()
+    tree = _get_parser("c_sharp").parse(src)
+    namespace, usings, types = "", set(), []
+
+    def visit(node, ns: str):
+        for c in node.named_children:
+            t = c.type
+            if t in ("file_scoped_namespace_declaration", "namespace_declaration"):
+                n = c.child_by_field_name("name") or next((x for x in c.named_children if x.type in ("qualified_name", "identifier")), None)
+                inner = _text(n, src) if n is not None else ns
+                nonlocal namespace
+                namespace = namespace or inner
+                if t == "namespace_declaration":
+                    body = next((x for x in c.children if x.type == "declaration_list"), None)
+                    if body is not None:
+                        visit(body, inner)
+                else:
+                    visit(c, inner)
+            elif t == "using_directive":
+                n = next((x for x in c.named_children if x.type in ("qualified_name", "identifier")), None)
+                if n is not None and not any(x.type == "name_equals" for x in c.children):
+                    usings.add(_text(n, src))
+            elif t in TYPE_NODES:
+                _read_type(c, src, rel, ns, "", types)
+
+    visit(tree.root_node, "")
+    # A file-scoped namespace is a sibling of the types that follow it.
+    for t in types:
+        t.namespace = t.namespace or namespace
+    return namespace, usings, types

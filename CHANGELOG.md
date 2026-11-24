@@ -23,7 +23,24 @@ namespace and `using` rules as bases: `new T()`, `typeof(T)`, generic
 arguments (`Add<Bullets>()`, `GetService<T>()`), parameter and return
 types, field and property types. A type registered by its name is no
 longer an orphan, and who depends on a type no longer needs a text
-search. On the 1.4-million-line library: 99,177 edges.
+search. On the 1.4-million-line library: 99,177 edges. Static member
+access (`Kind.Rain`, `JsonContext.Default`) counts too.
+
+`graph_query` `audit` (symbol = a C# package folder) says where the
+package breaks SOLID: types far larger than the codebase's own norm and
+the jobs their method names point to, long methods, wide interfaces,
+members that only throw `NotImplemented`/`NotSupported`, the same `switch`
+in several places, mutable static state, a dependency on a less stable
+project, deep hierarchies, internal types nothing uses. Thresholds are a
+high percentile of the codebase's own sizes. Each finding comes with the
+fence of its refactor, from the graph: the members other packages use
+and how many callers each has, the projects to build, the test files that
+reach the type, how often its files changed in 180 days. The same report
+from the command line: `python -m lynx.audit.solid ROOT PACKAGE`. On an
+85-file networking package of the private library it took 17 seconds and
+named two classes of 2,376 and 1,943 lines with the jobs in their names
+(broadcast, drain, frame, peer, handshake, resume), three handshake
+methods over 90 lines and a transport whose `ConnectAsync` only throws.
 
 ### Fixed
 

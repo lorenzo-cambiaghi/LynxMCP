@@ -39,12 +39,12 @@ TOOL_DESCRIPTIONS = {
     ),
     "graph_query": (
         "Raw access to the code knowledge graph (calls, inheritance, imports), "
-        "for the questions the dedicated tools do not cover: find_usages, impact "
-        "and describe_symbol answer the common ones with the results already "
-        "shaped. operation: callers | callees | subclasses | superclasses | "
+        "for what find_usages, impact and describe_symbol do not cover. "
+        "operation: callers | callees | subclasses | superclasses | "
         "imports | neighbors | shortest_path | overview | surprising_connections "
-        "| status. `symbol` is matched as a case-insensitive substring; results "
-        "carry file:line."
+        "| status | audit (symbol = a C# package folder: SOLID findings, each "
+        "with its refactor fence). `symbol` is matched as a case-insensitive "
+        "substring; results carry file:line."
     ),
     "find_definition": (
         "Jump to where a symbol is defined, when you already know its name; the "

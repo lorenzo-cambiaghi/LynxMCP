@@ -479,6 +479,9 @@ class SourceManager:
     def get_superclasses(self, source: str, symbol: str, limit: int = 50, depth: int = 1) -> list:
         return self._require_graph(source).get_superclasses(symbol, limit=limit, depth=depth)
 
+    def audit(self, source: str, path: str, per_principle: int = 5) -> str:
+        return self._require_graph(source).audit(path, per_principle=per_principle)
+
     def get_imports(self, source: str, file_or_symbol: str, limit: int = 100) -> list:
         return self._require_graph(source).get_imports(file_or_symbol, limit=limit)
 
