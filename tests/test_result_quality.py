@@ -78,9 +78,13 @@ def test_dedup_empty_input():
 def test_codebase_source_gets_default_ignores():
     from lynx.manager.ui.routes import _apply_codebase_defaults, _DEFAULT_CODEBASE_IGNORES
 
+    from lynx.config import default_ignores
+
     block = {"type": "codebase", "path": "/x"}
     out = _apply_codebase_defaults(block)
-    assert out["ignored_path_fragments"] == _DEFAULT_CODEBASE_IGNORES
+    # The same list `lynx serve PATH` uses: the shared defaults and the few it adds.
+    assert out["ignored_path_fragments"] == default_ignores("/x")
+    assert set(_DEFAULT_CODEBASE_IGNORES) <= set(out["ignored_path_fragments"])
     # The defaults cover the build/vendored dirs that cause duplicate hits.
     for frag in ("/node_modules/", "/build/", "/dist/", "/.git/"):
         assert frag in out["ignored_path_fragments"]

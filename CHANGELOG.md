@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+`lynx source add` without `--ext` now picks what the web UI and `lynx serve
+PATH` pick: only formats Lynx reads. It used to take the ten most common
+extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`
+and `.log`. A new codebase source also skips its engine's generated folders
+when nobody set a list (`Library/` and `Temp/` for Unity), whether it comes
+from the CLI, the UI or `--block`. Slang shaders (`.slang`), XAML and
+Avalonia markup (`.xaml`, `.axaml`) and PowerShell scripts (`.ps1`) join the
+formats a scan picks.
+
 ## 1.13.0 - 2026-11-24
 
 ### Added

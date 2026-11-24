@@ -695,11 +695,11 @@ ZERO_CONFIG_EXTENSIONS = frozenset({
     ".cs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
     ".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".c", ".h", ".m", ".mm",
     ".go", ".rs", ".java", ".rb", ".php", ".kt", ".kts", ".swift",
-    ".sh", ".bash", ".sql", ".scala", ".sc", ".lua", ".gd",
+    ".sh", ".bash", ".ps1", ".sql", ".scala", ".sc", ".lua", ".gd",
     ".md", ".mdx", ".rst", ".txt",
     ".html", ".css", ".scss", ".vue", ".svelte",
-    ".glsl", ".vert", ".frag", ".wgsl", ".hlsl", ".shader", ".cginc", ".gdshader",
-    ".uxml", ".uss", ".yaml", ".yml", ".toml",
+    ".glsl", ".vert", ".frag", ".wgsl", ".hlsl", ".slang", ".shader", ".cginc", ".gdshader",
+    ".uxml", ".uss", ".xaml", ".axaml", ".yaml", ".yml", ".toml",
 })
 
 # Used only when the folder holds none of the above (a brand-new repository).
@@ -790,6 +790,18 @@ def default_auto_storage_dir(path: Path) -> Path:
     return _user_cache_root() / f"{slug}-{digest}"
 
 
+def default_ignores(target: "Path | str") -> list:
+    """The folders a new codebase source at `target` skips when nobody said
+    otherwise: VCS, dependencies and build output, plus the generated folders
+    of the engine the folder is a project of (`Library/` for Unity)."""
+    from .manager.sources import DEFAULT_CODEBASE_IGNORES
+    return list(dict.fromkeys([
+        *DEFAULT_CODEBASE_IGNORES,
+        *_ZERO_CONFIG_EXTRA_IGNORES,
+        *_ENGINE_IGNORES.get(detect_engine(Path(target)), ()),
+    ]))
+
+
 def scan_codebase(target: "Path | str") -> dict:
     """What a new codebase source at `target` should index: the formats Lynx
     reads that the folder holds, and the folders to skip (the shared
@@ -800,16 +812,11 @@ def scan_codebase(target: "Path | str") -> dict:
 
     Returns {"engine", "extensions", "ignored_path_fragments"}; `extensions`
     may be empty (nothing readable found)."""
-    from .manager.sources import DEFAULT_CODEBASE_IGNORES
     from .manager.ui.detect import detect_extensions
 
     target = Path(target)
     engine = detect_engine(target)
-    ignores = list(dict.fromkeys([
-        *DEFAULT_CODEBASE_IGNORES,
-        *_ZERO_CONFIG_EXTRA_IGNORES,
-        *_ENGINE_IGNORES.get(engine, ()),
-    ]))
+    ignores = default_ignores(target)
     extensions = detect_extensions(
         target,
         top_n=None,

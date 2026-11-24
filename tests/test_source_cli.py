@@ -115,6 +115,32 @@ def test_add_codebase_detects_extensions(tmp_path, code_dir, capsys):
     assert "detected extensions" in capsys.readouterr().out
 
 
+def test_add_codebase_picks_what_the_ui_picks(tmp_path):
+    """Without --ext the CLI scans the folder the way the web UI and
+    `lynx serve PATH` do (`scan_codebase`): only formats Lynx reads, and the
+    engine's generated folders skipped. It used to take the ten most common
+    extensions of any kind: on a C# library .pdb, .mp4, .png and .log, and a
+    Unity project kept its Library/ in the index."""
+    from lynx.config import scan_codebase
+    d = tmp_path / "game"
+    for rel in ("Assets/Scripts/Player.cs", "Assets/Scripts/Enemy.cs", "Assets/Shaders/fog.slang",
+                "Library/PackageCache/com.unity.x/Runtime/Gen.cs", "ProjectSettings/ProjectVersion.txt"):
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text("// code\n", encoding="utf-8")
+    for rel in ("bin/Game.pdb", "Docs/intro.mp4", "Docs/logo.png", "Logs/build.log"):
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_bytes(b"\x00\x01")
+    cfg = _write_config(tmp_path)
+    assert cli_main(["source", "add", "game", "--config", str(cfg), "--type", "codebase", "--path", str(d)]) == 0
+
+    block = _sources(cfg)["game"]
+    assert set(block["supported_extensions"]) == {".cs", ".slang", ".txt"}
+    assert "/Library/" in block["ignored_path_fragments"]
+    scan = scan_codebase(d)
+    assert set(block["supported_extensions"]) == set(scan["extensions"])
+    assert set(block["ignored_path_fragments"]) == set(scan["ignored_path_fragments"])
+
+
 def test_add_codebase_optional_flags(tmp_path, code_dir):
     cfg = _write_config(tmp_path)
     rc = cli_main([

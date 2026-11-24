@@ -583,9 +583,11 @@ def _source_block_from_args(args, quiet: bool = False):
     if stype == "codebase":
         extensions = _normalize_extensions(args.ext)
         if not extensions:
-            # Same folder scan the web UI runs when you pick a directory.
-            from .manager.ui.detect import detect_extensions
-            extensions = detect_extensions(path, top_n=10)
+            # The folder scan the web UI and `lynx serve PATH` run: the formats
+            # Lynx reads, the engine's generated folders left out. The folders
+            # to skip come from apply_codebase_defaults, as for the UI.
+            from .config import scan_codebase
+            extensions = scan_codebase(path)["extensions"]
             if not extensions:
                 return None, (f"found no indexable files under {path}; pass "
                               f"--ext explicitly (e.g. --ext .py --ext .md).")
