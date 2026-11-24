@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ..graph import cs_recovery
+
 TYPE_NODES = {
     "class_declaration": "class",
     "struct_declaration": "struct",
@@ -232,7 +234,14 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
     body = next((c for c in node.children if c.type in ("declaration_list", "enum_member_declaration_list")), None)
     if body is None:
         return
+    # Members the grammar could not parse cleanly sit in an ERROR node of the body.
+    members = []
     for m in body.named_children:
+        if m.type == "ERROR":
+            members.extend(x for x in cs_recovery.children(m) if x.is_named)
+        else:
+            members.append(m)
+    for m in members:
         t = m.type
         if t in TYPE_NODES:
             _read_type(m, src, file, namespace, qual, out)
@@ -288,7 +297,8 @@ def read_file(path: Path, rel: str) -> tuple[str, set, list]:
     namespace, usings, types = "", set(), []
 
     def visit(node, ns: str):
-        for c in node.named_children:
+        # The type declarations an ERROR node holds in pieces count as declarations.
+        for c in (x for x in cs_recovery.children(node) if x.is_named):
             t = c.type
             if t in ("file_scoped_namespace_declaration", "namespace_declaration"):
                 n = c.child_by_field_name("name") or next((x for x in c.named_children if x.type in ("qualified_name", "identifier")), None)
@@ -307,6 +317,8 @@ def read_file(path: Path, rel: str) -> tuple[str, set, list]:
                     usings.add(_text(n, src))
             elif t in TYPE_NODES:
                 _read_type(c, src, rel, ns, "", types)
+            elif t == "ERROR":
+                visit(c, ns)
 
     visit(tree.root_node, "")
     # A file-scoped namespace is a sibling of the types that follow it.

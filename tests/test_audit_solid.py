@@ -154,3 +154,17 @@ def test_method_names_point_to_the_jobs_of_a_type():
     assert areas["handshake"] == ["FailHandshake", "HandleFreshHandshake", "HandleResumeHandshake"]
     assert areas["snapshot"] == ["BroadcastSnapshot", "SendPeerSetSnapshot", "SnapshotOf"]
     assert "poll" not in areas
+
+
+def test_a_class_the_grammar_left_in_pieces_is_read(tmp_path):
+    """A statement left half written puts the whole class into an ERROR node:
+    the type, its fields and its methods are read all the same."""
+    from test_graph_csharp_scope import HALF_WRITTEN
+    from lynx.audit.facts import read_file
+    p = tmp_path / "Box.cs"
+    p.write_text(HALF_WRITTEN, encoding="utf-8")
+    ns, _, types = read_file(p, "Box.cs")
+    box = next((t for t in types if t.name == "Box"), None)
+    assert box is not None and ns == "A"
+    assert box.bases == ["Base"] and [f.name for f in box.fields] == ["_n"]
+    assert {m.name for m in box.methods} == {"Box", "Bad"}

@@ -226,3 +226,29 @@ def test_an_extension_block_holds_methods_not_one_long_function(tmp_path):
     labels = {d.get("label") for _, d in G.nodes(data=True) if d.get("kind") == "function"}
     assert "SizeExtensions.Twice" in labels and "SizeExtensions.Half" in labels, labels
     assert "SizeExtensions.extension" not in labels
+
+
+# A file with a statement left half written, as it is while someone types it:
+# the grammar puts the whole class into an ERROR node, as loose tokens
+# (`public`, `class`, `Box`, the base list, `{`, the members, `}`). A newer
+# grammar did the same to a whole 2,400-line class of a real library over a
+# valid line, and the class and everything it owned left the graph.
+HALF_WRITTEN = (
+    "namespace A;\n\n"
+    "public class Base { }\n\n"
+    "public sealed class Box : Base\n{\n"
+    "    private int _n;\n\n"
+    "    public Box(int n) { _n = n; }\n\n"
+    "    public void Bad() { if (x) else }\n\n"
+    "    public int Count() => _n;\n}\n"
+)
+
+
+def test_a_class_the_grammar_left_in_pieces_is_put_back_together(tmp_path):
+    # (`Bad` swallows `Count` and the closing brace: that much is the grammar's.)
+    G = _graph(tmp_path, {"Box.cs": HALF_WRITTEN})
+    box = [n for n, d in G.nodes(data=True) if d.get("label") == "Box" and d.get("kind") == "class"]
+    assert box, "the class is in the graph"
+    owned = sorted(G.nodes[v]["label"] for _, v, d in G.out_edges(box[0], data=True) if d.get("relation") == "contains")
+    assert owned == ["Box.Bad", "Box.Box"]
+    assert _bases(G, "Box") == [("Base", "resolved")]

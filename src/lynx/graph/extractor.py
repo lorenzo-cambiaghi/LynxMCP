@@ -36,6 +36,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
 from ..chunking import parse_file, script_class_path
+from . import cs_recovery
 
 
 # ---------------------------------------------------------------------------
@@ -2362,7 +2363,9 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
     type (GDScript `func _init`).
     """
     default_names = default_names or {}
-    for child in node.children:
+    # C#: the type declarations an ERROR node holds in pieces, put back together.
+    kids = cs_recovery.children(node) if rules.import_handler is _handle_csharp_import else node.children
+    for child in kids:
         if child.type in rules.import_types:
             if rules.import_handler is not None:
                 rules.import_handler(child, source, file_id, edges, file_path)
@@ -2573,7 +2576,7 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
                 if nid:
                     _cs_member_refs(n, nid, source, raw_calls, abs_path_norm)
             if n.type not in METHOD_LIKE_CS:
-                stack.extend(n.children)
+                stack.extend(cs_recovery.children(n))
 
     # Every import the file tries, resolved or not, travels on its file node:
     # when another file appears or goes, the builder finds the files whose

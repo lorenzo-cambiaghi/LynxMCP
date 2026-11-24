@@ -13,6 +13,20 @@ from the CLI, the UI or `--block`. Slang shaders (`.slang`), XAML and
 Avalonia markup (`.xaml`, `.axaml`) and PowerShell scripts (`.ps1`) join the
 formats a scan picks.
 
+A C# type the grammar leaves in pieces stays in the graph and in the audit.
+When tree-sitter cannot parse part of a file it may keep the whole type as
+loose tokens inside an error node, and the type and everything it owned
+left the graph. It happens while a statement is half written, and
+tree-sitter-c-sharp 0.24.0, the version a new install gets, does it to valid
+code too: on a 1.4-million-line library a 2,400-line class vanished over a
+local variable named `partial`, and its constructor took the class's place.
+The type is now rebuilt from those tokens, with its bases and the members
+the grammar did parse.
+
+A confirmation of `lynx source remove` or `lynx reset` that reads no answer
+(Git Bash reports a terminal and then reads end of file) aborts and names
+`--yes`, instead of raising `EOFError`.
+
 ## 1.13.0 - 2026-11-24
 
 ### Added
