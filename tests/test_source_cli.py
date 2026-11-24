@@ -977,3 +977,18 @@ def test_ui_and_cli_reject_the_same_names(tmp_path, code_dir):
             "/api/sources", json={"name": bad, "block": block}).status_code
         assert cli_rc != 0 and ui_status >= 400, f"disagreed on {bad!r}"
     assert _sources(via_cli) == {} and _sources(via_ui) == {}
+
+
+def test_remove_without_an_answer_says_to_pass_yes(tmp_path, code_dir, monkeypatch, capsys):
+    """Git Bash reports a tty and then reads end of file: the question gets no
+    answer. That is a no, said in words with the flag to use, not an EOFError."""
+    cfg = _config_with_source(tmp_path, code_dir)
+    before = cfg.read_text(encoding="utf-8")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def _eof(prompt=""):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", _eof)
+    assert cli_main(["source", "remove", "demo", "--config", str(cfg)]) == 1
+    assert cfg.read_text(encoding="utf-8") == before
+    assert "--yes" in capsys.readouterr().out

@@ -312,9 +312,7 @@ def _cmd_reset(args) -> int:
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         what = ", ".join(targets)
         verb = "wipe and rebuild" if rebuild else "wipe"
-        answer = input(f"This will {verb} the index for [{what}]. Continue? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            print("Aborted.")
+        if not _confirm(f"This will {verb} the index for [{what}]."):
             return 1
 
     from .errors import StoreNotOwnedError
@@ -543,6 +541,22 @@ def _resolve_source_dir(raw: str):
     if not path.is_dir():
         return None, f"--path is not an existing directory: {path}"
     return path, None
+
+
+def _confirm(what: str) -> bool:
+    """Ask before a destructive step. A terminal that gives no answer (Git
+    Bash reports a tty and then reads end of file; so does an agent's shell)
+    counts as no, with the flag that skips the question."""
+    try:
+        answer = input(f"{what} Continue? [y/N] ")
+    except EOFError:
+        print()
+        print("Aborted: no answer could be read. Pass --yes to go ahead without the question.")
+        return False
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Aborted.")
+        return False
+    return True
 
 
 def _source_block_from_args(args, quiet: bool = False):
@@ -808,9 +822,7 @@ def _cmd_source_remove(args, config_path: Path) -> int:
         what = f"remove source {name!r} from {config_path}"
         if args.purge:
             what += " AND delete its index from disk"
-        answer = input(f"This will {what}. Continue? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            print("Aborted.")
+        if not _confirm(f"This will {what}."):
             return 1
 
     from .manager.sources import remove_source
