@@ -715,7 +715,7 @@ def _handle_csharp_import(node, source: bytes, file_id: str, edges: list, file_p
     # `global using X;` holds for every file of the project, not only this one.
     is_global = any(not c.is_named and _text(c, source) == "global" for c in node.children)
     children = list(node.children)
-    # `using Script = VooDodo.Data.Script;`: the module is what follows `=`,
+    # `using Script = Game.Data.Script;`: the module is what follows `=`,
     # the name before it is only the alias.
     alias = None
     for i, c in enumerate(children):
