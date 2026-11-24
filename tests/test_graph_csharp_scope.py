@@ -166,6 +166,51 @@ def test_a_type_named_by_new_typeof_generics_and_signatures_is_used(tmp_path):
                     ("Setup.Make", "Rain", "Weather"), ("Setup.Make", "Wind", "Weather")], used
 
 
+def _uses(G) -> list:
+    return sorted((G.nodes[u].get("label"), G.nodes[v].get("label"))
+                  for u, v, d in G.edges(data=True) if d.get("relation") == "uses_type")
+
+
+def test_every_place_a_type_is_written_is_a_use(tmp_path):
+    # Attributes (`[Marker]` is MarkerAttribute), a field's generic arguments
+    # and initializer, a base's generic argument, a constraint, locals,
+    # casts, `as`, `catch`, arrays, `default`, tuples.
+    kinds = ["MarkerAttribute", "Key", "Val", "Info", "Arg", "IRule", "Local", "Cast", "AsT", "MyEx", "Elem",
+             "Def", "Left"]
+    G = _graph(tmp_path, {
+        "Kinds.cs": "namespace K;\n" + "".join(f"public class {k} {{ }}\n" for k in kinds) + "public class Base<T> { }\n",
+        "Setup.cs": ("using K;\nnamespace Game;\n[Marker]\npublic class Setup<T> : Base<Arg> where T : IRule {\n"
+                     "  private Dictionary<Key, Val> _m = new() { [1] = new Info() };\n"
+                     "  public void Run(object o) {\n"
+                     "    Local l = null; var c = (Cast)o; var z = o as AsT; var a = new Elem[3];\n"
+                     "    var d = default(Def); (Left x, int y) t = default;\n"
+                     "    try { } catch (MyEx e) { }\n  }\n}\n"),
+    })
+    used = _uses(G)
+    assert {v for u, v in used if u == "Setup"} == {"MarkerAttribute", "Key", "Val", "Info", "Arg", "IRule"}, used
+    assert {v for u, v in used if u == "Setup.Run"} == {"Local", "Cast", "AsT", "Elem", "Def", "Left", "MyEx"}, used
+
+
+def test_two_nested_types_of_one_name_are_each_their_outers(tmp_path):
+    G = _graph(tmp_path, {
+        "Runners.cs": ("namespace Work;\npublic class SharedRunner {\n  public object Add() => new Registration();\n"
+                       "  private sealed class Registration { }\n}\n"
+                       "public class StepRunner {\n  public object Add() => new Registration();\n"
+                       "  private sealed class Registration { }\n}\n"),
+    })
+    assert _uses(G) == [("SharedRunner.Add", "SharedRunner.Registration"), ("StepRunner.Add", "StepRunner.Registration")]
+
+
+def test_a_nested_type_named_in_a_field_of_its_outer_type_is_used(tmp_path):
+    # `Dictionary<int, MsgInfo>` named only Dictionary, which is not the
+    # codebase's: MsgInfo looked unused.
+    G = _graph(tmp_path, {
+        "Codec.cs": ("namespace Net;\npublic static class Codec {\n  private record struct MsgInfo(int Length);\n"
+                     "  private static readonly Dictionary<int, MsgInfo> Info = new();\n}\n"),
+    })
+    assert _uses(G) == [("Codec", "Codec.MsgInfo")]
+
+
 def test_a_field_of_the_base_type_does_not_hide_the_inheritance(tmp_path):
     G = _graph(tmp_path, {
         "Node.cs": "namespace Tree;\npublic class Node { }\npublic class Group : Node { private Node _first; }\n",

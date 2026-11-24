@@ -1079,6 +1079,18 @@ class GraphLayer:
         codebase, and no edge is drawn."""
         same = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
         if same:
+            # The types nested in the referring type come first, then those
+            # nested in each enclosing type: two runners in one file each
+            # with its own `Registration` mean each its own.
+            def outer(c):
+                label = (self._nodes_by_id.get(c) or {}).get("label") or ""
+                return label.rsplit(".", 1)[0] if "." in label else ""
+            scope = (self._nodes_by_id.get(ri["child"]) or {}).get("label") or ""
+            while scope and len(same) > 1:
+                inner = [c for c in same if outer(c) == scope]
+                if inner:
+                    return inner
+                scope = scope.rsplit(".", 1)[0] if "." in scope else ""
             return same
         child = self._nodes_by_id.get(ri["child"]) or {}
         ns = child.get("namespace", "")

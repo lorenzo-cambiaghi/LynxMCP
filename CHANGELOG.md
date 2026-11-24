@@ -20,19 +20,26 @@ named no identifier; the same requests in English, for 32.
 
 C# type references are graph edges, `uses_type`, resolved by the same
 namespace and `using` rules as bases: `new T()`, `typeof(T)`, generic
-arguments (`Add<Bullets>()`, `GetService<T>()`), parameter and return
-types, field and property types. A type registered by its name is no
-longer an orphan, and who depends on a type no longer needs a text
-search. Static member access (`Kind.Rain`, `JsonContext.Default`)
-counts too. On the 1.4-million-line library: 134,499 edges, 36,098 of
-them from static member access.
+arguments (`Add<Bullets>()`, `GetService<T>()`, `List<Foo>` in a field
+or a signature, `Base<Foo>` in a base list), parameter and return
+types, field and property types and field initializers, local
+variables, casts, `as`, patterns, `catch`, arrays, tuples, `where`
+constraints and attributes (`[Marker]` is `MarkerAttribute`). A type
+registered by its name is no longer an orphan, and who depends on a type
+no longer needs a text search. Static member access (`Kind.Rain`,
+`JsonContext.Default`) counts too. A name nested in the referring type
+wins over a namesake elsewhere in the file. On the 1.4-million-line
+library: 148,859 edges, 36,900 of them from static member access and
+3,634 from attributes.
 
 `graph_query` `audit` (symbol = a C# package folder) says where the
 package breaks SOLID: types far larger than the codebase's own norm and
 the jobs their method names point to, long methods, wide interfaces,
-members that only throw `NotImplemented`/`NotSupported`, the same `switch`
-in several places, mutable static state, a dependency on a less stable
-project, deep hierarchies, internal types nothing uses. Thresholds are a
+members a caller can reach that only throw `NotImplemented`/
+`NotSupported`, the same `switch` in several places, mutable static
+state (a static collection when a member changes it or other code can
+reach it), a dependency on a less stable project, deep hierarchies,
+internal types nothing uses. Thresholds are a
 high percentile of the codebase's own sizes. Each finding comes with the
 fence of its refactor, from the graph: the members other packages use
 and how many callers each has, the projects to build, the test files that

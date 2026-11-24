@@ -2067,14 +2067,28 @@ def _cs_member_types(fn_node, source: bytes, cache: dict) -> dict:
 
 
 def _cs_type_ref(source_id: str, type_node, kind: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    # `Foo[]`, `Foo*`, `ref Foo` name Foo.
+    while type_node is not None and type_node.type in ("array_type", "pointer_type", "ref_type", "scoped_type"):
+        type_node = type_node.child_by_field_name("type") or (type_node.named_children[0] if type_node.named_children else None)
     name = _cs_type_name(type_node, source)
+    if name and kind == "attribute" and not name.endswith("Attribute"):
+        name += "Attribute"          # `[Serializable]` is SerializableAttribute
     if name:
         raw_calls.append({"caller": source_id, "callee_name": name, "is_member": False, "file": file_path,
                           "line": type_node.start_point[0] + 1, "recv": "typeref", "ref": kind})
 
 
+# Nodes whose `type` field is a type the code depends on: a local's declared
+# type, a cast, a caught exception, an array element, a pattern, a tuple
+# element, `default(T)`, `sizeof(T)`, a `where T : IFoo` constraint.
+_CS_TYPED_NODES = {"variable_declaration": "local", "cast_expression": "cast", "catch_declaration": "catch",
+                   "array_creation_expression": "new", "declaration_pattern": "pattern",
+                   "default_expression": "typeof", "sizeof_expression": "typeof", "tuple_element": "local",
+                   "type_parameter_constraint": "constraint"}
+
+
 def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_path: str,
-                  declared: Optional[dict] = None) -> None:
+                  declared: Optional[dict] = None, declared_kind: str = "local") -> None:
     """The types a C# body names in `new T()`, `typeof(T)`, generic
     arguments (`Add<Bullets>()`, `GetService<T>()`) and static member access
     (`Kind.Rain`, `JsonContext.Default`): the resolver turns them into
@@ -2094,6 +2108,25 @@ def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_pat
     elif t == "type_argument_list":
         for arg in node.named_children:
             _cs_type_ref(source_id, arg, "generic", source, raw_calls, file_path)
+    elif t == "attribute":
+        _cs_type_ref(source_id, node.child_by_field_name("name"), "attribute", source, raw_calls, file_path)
+    elif t == "as_expression":
+        _cs_type_ref(source_id, node.child_by_field_name("right"), "cast", source, raw_calls, file_path)
+    elif t in _CS_TYPED_NODES:
+        kind = declared_kind if t == "variable_declaration" else _CS_TYPED_NODES[t]
+        _cs_type_ref(source_id, node.child_by_field_name("type"), kind, source, raw_calls, file_path)
+
+
+def _cs_walk_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_path: str,
+                       declared: Optional[dict] = None, declared_kind: str = "local") -> None:
+    """Every type reference in a C# subtree that no function body covers: a
+    field with its initializer and attributes, a type's attributes, the
+    generic arguments of its bases, its `where` constraints."""
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        _cs_type_refs(n, source_id, source, raw_calls, file_path, declared, declared_kind)
+        stack.extend(n.children)
 
 
 def _cs_signature_refs(fn, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
@@ -2108,15 +2141,25 @@ def _cs_signature_refs(fn, source_id: str, source: bytes, raw_calls: list, file_
 
 
 def _cs_member_refs(type_node, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
-    """A C# type's field and property types: what its state depends on."""
-    body = next((c for c in type_node.children if c.type == "declaration_list"), None)
+    """A C# type's own references: its attributes, the generic arguments of
+    its bases, its `where` constraints and primary-constructor parameters,
+    its fields (type, generic arguments, initializer, attributes) and its
+    property and event types. Methods and properties are function nodes and
+    their bodies are walked on their own."""
+    body = None
+    for c in type_node.children:
+        if c.type == "declaration_list":
+            body = c
+        elif c.type in ("attribute_list", "base_list", "type_parameter_constraints_clause", "parameter_list"):
+            _cs_walk_type_refs(c, source_id, source, raw_calls, file_path)
+    members = None
     for m in (body.named_children if body is not None else ()):
-        if m.type == "property_declaration":
+        if m.type in ("property_declaration", "event_declaration"):
             _cs_type_ref(source_id, m.child_by_field_name("type"), "member", source, raw_calls, file_path)
         elif m.type in ("field_declaration", "event_field_declaration"):
-            var = next((x for x in m.named_children if x.type == "variable_declaration"), None)
-            if var is not None:
-                _cs_type_ref(source_id, var.child_by_field_name("type"), "member", source, raw_calls, file_path)
+            # `Info.Count` in an initializer is a field, not a type named Info.
+            members = members if members is not None else _cs_member_types(m, source, {})
+            _cs_walk_type_refs(m, source_id, source, raw_calls, file_path, members, "member")
 
 
 def _cs_receiver(call_node, source: bytes, declared: dict) -> tuple:
