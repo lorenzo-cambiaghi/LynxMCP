@@ -110,13 +110,38 @@ def test_t2_instructions_send_a_new_type_to_the_graph():
 
 @pytest.mark.xfail(strict=True, reason="T6: CI runs pytest only")
 def test_t6_every_script_suite_runs_in_ci():
-    real_config = {"test_watch.py", "test_deep_search.py", "test_search_batch.py"}
+    """One runner finds the script suites with the probe conftest.py uses and
+    runs every one but the three that open the real config; CI calls it. A
+    new suite is picked up without touching the workflow."""
     workflow = (REPO / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
-    missing = []
-    for p in sorted((REPO / "tests").glob("test_*.py")):
-        text = p.read_text(encoding="utf-8", errors="replace")
-        # the probe conftest.py uses to keep a script suite out of pytest
-        is_script = ("def " + "main(") in text
-        if is_script and p.name not in real_config and p.name not in workflow:
-            missing.append(p.name)
-    assert not missing, f"script suites CI never runs: {missing}"
+    runner = REPO / "tests" / "run_script_suites.py"
+    assert runner.exists(), "no runner for the script suites"
+    assert "run_script_suites.py" in workflow, "CI does not call the runner"
+    text = runner.read_text(encoding="utf-8")
+    for real_config in ("test_watch.py", "test_deep_search.py", "test_search_batch.py"):
+        assert real_config in text, f"the runner must leave out {real_config}"
+
+
+# The same gap in C#: two classes named Base in two namespaces; Mid's file
+# uses one of them. A 1.4-million-line C# library is where T1 has to work.
+CS_NAMESAKES = {
+    "Util/Base.cs": "namespace Util { public class Base { } }\n",
+    "Other/Base.cs": "namespace Other { public class Base { } }\n",
+    "Mid.cs": "using Util;\nnamespace App { public class Mid : Base { } }\n",
+}
+
+
+@pytest.mark.xfail(strict=True, reason="T3: C# bases are linked to every namesake")
+def test_t3_csharp_base_resolved_through_using(tmp_path):
+    code = tmp_path / "code"
+    for rel, text in CS_NAMESAKES.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text, encoding="utf-8")
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=code, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    G = layer._graph
+    bases = [(G.nodes[v].get("file") or "", d.get("confidence")) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "inherits" and (G.nodes[u].get("label") or "").endswith("Mid")]
+    assert len(bases) == 1, bases
+    assert bases[0][0].replace("\\", "/").endswith("/Util/Base.cs") and bases[0][1] != "ambiguous", bases
