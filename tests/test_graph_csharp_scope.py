@@ -68,6 +68,34 @@ def test_partial_declarations_are_one_type(tmp_path):
     assert bases and {c for _, c in bases} == {"resolved"}, bases
 
 
+def _calls(G, caller: str) -> list:
+    return sorted(G.nodes[v].get("label") for u, v, d in G.edges(data=True)
+                  if d.get("relation") == "calls" and G.nodes[u].get("label") == caller)
+
+
+CALLS = {
+    "Net/Server.cs": ("namespace Net;\npublic class Server {\n  public void Poll() { }\n"
+                      "  public void Run() { Poll(); }\n}\n"),
+    "Other/Pump.cs": "namespace Other;\npublic class Pump { public void Poll() { } public void Empty() { } }\n",
+    "Engine/Loop.cs": ("namespace Engine;\npublic class Systems { public void Add<T>() { } }\n"
+                       "public static class LoopExtensions { public static void AddBullets(this Systems s) { } }\n"),
+    "Game.cs": ("using Net;\nusing Engine;\nnamespace Game;\npublic class Match {\n"
+                "  private Server _server;\n"
+                "  public void Tick(Systems systems) {\n"
+                "    _server.Poll();\n    var other = new Server(); other.Run();\n"
+                "    systems.Add<Match>();\n    systems.AddBullets();\n    Assert.Empty(systems);\n  }\n}\n"),
+}
+
+
+def test_a_csharp_call_binds_by_the_receivers_type_not_by_name(tmp_path):
+    # `Poll()` in Server is Server's own, not Pump's namesake; `_server.Poll()`
+    # and `other.Run()` go to the declared types; Assert is xUnit's, so its
+    # `Empty` is not the codebase's Pump.Empty.
+    G = _graph(tmp_path, CALLS)
+    assert _calls(G, "Server.Run") == ["Server.Poll"]
+    assert _calls(G, "Match.Tick") == ["LoopExtensions.AddBullets", "Server.Poll", "Server.Run", "Systems.Add"]
+
+
 def test_an_extension_block_holds_methods_not_one_long_function(tmp_path):
     G = _graph(tmp_path, {
         "Ext.cs": ("namespace Util;\npublic static class SizeExtensions {\n"

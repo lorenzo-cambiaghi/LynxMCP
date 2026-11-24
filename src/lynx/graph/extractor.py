@@ -1913,6 +1913,12 @@ def _extract_callee(call_node, rules: LangGraphRules, source: bytes) -> "Optiona
             return (name, True) if name else None
         return None
 
+    # `Add<Bullets>()`: a generic method called by its name.
+    if callee.type == "generic_name":
+        ident = next((c for c in callee.children if c.type == "identifier"), None)
+        name = _text(ident, source).strip() if ident is not None else ""
+        return (name, False) if name else None
+
     # Plain identifier — direct call `foo()`, unless the call node holds a
     # receiver of its own (Java `obj.foo()`).
     if callee.type in ("identifier", "simple_identifier", "name"):
@@ -1955,11 +1961,152 @@ def _local_function_names(fn_node, source: bytes) -> frozenset:
     return frozenset(names)
 
 
+_CS_TYPE_DECLS = ("class_declaration", "struct_declaration", "record_declaration",
+                  "record_struct_declaration", "interface_declaration")
+
+
+def _cs_type_name(node, source: bytes) -> Optional[str]:
+    """The simple name of a C# type: `List<int>` List, `Foo?` Foo, `A.B.C`
+    C. None for `var`, built-in types, arrays and tuples, whose members are
+    not the codebase's."""
+    if node is None:
+        return None
+    t = node.type
+    if t == "nullable_type":
+        return _cs_type_name(node.named_children[0], source) if node.named_children else None
+    if t == "identifier":
+        return _text(node, source).strip() or None
+    if t == "generic_name":
+        ident = next((c for c in node.children if c.type == "identifier"), None)
+        return _text(ident, source).strip() if ident is not None else None
+    if t == "qualified_name":
+        last = node.named_children[-1] if node.named_children else None
+        return _cs_type_name(last, source)
+    return None
+
+
+def _cs_declared_types(fn_node, source: bytes, members: dict) -> dict:
+    """name -> type name for what a C# method body can name: the enclosing
+    type's fields and properties (`members`), then the method's parameters,
+    locals (`var x = new T()` included), foreach variables and patterns."""
+    out = dict(members)
+    stack = [fn_node]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "parameter":
+            name, typ = n.child_by_field_name("name"), n.child_by_field_name("type")
+            tn = _cs_type_name(typ, source)
+            if name is not None and tn:
+                out[_text(name, source)] = tn
+        elif t == "variable_declaration":
+            typ = n.child_by_field_name("type")
+            tn = _cs_type_name(typ, source)
+            for d in n.named_children:
+                if d.type != "variable_declarator":
+                    continue
+                name = d.child_by_field_name("name")
+                found = tn
+                if found is None:
+                    made = next((c for c in d.named_children if c.type == "object_creation_expression"), None)
+                    found = _cs_type_name(made.child_by_field_name("type"), source) if made is not None else None
+                if name is not None and found:
+                    out[_text(name, source)] = found
+        elif t == "foreach_statement":
+            left, typ = n.child_by_field_name("left"), n.child_by_field_name("type")
+            tn = _cs_type_name(typ, source)
+            if left is not None and tn:
+                out[_text(left, source)] = tn
+        elif t == "declaration_pattern":
+            name, typ = n.child_by_field_name("name"), n.child_by_field_name("type")
+            tn = _cs_type_name(typ, source)
+            if name is not None and tn:
+                out[_text(name, source)] = tn
+        stack.extend(n.children)
+    return out
+
+
+def _cs_member_types(fn_node, source: bytes, cache: dict) -> dict:
+    """Fields, properties and primary-constructor parameters of the type that
+    encloses a C# method, by name."""
+    p = fn_node.parent
+    while p is not None and p.type not in _CS_TYPE_DECLS:
+        p = p.parent
+    if p is None:
+        return {}
+    if p.start_byte in cache:
+        return cache[p.start_byte]
+    out = {}
+    for c in p.children:
+        if c.type == "parameter_list":
+            for prm in c.named_children:
+                name, typ = prm.child_by_field_name("name"), prm.child_by_field_name("type")
+                tn = _cs_type_name(typ, source)
+                if name is not None and tn:
+                    out[_text(name, source)] = tn
+        elif c.type == "declaration_list":
+            for m in c.named_children:
+                if m.type == "property_declaration":
+                    name, typ = m.child_by_field_name("name"), m.child_by_field_name("type")
+                    tn = _cs_type_name(typ, source)
+                    if name is not None and tn:
+                        out[_text(name, source)] = tn
+                elif m.type in ("field_declaration", "event_field_declaration"):
+                    var = next((x for x in m.named_children if x.type == "variable_declaration"), None)
+                    if var is None:
+                        continue
+                    tn = _cs_type_name(var.child_by_field_name("type"), source)
+                    for d in var.named_children:
+                        name = d.child_by_field_name("name") if d.type == "variable_declarator" else None
+                        if name is not None and tn:
+                            out[_text(name, source)] = tn
+    cache[p.start_byte] = out
+    return out
+
+
+def _cs_receiver(call_node, source: bytes, declared: dict) -> tuple:
+    """What a C# call is made on: ("self",) for `Foo()`, ("this",), ("base",),
+    ("type", T) for a variable, field or property of a known type,
+    ("static", T) for `Type.Foo()`, ("unknown",) otherwise."""
+    callee = call_node.child_by_field_name("function")
+    if callee is None or callee.type != "member_access_expression":
+        return ("self",)
+    expr = callee.child_by_field_name("expression")
+    if expr is None:
+        return ("unknown",)
+    text = _text(expr, source).strip()
+    if text in ("this", "base"):
+        return (text,)
+    if expr.type == "predefined_type":
+        return ("static", text)              # `string.Join`: a type outside the codebase
+    if expr.type == "identifier":
+        if text in declared:
+            return ("type", declared[text])
+        return ("static", text) if text[:1].isupper() else ("unknown",)
+    if expr.type == "member_access_expression":
+        inner = expr.child_by_field_name("expression")
+        name = expr.child_by_field_name("name")
+        if inner is not None and name is not None and _text(inner, source).strip() == "this":
+            n = _text(name, source).strip()
+            if n in declared:
+                return ("type", declared[n])
+        # `Splines.SplineEditing.Edited()`: a qualified type, or a static
+        # property (`Engine.Instance.Do()`); the resolver tries the type.
+        if re.fullmatch(r"[A-Z]\w*(\.[A-Z]\w*)+", text) and text.split(".", 1)[0] not in declared:
+            return ("chain", text.rsplit(".", 1)[1])
+    if expr.type == "generic_name":
+        return ("static", _cs_type_name(expr, source) or text)
+    return ("unknown",)
+
+
 def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 local_index: dict, edges: list, raw_calls: list, file_path: str,
-                local_names: frozenset = frozenset(), file_id: Optional[str] = None) -> None:
+                local_names: frozenset = frozenset(), file_id: Optional[str] = None,
+                cs_declared: Optional[dict] = None) -> None:
     """Walk a function body, emitting call edges (resolved or raw), and the
-    file's imports written inside it."""
+    file's imports written inside it. For C# (`cs_declared`, the names the
+    body can see and their types) every call goes to the resolver with what
+    it is made on, which decides by type, not by name."""
     for child in node.children:
         # An import inside a function (Python's lazy `from .x import y`, kept
         # out of module load for start-up time) is the file's import all the
@@ -1978,6 +2125,23 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
             extracted = _extract_callee(child, rules, source)
             if extracted is not None and not extracted[1] and extracted[0].lower() in local_names:
                 extracted = None             # a function local to the caller
+            if extracted is not None and cs_declared is not None:
+                callee_name, is_member = extracted
+                callee_name = callee_name.split("<", 1)[0].strip()
+                recv = _cs_receiver(child, source, cs_declared)
+                if callee_name:
+                    rc = {
+                        "caller": caller_id,
+                        "callee_name": callee_name,
+                        "is_member": is_member,
+                        "file": file_path,
+                        "line": child.start_point[0] + 1,
+                        "recv": recv[0],
+                    }
+                    if len(recv) > 1 and recv[1]:
+                        rc["recv_type"] = recv[1]
+                    raw_calls.append(rc)
+                extracted = None
             if extracted is not None:
                 callee_name, is_member = extracted
                 callee_key = callee_name.lower()
@@ -2009,7 +2173,7 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                 #   navigation view, so emit nothing rather than guess.
         # Recurse into the children — body / block / expression-statement etc.
         _walk_calls(child, caller_id, rules, source, local_index, edges, raw_calls, file_path,
-                    local_names, file_id)
+                    local_names, file_id, cs_declared)
 
 
 # ---------------------------------------------------------------------------
@@ -2033,8 +2197,25 @@ def _csharp_namespaces(nodes: list) -> None:
         n["namespace"] = next((b for b in blocks if n["label"].startswith(b + ".")), "") or file_scoped
 
 
+def _cs_method_facts(fn, source: bytes, extends: Optional[str] = None) -> dict:
+    """`static`, and the type an extension method extends: the `this`
+    parameter's type, or the type of its C# 14 `extension(T x)` block."""
+    out = {}
+    if any(c.type == "modifier" and _text(c, source) == "static" for c in fn.children):
+        out["static"] = True
+    if extends is None:
+        plist = next((c for c in fn.children if c.type == "parameter_list"), None)
+        first = next((p for p in (plist.named_children if plist is not None else ()) if p.type == "parameter"), None)
+        if first is not None and any(c.type == "modifier" and _text(c, source) == "this" for c in first.children):
+            extends = _cs_type_name(first.child_by_field_name("type"), source)
+    if extends:
+        out["extends"] = extends
+    return out
+
+
 def _emit_function(fn, name: str, container_path: list, file_path: str, id_stem: str,
-                   nodes: list, edges: list, local_index: dict, function_bodies: list) -> None:
+                   nodes: list, edges: list, local_index: dict, function_bodies: list,
+                   extra: Optional[dict] = None) -> None:
     qualified = ".".join(container_path + [name]) if container_path else name
     node_id = _make_id(id_stem, qualified)
     nodes.append({
@@ -2046,6 +2227,7 @@ def _emit_function(fn, name: str, container_path: list, file_path: str, id_stem:
         "start_line": fn.start_point[0] + 1,
         "end_line": fn.end_point[0] + 1,
         "lang_key": None,  # filled in by caller
+        **(extra or {}),
     })
     local_index[name.lower()] = node_id
     # Also index the bare leaf (last segment) for member-call resolution.
@@ -2119,13 +2301,18 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
                 # the enclosing type, not one long function (a 669-line
                 # "method" in a 1.4M-line library).
                 block = next((c for c in child.children if c.type == "block"), None)
+                plist = next((c for c in child.children if c.type == "parameter_list"), None)
+                first = next((p for p in (plist.named_children if plist is not None else ()) if p.type == "parameter"), None)
+                extended = _cs_type_name(first.child_by_field_name("type"), source) if first is not None else None
                 for member in (block.named_children if block is not None else ()):
                     if member.type == "local_function_statement":
                         _emit_function(member, _name_of(member, source) or "<anonymous>", container_path,
-                                       file_path, id_stem, nodes, edges, local_index, function_bodies)
+                                       file_path, id_stem, nodes, edges, local_index, function_bodies,
+                                       _cs_method_facts(member, source, extended or ""))
                 continue
+            extra = _cs_method_facts(child, source) if rules.import_handler is _handle_csharp_import else None
             _emit_function(child, name, container_path, file_path, id_stem, nodes, edges,
-                           local_index, function_bodies)
+                           local_index, function_bodies, extra)
             # Do NOT recurse into a function — its body is walked separately.
             continue
         if child.type in rules.container_types:
@@ -2258,9 +2445,13 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
 
     # Second pass: walk every function body collecting call edges.
     raw_calls: list = []
+    members_cache: dict = {}
     for caller_id, body in function_bodies:
+        declared = None
+        if lang_key == "c_sharp":
+            declared = _cs_declared_types(body, source, _cs_member_types(body, source, members_cache))
         _walk_calls(body, caller_id, rules, source, local_index, edges, raw_calls, abs_path_norm,
-                    _local_function_names(body, source), file_id)
+                    _local_function_names(body, source), file_id, declared)
 
     # Every import the file tries, resolved or not, travels on its file node:
     # when another file appears or goes, the builder finds the files whose

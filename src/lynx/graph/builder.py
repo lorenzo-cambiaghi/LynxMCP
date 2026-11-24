@@ -641,10 +641,16 @@ class GraphLayer:
         """
         added = 0
         imported = self._imported_files()
+        cs = None
         for file_path, calls in self._raw_calls_by_file.items():
             for rc in calls:
                 key = rc["callee_name"].lower()
                 if only_names is not None and key not in only_names:
+                    continue
+                if "recv" in rc:
+                    if cs is None:
+                        cs = self._csharp_call_context()
+                    added += self._resolve_csharp_call(rc, file_path, cs)
                     continue
                 candidates = self._symbol_index.get(key) or []
                 if not candidates:
@@ -729,6 +735,125 @@ class GraphLayer:
                         })
                         added += 1
                 # member call with multiple candidates: deliberately skipped.
+        return added
+
+    def _csharp_call_context(self) -> dict:
+        """What resolving C# calls by type needs, built once per pass: the
+        type owning each method, each type's methods and bases, the
+        extension methods, and what each file can see."""
+        owner, methods, ext = {}, {}, {}
+        for u, v, d in self._graph.edges(data=True):
+            if d.get("relation") != "contains":
+                continue
+            un, vn = self._nodes_by_id.get(u) or {}, self._nodes_by_id.get(v) or {}
+            if un.get("kind") == "class" and un.get("subkind") not in CSHARP_NAMESPACE_KINDS and vn.get("kind") == "function":
+                owner[v] = u
+                tk = self._type_key(u)
+                leaf = (vn.get("label") or "").rsplit(".", 1)[-1].lower()
+                methods.setdefault(tk, {}).setdefault(leaf, []).append(v)
+                if vn.get("extends"):
+                    ext.setdefault(leaf, []).append(v)
+        bases = {}
+        for u, v, d in self._graph.edges(data=True):
+            if d.get("relation") == "inherits":
+                bases.setdefault(self._type_key(u), set()).add(self._type_key(v))
+        return {"owner": owner, "methods": methods, "ext": ext, "bases": bases,
+                "usings": self._csharp_usings(), "chains": {}}
+
+    def _type_chain(self, start: list, cs: dict) -> list:
+        """The types a member lookup walks: the given ones, then their bases,
+        nearest first (ten levels at most)."""
+        key = tuple(start)
+        if key in cs["chains"]:
+            return cs["chains"][key]
+        out, seen, level = [], set(), list(start)
+        for _ in range(10):
+            nxt = []
+            for tk in level:
+                if tk in seen:
+                    continue
+                seen.add(tk)
+                out.append(tk)
+                nxt.extend(cs["bases"].get(tk, ()))
+            if not nxt:
+                break
+            level = nxt
+        cs["chains"][key] = out
+        return out
+
+    def _resolve_csharp_call(self, rc: dict, file_path: str, cs: dict) -> int:
+        """A C# call resolved the way the compiler binds it, as far as the
+        source shows: `Foo()` and `this.Foo()` in the caller's type and its
+        bases, `base.Foo()` in the bases, `x.Foo()` in the declared type of
+        `x` (a field, property, parameter or local), `Type.Foo()` in a type
+        the file can see; then extension methods on those types. A call on a
+        receiver whose type is unknown resolves only when one visible type
+        declares the name. Nothing found: a member of a type outside the
+        codebase, and no edge."""
+        name = rc["callee_name"].lower()
+        caller = rc["caller"]
+        owner = cs["owner"].get(caller)
+        recv = rc.get("recv")
+        start = []
+        if recv in ("self", "this", "base") and owner is not None:
+            mine = self._type_key(owner)
+            start = sorted(cs["bases"].get(mine, ())) if recv == "base" else [mine]
+        elif recv in ("type", "static", "chain"):
+            tname = (rc.get("recv_type") or "").lower()
+            types = [c for c in (self._symbol_index.get(tname) or [])
+                     if (self._nodes_by_id.get(c) or {}).get("kind") == "class"
+                     and (self._nodes_by_id.get(c) or {}).get("subkind") not in CSHARP_NAMESPACE_KINDS]
+            if types and owner is not None:
+                types = self._csharp_base_candidates({"child": owner, "base_name": rc.get("recv_type")},
+                                                     file_path, types, cs["usings"])
+            start = sorted({self._type_key(t) for t in types})
+        targets = []
+        if start:
+            chain = self._type_chain(start, cs)
+            for tk in chain:
+                found = cs["methods"].get(tk, {}).get(name)
+                if found:
+                    targets = found
+                    break
+            if not targets and recv != "base":
+                simple = {tk[-1].rsplit(".", 1)[-1].lower() for tk in chain}
+                targets = [f for f in cs["ext"].get(name, ())
+                           if ((self._nodes_by_id.get(f) or {}).get("extends") or "").lower() in simple]
+            if not targets and recv in ("self", "this") and owner is not None:
+                # A nested type calling its enclosing type's member.
+                label = (self._nodes_by_id.get(owner) or {}).get("label") or ""
+                while "." in label and not targets:
+                    label = label.rsplit(".", 1)[0]
+                    outer = [c for c in (self._symbol_index.get(label.rsplit(".", 1)[-1].lower()) or [])
+                             if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
+                    for o in outer:
+                        targets = cs["methods"].get(self._type_key(o), {}).get(name) or []
+                        if targets:
+                            break
+        if not start and (recv in ("unknown", "chain") or (recv in ("self", "this") and owner is None)):
+            # (A `Type.Foo()` on a type the codebase does not declare, such
+            # as xUnit's `Assert` or `string`, is that type's: no edge. A
+            # chain that names no type is a static property: unknown.)
+            ns = (self._nodes_by_id.get(owner) or {}).get("namespace", "") if owner else ""
+            parts = ns.split(".") if ns else []
+            visible = {".".join(parts[:i]) for i in range(len(parts) + 1)} | cs["usings"].get(file_path, set())
+            cands = [f for f in (self._symbol_index.get(name) or [])
+                     if f in cs["owner"] and (self._nodes_by_id.get(cs["owner"][f]) or {}).get("namespace", "") in visible]
+            if len({self._type_key(cs["owner"][f]) for f in cands}) == 1:
+                targets = cands
+        added = 0
+        for target in targets:
+            if target == caller or self._graph.has_edge(caller, target):
+                continue
+            self._add_edge_inplace({
+                "source": caller,
+                "target": target,
+                "relation": "calls",
+                "confidence": "resolved",
+                "from_file": file_path,
+                "from_line": rc.get("line"),
+            })
+            added += 1
         return added
 
     def _imported_files(self) -> dict:

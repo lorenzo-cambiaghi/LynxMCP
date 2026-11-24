@@ -39,6 +39,17 @@ and three generics named like their base).
 A C# 14 `extension(T x) { ... }` block is read as the methods it holds,
 not as one function named `extension` (one was 669 lines long).
 
+C# calls are bound by type, not by name. `Foo()` and `this.Foo()` look in
+the caller's type and its bases, `base.Foo()` in the bases, `x.Foo()` in
+the declared type of `x` (field, property, parameter, local, `var x = new
+T()`, `foreach`, pattern), `Type.Foo()` in a type the file can see, then
+the extension methods on those types; a receiver of unknown type resolves
+only when one visible type declares the name. `Add<T>()` is no longer
+lost, and a call on a type outside the codebase (`Assert`, `string`) gets
+no edge. On the 1.4-million-line library the call edges went from
+1,115,634, 91% of them ambiguous (a plain `Foo()` was linked to every
+method named `Foo`, 46 on average), to 145,721, all resolved.
+
 ## 1.12.0 - 2026-11-23
 
 Upgrading from 1.11.0: the chunker moves to version 6 (see Changed), so the
