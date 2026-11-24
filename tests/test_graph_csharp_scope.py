@@ -96,6 +96,59 @@ def test_a_csharp_call_binds_by_the_receivers_type_not_by_name(tmp_path):
     assert _calls(G, "Match.Tick") == ["LoopExtensions.AddBullets", "Server.Poll", "Server.Run", "Systems.Add"]
 
 
+def test_an_inherited_method_is_found_in_the_base(tmp_path):
+    # Bases are resolved before calls: `base.Start()`, `BaseOnly()` and
+    # `_child.BaseOnly()` all live in BaseServer.
+    G = _graph(tmp_path, {
+        "Net/BaseServer.cs": "namespace Net;\npublic class BaseServer { public virtual void Start() { } public void BaseOnly() { } }\n",
+        "Net/ChildServer.cs": ("namespace Net;\npublic class ChildServer : BaseServer {\n"
+                               "  public override void Start() { }\n  public void Boot() { base.Start(); BaseOnly(); }\n}\n"),
+        "Game/Runner.cs": "using Net;\nnamespace Game;\npublic class Runner {\n  private ChildServer _srv;\n  public void Go() { _srv.BaseOnly(); }\n}\n",
+    })
+    assert _calls(G, "ChildServer.Boot") == ["BaseServer.BaseOnly", "BaseServer.Start"]
+    assert _calls(G, "Runner.Go") == ["BaseServer.BaseOnly"]
+
+
+def test_an_update_to_a_base_list_rebinds_the_inherited_calls_elsewhere(tmp_path):
+    code = tmp_path / "code"
+    files = {
+        "Net/BaseServer.cs": "namespace Net;\npublic class BaseServer { public void BaseOnly() { } }\n",
+        "Net/ChildServer.cs": "namespace Net;\npublic class ChildServer : BaseServer { }\n",
+        "Game/Runner.cs": "using Net;\nnamespace Game;\npublic class Runner {\n  private ChildServer _srv;\n  public void Go() { _srv.BaseOnly(); }\n}\n",
+    }
+    for rel, text in files.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text, encoding="utf-8")
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=code, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    assert _calls(layer.graph, "Runner.Go") == ["BaseServer.BaseOnly"]
+    (code / "Net" / "ChildServer.cs").write_text("namespace Net;\npublic class ChildServer { }\n", encoding="utf-8")
+    layer.update_file(str(code / "Net" / "ChildServer.cs"))
+    assert _calls(layer.graph, "Runner.Go") == [], "ChildServer no longer inherits BaseOnly"
+
+
+def test_an_update_drops_a_type_reference_that_became_ambiguous(tmp_path):
+    code = tmp_path / "code"
+    files = {
+        "W1/Rain.cs": "namespace W1;\npublic class Rain { }\n",
+        "Setup.cs": "using W1;\nusing W2;\nnamespace Game;\npublic class Setup { public object Make() => new Rain(); }\n",
+    }
+    for rel, text in files.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text, encoding="utf-8")
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=code, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    uses = lambda: [(layer.graph.nodes[u].get("label"), layer.graph.nodes[v].get("label"))  # noqa: E731
+                    for u, v, d in layer.graph.edges(data=True) if d.get("relation") == "uses_type"]
+    assert uses() == [("Setup.Make", "Rain")]
+    (code / "W2").mkdir()
+    (code / "W2" / "Rain.cs").write_text("namespace W2;\npublic class Rain { }\n", encoding="utf-8")
+    layer.update_file(str(code / "W2" / "Rain.cs"))
+    assert uses() == [], "two visible Rain types: the reference is ambiguous and gets no edge"
+
+
 def test_a_type_named_by_new_typeof_generics_and_signatures_is_used(tmp_path):
     # A system registered as `Add<Rain>()` or `typeof(Fog)` is used even if
     # nothing calls its methods: those references are `uses_type` edges.

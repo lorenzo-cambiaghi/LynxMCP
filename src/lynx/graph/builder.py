@@ -925,8 +925,8 @@ class GraphLayer:
         return counts
 
     def _clear_resolved_and_ambiguous(self, only_target_names: "set | None" = None) -> None:
-        """Remove derived edges (calls + inherits) whose confidence is
-        'resolved' or 'ambiguous'. These come from raw_calls / raw_inherits
+        """Remove derived edges (calls, inherits, uses_type) whose confidence
+        is 'resolved' or 'ambiguous'. These come from raw_calls / raw_inherits
         and must be re-emitted whenever the symbol index changes.
 
         When `only_target_names` is given, only edges whose TARGET node's leaf
@@ -938,7 +938,7 @@ class GraphLayer:
         add-only resolver would never remove)."""
         to_drop = []
         for u, v, d in self._graph.edges(data=True):
-            if d.get("relation") not in ("calls", "inherits"):
+            if d.get("relation") not in ("calls", "inherits", "uses_type"):
                 continue
             if d.get("confidence") not in ("resolved", "ambiguous"):
                 continue
@@ -960,8 +960,9 @@ class GraphLayer:
         if not affected_names:
             return
         self._clear_resolved_and_ambiguous(only_target_names=affected_names)
-        self._resolve_raw_calls(only_names=affected_names)
+        # Bases first: a C# call to an inherited member walks them.
         self._resolve_raw_inherits(only_names=affected_names)
+        self._resolve_raw_calls(only_names=affected_names)
 
     def _type_key(self, node_id: str) -> tuple:
         """One type, whatever the number of its declarations: the partial
@@ -1289,8 +1290,9 @@ class GraphLayer:
             # current symbol index. The intra-file "extracted" calls are
             # left alone; we only clear resolved/ambiguous.
             self._clear_resolved_and_ambiguous()
-            resolved_calls = self._resolve_raw_calls()
+            # Bases first: a C# call to an inherited member walks them.
             resolved_inherits = self._resolve_raw_inherits()
+            resolved_calls = self._resolve_raw_calls()
 
             now = datetime.now().isoformat()
             self._metadata["last_update"] = now
@@ -1334,6 +1336,7 @@ class GraphLayer:
                 return False  # nothing to do
             is_new = abs_norm not in self._file_hashes
             reach_before = self._imported_files()
+            bases_before = {(ri["child"], ri["base_name"]) for ri in self._raw_inherits_by_file.get(abs_norm, ())}
             # Drop old state for this file; capture the names whose symbol-index
             # entry it touched (their cross-file resolution may now change).
             affected_names = self._drop_file(abs_norm)
@@ -1371,9 +1374,18 @@ class GraphLayer:
                 for importer in sorted(self._importers_of([abs_norm])):
                     affected_names |= self._reextract(importer)
             affected_names |= self._calls_of_moved_reach(reach_before)
-            # Re-resolve ONLY the affected names cross-file (the symbol index
-            # only moved for symbols defined/removed in this one file).
-            self._reresolve_for_names(affected_names)
+            bases_after = {(ri["child"], ri["base_name"]) for ri in self._raw_inherits_by_file.get(abs_norm, ())}
+            if abs_norm.lower().endswith(".cs") and bases_after != bases_before:
+                # A C# type gained or lost a base: the members it inherits
+                # change for every caller, in any file, under any name.
+                # Rare (a base list edit), so everything is resolved again.
+                self._clear_resolved_and_ambiguous()
+                self._resolve_raw_inherits()
+                self._resolve_raw_calls()
+            else:
+                # Re-resolve ONLY the affected names cross-file (the symbol
+                # index only moved for symbols defined/removed in this file).
+                self._reresolve_for_names(affected_names)
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True
@@ -1389,13 +1401,21 @@ class GraphLayer:
                 return False
             importers = self._importers_of([abs_norm])
             reach_before = self._imported_files()
+            had_bases = abs_norm.lower().endswith(".cs") and bool(self._raw_inherits_by_file.get(abs_norm))
             affected_names = self._drop_file(abs_norm, gone=True)
             for importer in sorted(importers):
                 affected_names |= self._reextract(importer)
             affected_names |= self._calls_of_moved_reach(reach_before)
-            # Re-resolve only the names this file defined (other files' raw_calls
-            # to them may now resolve differently — or no longer resolve).
-            self._reresolve_for_names(affected_names)
+            if had_bases:
+                # C# types with bases are gone: calls to what they inherited,
+                # from any file, are resolved again (as in update_file).
+                self._clear_resolved_and_ambiguous()
+                self._resolve_raw_inherits()
+                self._resolve_raw_calls()
+            else:
+                # Re-resolve only the names this file defined (other files'
+                # raw_calls to them may now resolve differently, or not at all).
+                self._reresolve_for_names(affected_names)
             self._metadata["last_update"] = datetime.now().isoformat()
             self._persist()
             return True

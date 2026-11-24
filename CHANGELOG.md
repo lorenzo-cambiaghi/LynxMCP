@@ -86,7 +86,8 @@ only when one visible type declares the name. `Add<T>()` is no longer
 lost, and a call on a type outside the codebase (`Assert`, `string`) gets
 no edge. On the 1.4-million-line library the call edges went from
 1,115,634, 91% of them ambiguous (a plain `Foo()` was linked to every
-method named `Foo`, 46 on average), to 145,320, none ambiguous.
+method named `Foo`, 46 on average), to 146,981, none ambiguous; bases
+are resolved first, so a call to an inherited member finds it.
 
 ## 1.12.0 - 2026-11-23
 

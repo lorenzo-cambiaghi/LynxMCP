@@ -20,6 +20,7 @@ So: pytest-collected, and asserting the two things that matter.
 """
 from __future__ import annotations
 
+import re
 import json
 from pathlib import Path
 
@@ -376,6 +377,8 @@ def test_the_graph_form_lists_every_operation(client):
 
     for op in OPERATIONS:
         assert f'value="{op}"' in r.text, f"{op} missing from the form"
+        # Without its entry in GRAPH_FIELDS the form hides every input.
+        assert re.search(rf"^\s*{op}:\s*\{{", r.text, re.M), f"{op} has no fields in GRAPH_FIELDS"
 
 
 # ----------------------------------------------------------------------

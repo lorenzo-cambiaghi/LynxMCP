@@ -208,7 +208,10 @@ def query_graph(
     if op == "audit":
         # `symbol` names a package folder; `limit` below its default caps the
         # findings per principle.
-        text = manager.audit(source, symbol, per_principle=limit if limit and limit < 50 else 5)
+        try:
+            text = manager.audit(source, symbol, per_principle=limit if limit and limit < 50 else 5)
+        except FileNotFoundError as e:
+            return _error(str(e))            # a package folder that is not there: a usage problem
         return GraphQueryResult(True, op, text, {"operation": op, "source": source, "package": symbol})
 
     if op == "neighbors":

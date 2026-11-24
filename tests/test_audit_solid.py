@@ -71,6 +71,42 @@ def test_a_finding_carries_the_fence_of_its_refactor(tmp_path):
     assert fence["tests"] == ["tests/Pkg.Tests/ServerTests.cs"]
 
 
+LONG = "\n".join(f"    int x{i} = {i};" for i in range(120))
+EDGES = {
+    "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+    # A partial class: the long method lives in the second file.
+    "src/Pkg/NetServer.A.cs": "namespace Pkg;\npublic partial class NetServer {\n" + "\n" * 120 + "}\n",
+    "src/Pkg/NetServer.B.cs": "namespace Pkg;\npublic partial class NetServer {\n  void BigWork() {\n" + LONG + "\n  }\n}\n",
+    # Two switches inside a nested type, counted once each.
+    "src/Pkg/Outer.cs": ("namespace Pkg;\npublic class Outer {\n  public class Inner {\n"
+                         "    void A(int kind) { switch (kind) { case 1: break; case 2: break; case 3: break; case 4: break; } }\n"
+                         "    void B(int kind) { switch (kind) { case 1: break; case 2: break; case 3: break; case 4: break; } }\n"
+                         "  }\n}\n"),
+    # Many short methods, so the codebase's own norm stays small.
+    "src/Pkg/Small.cs": "namespace Pkg;\npublic class Small {\n" + "".join(f"  public void M{i}() {{ }}\n" for i in range(200)) + "}\n",
+    # Public types nothing in the codebase uses are API, not dead code.
+    "src/Pkg/Api.cs": ("namespace Pkg;\n[System.Serializable]\npublic class AttributedPublic { }\n"
+                       "partial class SplitPublic { }\npublic partial class SplitPublic { }\n"),
+}
+
+
+def test_partial_and_nested_types_are_read_as_one_type_each(tmp_path):
+    root = tmp_path / "code"
+    for rel, text in EDGES.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    findings, _ = audit(layer.graph, root, "Pkg")
+    long = [f for f in findings if f.title == "NetServer.BigWork is long"]
+    assert long and long[0].where == "src/Pkg/NetServer.B.cs:3", [(f.title, f.where) for f in findings]
+    assert not [f for f in findings if f.principle == "O"], "a nested type's switches counted twice"
+    unused = {f.title for f in findings if f.title.endswith("is used by nothing")}
+    assert not unused & {"AttributedPublic is used by nothing", "SplitPublic is used by nothing"}, unused
+
+
 def test_method_names_point_to_the_jobs_of_a_type():
     from lynx.audit.solid import name_areas
     names = ["HandleFreshHandshake", "HandleResumeHandshake", "FailHandshake",

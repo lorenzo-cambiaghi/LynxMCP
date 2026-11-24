@@ -119,8 +119,10 @@ def _project_refs(root: Path) -> dict:
 
 def _churn(root: Path, package_rel: str) -> Counter:
     try:
+        # --relative: paths relative to `root` even when it is a subfolder of
+        # the repository, the way the fence names the files.
         out = subprocess.run(["git", "-C", str(root), "log", "--since=180 days ago", "--format=", "--name-only",
-                              "--", package_rel], capture_output=True, text=True, encoding="utf-8",
+                              "--relative", "--", package_rel], capture_output=True, text=True, encoding="utf-8",
                              errors="replace", timeout=60).stdout
     except (OSError, subprocess.SubprocessError):
         return Counter()
@@ -161,7 +163,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
             raise FileNotFoundError(f"no folder {package!r} under {root}")
         pkg_dir = hits[0]
     package_rel = pkg_dir.relative_to(root).as_posix()
-    inside = lambda f: cb.rel(f).startswith(package_rel + "/")  # noqa: E731
+    if package_rel in ("", "."):
+        inside = lambda f: True  # noqa: E731  the whole codebase is the package
+    else:
+        inside = lambda f: cb.rel(f).startswith(package_rel + "/")  # noqa: E731
 
     # The codebase's own sizes, from the graph.
     decls = defaultdict(list)
@@ -249,16 +254,17 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 ev += "; the method names point to " + "; ".join(
                     f"{w} ({len(ms)}: {', '.join(ms[:3])}{', ...' if len(ms) > 3 else ''})" for w, ms in areas[:4])
             findings.append(Finding("S", f"{first.name} does several jobs", at, ev, key, 3.0 if len(areas) >= 2 else 2.0))
-        for m in meths:
-            n = m.end - m.line + 1
-            if n > long_method:
-                t = next(t for t in ts if t.line <= m.line <= t.end)
-                findings.append(Finding("S", f"{first.name}.{m.name} is long", f"{t.file}:{m.line}",
-                                        f"{n} lines, {m.branches} branches (1% of this codebase's methods are over {long_method} lines)",
-                                        key, 1.5))
-        if first.kind == "interface" and first.members > big_iface:
+        for t in ts:                       # each partial declaration with its own file
+            for m in t.methods:
+                n = m.end - m.line + 1
+                if n > long_method:
+                    findings.append(Finding("S", f"{first.name}.{m.name} is long", f"{t.file}:{m.line}",
+                                            f"{n} lines, {m.branches} branches (1% of this codebase's methods are over {long_method} lines)",
+                                            key, 1.5))
+        iface_members = sum(t.members for t in ts)
+        if first.kind == "interface" and iface_members > big_iface:
             findings.append(Finding("I", f"{first.name} is a wide interface", at,
-                                    f"{first.members} members (95% of this codebase's interfaces have {big_iface} or fewer)", key, 2.0))
+                                    f"{iface_members} members (95% of this codebase's interfaces have {big_iface} or fewer)", key, 2.0))
         for t in ts:
             for m in t.methods:
                 if m.body == "throws" or (m.body == "empty" and "override" in m.modifiers):
@@ -290,8 +296,9 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                                     k, 2.0))
     # D: a package that many depend on, depending on one that is less stable.
     def instability(p):
-        ca = sum(1 for deps in refs.values() if p in deps)
-        ce = len(refs.get(p, ()))
+        # Test projects are not dependents a design has to stay stable for.
+        ca = sum(1 for q, deps in refs.items() if p in deps and not q.endswith(".Tests"))
+        ce = len({q for q in refs.get(p, ()) if not q.endswith(".Tests")})
         return ce / (ca + ce) if ca + ce else 0.0
     for proj in sorted(pkg_projects):
         mine = instability(proj)
@@ -320,15 +327,12 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                       for x in ids | {f for f, o in owner.items() if o in ids}
                       for src, _, d in G.in_edges(x, data=True))
         first = G.nodes[pkg_types[key][0]]
-        if not reached and first.get("subkind") != "interface_declaration":
-            text = ""
-            try:
-                text = Path(first["file"]).read_text(encoding="utf-8", errors="ignore").splitlines()[first["start_line"] - 1]
-            except (OSError, IndexError):
-                pass
-            if "public" not in text and "protected" not in text:
-                findings.append(Finding("X", f"{key[1]} is used by nothing", f"{cb.rel(first['file'])}:{first['start_line']}",
-                                        "not public and nothing in the codebase calls, names or extends it", key, 1.0))
+        # The modifiers of every partial declaration, as parsed: a public type
+        # is API for code outside this codebase. No facts, no verdict.
+        mods = set().union(*(t.modifiers for t in by_key.get(key, ()))) if key in by_key else {"public"}
+        if not reached and first.get("subkind") != "interface_declaration" and not mods & {"public", "protected"}:
+            findings.append(Finding("X", f"{key[1]} is used by nothing", f"{cb.rel(first['file'])}:{first['start_line']}",
+                                    "not public and nothing in the codebase calls, names or extends it", key, 1.0))
 
     for f in findings:
         f.fence = fence(f.type_key) if f.type_key in decls else {

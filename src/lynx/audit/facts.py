@@ -105,6 +105,17 @@ def _walk(node):
         stack.extend(n.children)
 
 
+def _walk_own(type_node):
+    """The nodes of a type declaration, without the types nested in it: each
+    of those is read on its own, and its switches belong to it alone."""
+    stack = list(type_node.children)
+    while stack:
+        n = stack.pop()
+        yield n
+        if n.type not in TYPE_NODES:
+            stack.extend(n.children)
+
+
 def _body_of(node):
     for c in node.children:
         if c.type in ("block", "arrow_expression_clause"):
@@ -205,7 +216,7 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
             pname = _name(m, src)
             if pname:
                 decl.properties.append((pname, _modifiers(m, src)))
-    for n in _walk(node):
+    for n in _walk_own(node):
         if n.type in ("switch_statement", "switch_expression"):
             subj = n.child_by_field_name("value")
             if subj is None:
