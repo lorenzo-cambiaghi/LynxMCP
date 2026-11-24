@@ -1,0 +1,78 @@
+"""C# base types resolved by C#'s own lookup rules (TASKS_2026-11-24.md, R1).
+
+On a 1.4-million-line C# library 77% of the `inherits` edges were ambiguous:
+a base was linked to every type, method and namespace sharing its name
+(7,400 edges pointed at methods). These pin the rules that took it to 0.2%.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def _graph(tmp_path: Path, files: dict):
+    code = tmp_path / "code"
+    for rel, text in files.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text, encoding="utf-8")
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=code, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    return layer._graph
+
+
+def _bases(G, child: str) -> list:
+    return sorted((G.nodes[v].get("label"), d.get("confidence")) for u, v, d in G.edges(data=True)
+                  if d.get("relation") == "inherits" and G.nodes[u].get("label") == child)
+
+
+def test_a_base_is_a_type_not_a_method_or_a_namespace_of_that_name(tmp_path):
+    G = _graph(tmp_path, {
+        "Shapes/Shape.cs": "namespace Shapes;\npublic class Shape { }\n",
+        "Tools/Painter.cs": "namespace Tools;\npublic class Painter { public void Shape() { } }\n",
+        "Circle.cs": "using Shapes;\nnamespace App;\npublic class Circle : Shape { }\n",
+    })
+    assert _bases(G, "Circle") == [("Shape", "resolved")]
+
+
+def test_a_base_outside_the_codebase_links_to_no_namesake(tmp_path):
+    # `Window` is Avalonia's: the codebase's own Window lives in a namespace
+    # the file does not import, so no edge at all.
+    G = _graph(tmp_path, {
+        "Tests/Window.cs": "namespace Graphics.Tests;\npublic class Window { }\n",
+        "About.cs": "using Avalonia.Controls;\nnamespace Editor;\npublic class AboutWindow : Window { }\n",
+    })
+    assert _bases(G, "AboutWindow") == []
+
+
+def test_project_usings_and_aliases_make_a_base_visible(tmp_path):
+    # A csproj `<Using Include="Docs" />` holds for every file of the
+    # project; `using Step = Steps.Step;` names Step's namespace.
+    G = _graph(tmp_path, {
+        "Docs/IUndo.cs": "namespace Docs;\npublic interface IUndo { }\n",
+        "Steps/Step.cs": "namespace Steps;\npublic class Step { }\n",
+        "App/App.csproj": '<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n    <Using Include="Docs" />\n  </ItemGroup>\n</Project>\n',
+        "App/Edit.cs": "namespace App;\npublic class Edit : IUndo { }\n",
+        "App/Move.cs": "using Step = Steps.Step;\nnamespace App;\npublic class Move : Step { }\n",
+    })
+    assert _bases(G, "Edit") == [("IUndo", "resolved")]
+    assert _bases(G, "Move") == [("Step", "resolved")]
+
+
+def test_partial_declarations_are_one_type(tmp_path):
+    G = _graph(tmp_path, {
+        "Loop.A.cs": "namespace Engine;\npublic partial class Loop { }\n",
+        "Loop.B.cs": "namespace Engine;\npublic partial class Loop { }\n",
+        "Game.cs": "namespace Engine.Games;\npublic class Game : Loop { }\n",
+    })
+    bases = _bases(G, "Game")
+    assert bases and {c for _, c in bases} == {"resolved"}, bases
+
+
+def test_an_extension_block_holds_methods_not_one_long_function(tmp_path):
+    G = _graph(tmp_path, {
+        "Ext.cs": ("namespace Util;\npublic static class SizeExtensions {\n"
+                   "  extension(int value) {\n    public int Twice() => value * 2;\n    public int Half() => value / 2;\n  }\n}\n"),
+    })
+    labels = {d.get("label") for _, d in G.nodes(data=True) if d.get("kind") == "function"}
+    assert "SizeExtensions.Twice" in labels and "SizeExtensions.Half" in labels, labels
+    assert "SizeExtensions.extension" not in labels

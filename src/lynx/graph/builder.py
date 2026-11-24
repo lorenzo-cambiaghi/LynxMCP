@@ -35,6 +35,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -44,9 +45,9 @@ from typing import Iterable, Optional
 
 import networkx as nx
 
-from .extractor import (extract_file, GRAPH_LANGUAGES, IMPORT_SCOPED_EXTS, _file_id_stem, _make_id,
-                        file_name_keys, import_could_name, import_key, import_via_alias,
-                        resolution_context)
+from .extractor import (extract_file, CSHARP_NAMESPACE_KINDS, GRAPH_LANGUAGES, IMPORT_SCOPED_EXTS,
+                        _file_id_stem, _make_id, file_name_keys, import_could_name, import_key,
+                        import_via_alias, resolution_context)
 
 
 def _log(msg: str) -> None:
@@ -803,6 +804,139 @@ class GraphLayer:
         self._resolve_raw_calls(only_names=affected_names)
         self._resolve_raw_inherits(only_names=affected_names)
 
+    def _type_key(self, node_id: str) -> tuple:
+        """One type, whatever the number of its declarations: the partial
+        declarations of a C# class are one type."""
+        n = self._nodes_by_id.get(node_id) or {}
+        if "namespace" not in n:
+            return (node_id,)
+        ns, label = n["namespace"], n.get("label") or ""
+        return (ns, label[len(ns) + 1:] if ns and label.startswith(ns + ".") else label)
+
+    def _scoped_base_candidates(self, file_path: str, candidates: list, imported: dict) -> list:
+        """Several classes with the base's name: the one in the child's own
+        file, else the ones in files the file imports, else all of them."""
+        same = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
+        if same:
+            return same
+        reach = imported.get(file_path, set())
+        seen = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") in reach]
+        if seen:
+            return seen
+        # A package re-exports what its modules define: `from django.db import
+        # models` then `models.Model`, defined in models/base.py and imported
+        # by models/__init__.py. One step further through the imports.
+        further = set().union(*(imported.get(f, set()) for f in reach)) if reach else set()
+        seen = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") in further]
+        return seen or candidates
+
+    def _csproj_dir(self, file_path: str) -> str:
+        """The folder of the nearest .csproj above a file ('' if none)."""
+        cache = self.__dict__.setdefault("_csproj_cache", {})
+        d = os.path.dirname(file_path)
+        walked = []
+        while d and d not in cache:
+            walked.append(d)
+            try:
+                if any(e.name.endswith(".csproj") for e in os.scandir(d)):
+                    cache[d] = d
+                    break
+            except OSError:
+                pass
+            parent = os.path.dirname(d)
+            if parent == d:
+                cache[d] = ""
+                break
+            d = parent
+        found = cache.get(d, "")
+        for w in walked:
+            cache.setdefault(w, found)
+        return found
+
+    _MSBUILD_USING = re.compile(r'<Using\s+Include="([^"]+)"([^>]*)>')
+
+    def _msbuild_usings(self, project_dir: str) -> set:
+        """The `<Using Include="..."/>` items of a project's csproj and of the
+        Directory.Build.props/.targets above it: usings for every file."""
+        cache = self.__dict__.setdefault("_msbuild_using_cache", {})
+        if project_dir in cache:
+            return cache[project_dir]
+        found: set = set()
+        d, root = project_dir, os.path.normpath(str(self.codebase_path))
+        while d:
+            try:
+                names = [e.path for e in os.scandir(d) if e.name.endswith(".csproj") and d == project_dir
+                         or e.name in ("Directory.Build.props", "Directory.Build.targets")]
+            except OSError:
+                names = []
+            for path in names:
+                try:
+                    text = Path(path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for include, rest in self._MSBUILD_USING.findall(text):
+                    found.add(include)
+                    if "Alias=" in rest and "." in include:
+                        found.add(include.rsplit(".", 1)[0])
+            if os.path.normpath(d) == root or os.path.dirname(d) == d:
+                break
+            d = os.path.dirname(d)
+        cache[project_dir] = found
+        return found
+
+    def _csharp_usings(self) -> dict:
+        """file -> the namespaces it can name without qualifying: its own
+        `using` lines (an alias names its target's namespace), the `global
+        using` lines of its project and the project's MSBuild `<Using>` items."""
+        own: dict = {}
+        project_wide: dict = {}
+        for u, _v, d in self._graph.edges(data=True):
+            if d.get("relation") != "imports" or not d.get("module"):
+                continue
+            f = (self._nodes_by_id.get(u) or {}).get("file") or ""
+            if not f.lower().endswith(".cs"):
+                continue
+            names = {d["module"]}
+            if d.get("alias") and "." in d["module"]:
+                names.add(d["module"].rsplit(".", 1)[0])
+            own.setdefault(f, set()).update(names)
+            if d.get("global"):
+                project_wide.setdefault(self._csproj_dir(f), set()).update(names)
+        files = {n.get("file") for n in self._nodes_by_id.values()
+                 if n.get("kind") == "file" and (n.get("file") or "").lower().endswith(".cs")}
+        for f in files:
+            project = self._csproj_dir(f)
+            extra = project_wide.get(project, set()) | (self._msbuild_usings(project) if project else set())
+            if extra:
+                own.setdefault(f, set()).update(extra)
+        return own
+
+    def _csharp_base_candidates(self, ri: dict, file_path: str, candidates: list, usings: dict) -> list:
+        """C# name lookup for a base type: a type declared in the same file,
+        else one in the child's namespace or an enclosing one, in a namespace
+        the file imports with `using`, or the one a qualified base names
+        (`Util.Base`). None visible: the base comes from outside the
+        codebase, and no edge is drawn."""
+        same = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
+        if same:
+            return same
+        child = self._nodes_by_id.get(ri["child"]) or {}
+        ns = child.get("namespace", "")
+        parts = ns.split(".") if ns else []
+        visible = {".".join(parts[:i]) for i in range(len(parts) + 1)} | usings.get(file_path, set())
+        q = ri.get("qualifier")
+
+        def ns_of(c):
+            return (self._nodes_by_id.get(c) or {}).get("namespace", "")
+
+        if q:
+            name = ri["base_name"]
+            return [c for c in candidates
+                    if ns_of(c) == q or ns_of(c).endswith("." + q)
+                    or (self._nodes_by_id.get(c) or {}).get("label", "").endswith(f"{q}.{name}")
+                    or any(ns_of(c) == f"{v}.{q}" for v in visible if v)]
+        return [c for c in candidates if ns_of(c) in visible]
+
     def _resolve_raw_inherits(self, only_names: "set | None" = None) -> int:
         """Walk every raw_inherit and emit `inherits` edges using the same
         cross-file resolution policy as raw_calls.
@@ -820,15 +954,34 @@ class GraphLayer:
         bases are always direct identifiers (no `obj.foo()` ambiguity).
         """
         added = 0
+        imported = usings = None
         for file_path, items in self._raw_inherits_by_file.items():
             for ri in items:
                 key = ri["base_name"].lower()
                 if only_names is not None and key not in only_names:
                     continue
-                candidates = self._symbol_index.get(key) or []
+                # A base is a type: not a method or a namespace that shares
+                # its name, and not the class itself (`class Field(models.Field)`).
+                candidates = [c for c in (self._symbol_index.get(key) or [])
+                              if c != ri["child"]
+                              and (self._nodes_by_id.get(c) or {}).get("kind") == "class"
+                              and (self._nodes_by_id.get(c) or {}).get("subkind") not in CSHARP_NAMESPACE_KINDS]
                 if not candidates:
                     continue
-                confidence = "resolved" if len(candidates) == 1 else "ambiguous"
+                if file_path.lower().endswith(".cs"):
+                    # C# sees a type only through its namespaces and usings,
+                    # even when the codebase has one type of that name: an
+                    # Avalonia `Window` is not the tests' `Window`.
+                    if usings is None:
+                        usings = self._csharp_usings()
+                    candidates = self._csharp_base_candidates(ri, file_path, candidates, usings)
+                elif len(candidates) > 1:
+                    if imported is None:
+                        imported = self._imported_files()
+                    candidates = self._scoped_base_candidates(file_path, candidates, imported)
+                if not candidates:
+                    continue  # a type from outside the codebase (System.Exception)
+                confidence = "resolved" if len({self._type_key(c) for c in candidates}) == 1 else "ambiguous"
                 for target in candidates:
                     if self._graph.has_edge(ri["child"], target):
                         continue

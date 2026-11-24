@@ -18,6 +18,27 @@ in, and `list_sources` shows it. On a private C# library, requests in
 Italian found the right file in the first five for none of the 65 that
 named no identifier; the same requests in English, for 32.
 
+### Fixed
+
+Base classes are resolved the way the language resolves them, not by name
+alone. A base is a type, never a method or a namespace that shares its
+name, nor the class itself. Python looks in the class's file, then in the
+files it imports, then one step further (a package re-exporting its
+modules). C# looks in the same file, the namespace and the enclosing ones,
+the file's `using` lines (aliases included), the project's `global using`
+lines and MSBuild `<Using>` items, or the namespace a qualified base
+names; a base none of them can see comes from outside the codebase and
+gets no edge. Partial declarations count as one type. On Django 5.2 the
+ambiguous `inherits` edges fell from 2,085 of 3,300 (63%) to 6 of 1,622,
+and the classes linked to several namesake bases from 377 to 2. On a
+private C# library of 1.4 million lines they fell from 9,251 of 11,952
+(77%, 7,400 of them pointing at methods) to 8 of 3,649, with no real base
+lost among the 34 references left unlinked (Avalonia and Microsoft types,
+and three generics named like their base).
+
+A C# 14 `extension(T x) { ... }` block is read as the methods it holds,
+not as one function named `extension` (one was 669 lines long).
+
 ## 1.12.0 - 2026-11-23
 
 Upgrading from 1.11.0: the chunker moves to version 6 (see Changed), so the

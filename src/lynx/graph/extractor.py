@@ -712,16 +712,32 @@ def _handle_js_import(node, source: bytes, file_id: str, edges: list, file_path:
 def _handle_csharp_import(node, source: bytes, file_id: str, edges: list, file_path: str) -> None:
     if node.type != "using_directive":
         return
-    for c in node.children:
-        if c.type in ("qualified_name", "identifier"):
+    # `global using X;` holds for every file of the project, not only this one.
+    is_global = any(not c.is_named and _text(c, source) == "global" for c in node.children)
+    children = list(node.children)
+    # `using Script = VooDodo.Data.Script;`: the module is what follows `=`,
+    # the name before it is only the alias.
+    alias = None
+    for i, c in enumerate(children):
+        if not c.is_named and _text(c, source) == "=":
+            alias = _text(children[i - 1], source).strip() if i else None
+            children = children[i + 1:]
+            break
+    for c in children:
+        if c.type in ("qualified_name", "identifier", "generic_name"):
             mod = _text(c, source).strip()
             if mod:
-                edges.append({
+                edge = {
                     "source": file_id,
                     "target": _make_id(mod),
                     "relation": "imports",
                     "module": mod,
-                })
+                }
+                if is_global:
+                    edge["global"] = True
+                if alias:
+                    edge["alias"] = alias
+                edges.append(edge)
                 return
 
 
@@ -1008,13 +1024,20 @@ def _handle_csharp_inheritance(container_node, source: bytes,
         name = _innermost_identifier(c, source)
         if not name:
             continue
-        raw_inherits.append({
+        item = {
             "child": container_id,
             "base_name": name,
             "base_kind": "extends_or_implements",
             "file": file_path,
             "line": c.start_point[0] + 1,
-        })
+        }
+        # `Util.Base` or `global::A.B.Base<T>(args)`: what comes before the
+        # name tells which namespace (or enclosing type) the base is in.
+        text = re.sub(r"<[^<>]*(?:<[^<>]*>[^<>]*)*>", "", _text(c, source).split("(")[0])
+        text = text.replace("global::", "").strip()
+        if "." in text and text.rsplit(".", 1)[1].strip() == name:
+            item["qualifier"] = text.rsplit(".", 1)[0].strip()
+        raw_inherits.append(item)
 
 
 def _handle_python_inheritance(container_node, source: bytes,
@@ -1994,6 +2017,51 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
 # ---------------------------------------------------------------------------
 
 
+CSHARP_NAMESPACE_KINDS = frozenset({"namespace_declaration", "file_scoped_namespace_declaration"})
+
+
+def _csharp_namespaces(nodes: list) -> None:
+    """Give every C# type its namespace. A block namespace is in the type's
+    label (`P.Q.Bar`); a file-scoped one (`namespace X.Y;`) is a sibling of
+    the types that follow it, so their labels do not carry it."""
+    spaces = [n for n in nodes if n.get("subkind") in CSHARP_NAMESPACE_KINDS]
+    file_scoped = next((n["label"] for n in spaces if n["subkind"] == "file_scoped_namespace_declaration"), "")
+    blocks = sorted((n["label"] for n in spaces if n["subkind"] == "namespace_declaration"), key=len, reverse=True)
+    for n in nodes:
+        if n.get("kind") != "class" or n.get("subkind") in CSHARP_NAMESPACE_KINDS:
+            continue
+        n["namespace"] = next((b for b in blocks if n["label"].startswith(b + ".")), "") or file_scoped
+
+
+def _emit_function(fn, name: str, container_path: list, file_path: str, id_stem: str,
+                   nodes: list, edges: list, local_index: dict, function_bodies: list) -> None:
+    qualified = ".".join(container_path + [name]) if container_path else name
+    node_id = _make_id(id_stem, qualified)
+    nodes.append({
+        "id": node_id,
+        "label": qualified,
+        "kind": "function",
+        "subkind": fn.type,
+        "file": file_path,
+        "start_line": fn.start_point[0] + 1,
+        "end_line": fn.end_point[0] + 1,
+        "lang_key": None,  # filled in by caller
+    })
+    local_index[name.lower()] = node_id
+    # Also index the bare leaf (last segment) for member-call resolution.
+    local_index.setdefault(name.split(".")[-1].lower(), node_id)
+    # If we're inside a container, emit a contains edge.
+    if container_path:
+        parent_id = _make_id(id_stem, ".".join(container_path))
+        edges.append({
+            "source": parent_id,
+            "target": node_id,
+            "relation": "contains",
+            "confidence": "extracted",
+        })
+    function_bodies.append((node_id, fn))
+
+
 def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: str,
                        file_id: str, id_stem: str, container_path: list,
                        nodes: list, edges: list, local_index: dict,
@@ -2044,31 +2112,20 @@ def _walk_declarations(node, rules: LangGraphRules, source: bytes, file_path: st
         if child.type in rules.function_types:
             name = (_name_of(child, source) or default_names.get(child.type)
                     or "<anonymous>")
-            qualified = ".".join(container_path + [name]) if container_path else name
-            node_id = _make_id(id_stem, qualified)
-            nodes.append({
-                "id": node_id,
-                "label": qualified,
-                "kind": "function",
-                "subkind": child.type,
-                "file": file_path,
-                "start_line": child.start_point[0] + 1,
-                "end_line": child.end_point[0] + 1,
-                "lang_key": None,  # filled in by caller
-            })
-            local_index[name.lower()] = node_id
-            # Also index the bare leaf (last segment) for member-call resolution.
-            local_index.setdefault(name.split(".")[-1].lower(), node_id)
-            # If we're inside a container, emit a contains edge.
-            if container_path:
-                parent_id = _make_id(id_stem, ".".join(container_path))
-                edges.append({
-                    "source": parent_id,
-                    "target": node_id,
-                    "relation": "contains",
-                    "confidence": "extracted",
-                })
-            function_bodies.append((node_id, child))
+            if (child.type == "constructor_declaration" and name == "extension"
+                    and rules.import_handler is _handle_csharp_import):
+                # A C# 14 `extension(T x) { ... }` block parses as a
+                # constructor named `extension`: its members are methods of
+                # the enclosing type, not one long function (a 669-line
+                # "method" in a 1.4M-line library).
+                block = next((c for c in child.children if c.type == "block"), None)
+                for member in (block.named_children if block is not None else ()):
+                    if member.type == "local_function_statement":
+                        _emit_function(member, _name_of(member, source) or "<anonymous>", container_path,
+                                       file_path, id_stem, nodes, edges, local_index, function_bodies)
+                continue
+            _emit_function(child, name, container_path, file_path, id_stem, nodes, edges,
+                           local_index, function_bodies)
             # Do NOT recurse into a function — its body is walked separately.
             continue
         if child.type in rules.container_types:
@@ -2196,6 +2253,8 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
     for n in nodes:
         if n.get("lang_key") is None:
             n["lang_key"] = lang_key
+    if lang_key == "c_sharp":
+        _csharp_namespaces(nodes)
 
     # Second pass: walk every function body collecting call edges.
     raw_calls: list = []

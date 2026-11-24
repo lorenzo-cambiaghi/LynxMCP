@@ -42,7 +42,6 @@ NAMESAKES = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="T3: Python bases are linked to every namesake")
 def test_t3_base_resolved_through_the_import(tmp_path):
     G = _graph(tmp_path, NAMESAKES)
     bases = [(G.nodes[v].get("file") or "", d.get("confidence")) for u, v, d in G.edges(data=True)
@@ -51,7 +50,6 @@ def test_t3_base_resolved_through_the_import(tmp_path):
     assert bases[0][0].replace("\\", "/").endswith("/util.py") and bases[0][1] != "ambiguous", bases
 
 
-@pytest.mark.xfail(strict=True, reason="T3: namesake hierarchies are mixed")
 def test_t3_subclasses_keep_namesake_hierarchies_apart(tmp_path):
     from lynx.graph.query import get_subclasses
     G = _graph(tmp_path, NAMESAKES)
@@ -131,7 +129,6 @@ CS_NAMESAKES = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="T3: C# bases are linked to every namesake")
 def test_t3_csharp_base_resolved_through_using(tmp_path):
     code = tmp_path / "code"
     for rel, text in CS_NAMESAKES.items():
