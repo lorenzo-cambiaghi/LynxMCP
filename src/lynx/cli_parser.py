@@ -236,6 +236,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-graph", action="store_true",
         help="Disable the code knowledge graph in zero-config mode (`lynx serve PATH`).",
     )
+    sp_serve.add_argument(
+        "--http", type=int, metavar="PORT",
+        help="Serve MCP over HTTP at http://127.0.0.1:PORT/mcp instead of stdio: one "
+             "process, one copy of the indexes, for every session of the machine "
+             "(`claude mcp add --transport http lynx http://127.0.0.1:PORT/mcp`).",
+    )
 
     sp_build = sub.add_parser(
         "build", help="Check every file of a source and re-index what changed")

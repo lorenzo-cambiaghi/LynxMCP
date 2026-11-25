@@ -239,6 +239,7 @@ def _cmd_serve(args) -> int:
         profile=getattr(args, "profile", None),
         sources=getattr(args, "sources", None),
         config=cfg,
+        http_port=getattr(args, "http", None),
     )
     return 0
 

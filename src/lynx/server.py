@@ -1049,6 +1049,36 @@ class LynxServer(FastMCP):
         super().__init__(name, instructions=instructions)
         self.hidden_tools = {}
         self._mcp_server.version = package_version()
+        self._offload = False
+        self._limiter = None
+
+    def offload_sync_tools(self) -> None:
+        """Run the sync tools registered from now on in a worker thread, one at a
+        time. FastMCP calls a sync tool on the event loop: on stdio, with one
+        client, that is harmless; over HTTP a long call of one session would
+        hold up every other session's requests, its handshake included."""
+        self._offload = True
+
+    def tool(self, *args, **kwargs):
+        register = super().tool(*args, **kwargs)
+        if not self._offload:
+            return register
+
+        def decorator(fn):
+            import functools
+            import inspect
+            if inspect.iscoroutinefunction(fn):
+                return register(fn)
+
+            @functools.wraps(fn)
+            async def run(**arguments):
+                import anyio
+                if self._limiter is None:
+                    self._limiter = anyio.CapacityLimiter(1)
+                return await anyio.to_thread.run_sync(functools.partial(fn, **arguments), limiter=self._limiter)
+            register(run)
+            return fn
+        return decorator
 
     async def call_tool(self, name: str, arguments: dict):
         message = self.hidden_tools.get(name)
@@ -1183,7 +1213,18 @@ def only_sources(config, names):
     return dataclasses.replace(config, sources={n: config.sources[n] for n in wanted})
 
 
-def run_server(config_path=None, profile: str | None = None, sources=None, *, config=None):
+def _run_http(mcp, port: int) -> None:
+    """Serve MCP over streamable HTTP on the loopback interface only."""
+    import anyio
+    mcp.settings.host = "127.0.0.1"
+    mcp.settings.port = port
+    print(f"[server] MCP over HTTP at http://127.0.0.1:{port}{mcp.settings.streamable_http_path}",
+          file=sys.stderr)
+    anyio.run(mcp.run_streamable_http_async)
+
+
+def run_server(config_path=None, profile: str | None = None, sources=None, *, config=None,
+               http_port: int | None = None):
     """Boot the MCP server. Blocks until the client disconnects.
 
     The handshake does not wait for the indexes. Everything it needs (which
@@ -1224,6 +1265,8 @@ def run_server(config_path=None, profile: str | None = None, sources=None, *, co
     # embed the live source catalog: every client gets the usage playbook
     # automatically, without installing a rules file.
     mcp = LynxServer("lynx", instructions=_build_instructions(manager, selected, profile_name))
+    if http_port is not None:
+        mcp.offload_sync_tools()
 
     # Full playbook as an MCP resource the client can read on demand.
     guide_text = _build_guide(manager, selected, profile_name)
@@ -1273,7 +1316,10 @@ def run_server(config_path=None, profile: str | None = None, sources=None, *, co
     # Talk to the client now; the loader thread fills in the indexes.
     print("[server] answering the MCP handshake; indexes open in the background",
           file=sys.stderr)
-    _run_stdio(mcp)
+    if http_port is not None:
+        _run_http(mcp, http_port)
+    else:
+        _run_stdio(mcp)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+`lynx serve --http PORT` serves MCP over HTTP at
+`http://127.0.0.1:PORT/mcp`, so every session of a machine shares one
+process and one copy of the indexes (`claude mcp add --transport http lynx
+http://127.0.0.1:PORT/mcp`). Over stdio each session starts its own server:
+on a 1.4-million-line library one took 3.7 GB while it built its index, and
+a machine running a dozen agents cannot hold a dozen of them. Over HTTP the
+sync tools run on a worker thread, one at a time as on stdio, so a long
+call of one session does not hold up the others' requests. It listens on
+the loopback interface only.
+
 ### Fixed
 
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
