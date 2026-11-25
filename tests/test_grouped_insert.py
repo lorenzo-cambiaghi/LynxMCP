@@ -88,3 +88,43 @@ def test_the_embedder_sorts_a_whole_call_before_cutting_it_into_runs():
     # of similar length (each run starts where the previous one ended).
     assert len(runs) == -(-100 // DEFAULT_RUN_SIZE)
     assert all(max(a) <= min(b) for a, b in zip(runs, runs[1:]))
+
+
+class _Killed(BaseException):
+    """The process dying: not an Exception, so nothing in the build catches it."""
+
+
+@pytest.mark.parametrize("after_insert", [False, True], ids=["killed before a group", "killed after a group went in"])
+def test_a_build_cut_short_goes_on_from_where_it_stopped(tmp_path, inserts, monkeypatch, after_insert):
+    """A first index of a large repository takes hours, and it used to be
+    recorded only at the end: cut short, the next pass found no record, wiped
+    what was there and started again. Each group is recorded once it is in."""
+    from llama_index.core import VectorStoreIndex
+    from lynx import rag_manager
+    monkeypatch.setattr(rag_manager, "INSERT_GROUP_NODES", 5)
+    code = _code(tmp_path, 30)
+    real = VectorStoreIndex.insert_nodes
+    calls = [0]
+
+    def dying(self, nodes, **kw):
+        calls[0] += 1
+        if calls[0] == 3 and not after_insert:
+            raise _Killed
+        out = real(self, nodes, **kw)
+        if calls[0] == 3:
+            raise _Killed
+        return out
+
+    monkeypatch.setattr(VectorStoreIndex, "insert_nodes", dying)
+    with pytest.raises(_Killed):
+        _rag(code, tmp_path / "s")
+    assert len(_hashed(tmp_path / "s")) >= 10, "the groups that went in are on record"
+
+    monkeypatch.setattr(VectorStoreIndex, "insert_nodes", inserts)
+    inserts.calls.clear()
+    rag = _rag(code, tmp_path / "s")   # what is there is kept
+    rag.update(force=True)             # `lynx build`: the rest
+    sent = set().union(*inserts.calls)
+    assert len(sent) == 20, f"only what was missing is embedded again, not {len(sent)} files"
+    assert rag._collection_count() == 30, "no file twice, none missing"
+    assert len(_hashed(tmp_path / "s")) == 30

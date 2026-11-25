@@ -818,10 +818,13 @@ class CodebaseRAG:
             "grammars": self._grammar_extensions(),
             "files": self._file_hashes,
         }
+        # Written whole or not at all: a build records each group as it goes,
+        # and a file cut in half by a kill reads as no record, which wipes the
+        # index on the next pass.
+        tmp = self.file_hashes_file.with_name(self.file_hashes_file.name + ".tmp")
         try:
-            self.file_hashes_file.write_text(
-                json.dumps(payload, indent=2), encoding="utf-8"
-            )
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp, self.file_hashes_file)
         except OSError as e:
             log(f"[rag] could not persist file_hashes.json: {e}")
 
@@ -1044,11 +1047,23 @@ class CodebaseRAG:
                 nonlocal total_nodes, pending, pending_nodes
                 if not pending:
                     return
+                # Each group goes on record as soon as it is in: a first index
+                # of a large repository takes hours, and recorded only at the
+                # end, a build cut short left no record, so the next pass wiped
+                # what was there and started again. Before the insert the
+                # group's files are on disk with an empty SHA: killed between
+                # the insert and the record, the next pass finds them changed,
+                # removes what landed and indexes them again, so no file is in
+                # twice. A group whose count does not add up stays that way.
+                for p, _ns in pending:
+                    self._record_file_hash(p, "", chunks=None)
+                self._save_file_hashes()
+                before = self._collection_count()
+                landed = {}
                 try:
                     index.insert_nodes([n for _p, ns in pending for n in ns])
                     for p, ns in pending:
-                        indexed[p] = len(ns)
-                        total_nodes += len(ns)
+                        landed[p] = len(ns)
                 except Exception as e:
                     log(f"[rag] insert of {len(pending)} file(s) failed ({e}); "
                         f"retrying them one at a time")
@@ -1056,11 +1071,20 @@ class CodebaseRAG:
                         self._delete_file_chunks(p)
                         try:
                             index.insert_nodes(ns)
-                            indexed[p] = len(ns)
-                            total_nodes += len(ns)
+                            landed[p] = len(ns)
                         except Exception as e2:
                             log(f"[rag] insert failed for {p}: {e2}")
                             failed.append(p)
+                            self._forget_file_hash(p)
+                indexed.update(landed)
+                total_nodes += sum(landed.values())
+                after = self._collection_count()
+                if None not in (before, after) and after - before == sum(landed.values()):
+                    for p, chunk_count in landed.items():
+                        sha = self._compute_file_hash(p)
+                        if sha:
+                            self._record_file_hash(p, sha, chunks=chunk_count)
+                self._save_file_hashes()
                 pending, pending_nodes = [], 0
 
             for abs_path in files_to_index:

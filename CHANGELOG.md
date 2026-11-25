@@ -14,6 +14,10 @@ sync tools run on a worker thread, one at a time as on stdio, so a long
 call of one session does not hold up the others' requests. It listens on
 the loopback interface only.
 
+`LYNX_EMBED_THREADS` caps the threads the embedder uses. By default ONNX
+Runtime takes every core, and a first index of a large repository held the
+whole machine for hours; with a cap it can run beside other work.
+
 ### Fixed
 
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
@@ -34,6 +38,14 @@ code too: on a 1.4-million-line library a 2,400-line class vanished over a
 local variable named `partial`, and its constructor took the class's place.
 The type is now rebuilt from those tokens, with its bases and the members
 the grammar did parse.
+
+A build cut short goes on from where it stopped. The index recorded its
+files only at the end of a pass, so a first index of a large repository
+interrupted after hours (a laptop going to sleep, a closed editor) left no
+record, and the next pass wiped what was there and started again. Each group
+of files is now on record as soon as its pieces are in, and a file caught
+halfway is indexed again on the next pass without being in twice. The record
+itself is written whole or not at all.
 
 A confirmation of `lynx source remove` or `lynx reset` that reads no answer
 (Git Bash reports a terminal and then reads end of file) aborts and names

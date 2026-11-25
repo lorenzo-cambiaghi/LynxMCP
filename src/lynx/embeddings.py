@@ -26,6 +26,7 @@ What this module does, and what it does not:
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from dataclasses import dataclass
@@ -124,6 +125,12 @@ def make_session(onnx_path) -> Any:
     opts = ort.SessionOptions()
     opts.log_severity_level = 3  # errors only; ORT's warnings are for exporters
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # LYNX_EMBED_THREADS caps the threads: by default ONNX Runtime takes every
+    # core, and a first index of a large repository held the machine for hours.
+    threads = os.environ.get("LYNX_EMBED_THREADS", "").strip()
+    if threads.isdigit() and int(threads) > 0:
+        opts.intra_op_num_threads = int(threads)
+        opts.inter_op_num_threads = 1
     return ort.InferenceSession(str(onnx_path), opts, providers=["CPUExecutionProvider"])
 
 
