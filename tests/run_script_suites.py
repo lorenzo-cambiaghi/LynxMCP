@@ -17,6 +17,7 @@ test_hybrid_vs_dense did, from ./config.json, until CI had no such file).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ def suite_env() -> dict:
 
 def suites() -> list:
     return sorted(p for p in HERE.glob("test_*.py")
-                  if "def main(" in p.read_text(encoding="utf-8") and p.name not in REAL_CONFIG)
+                  if re.search(r"(?m)^def main\(", p.read_text(encoding="utf-8")) and p.name not in REAL_CONFIG)
 
 
 def model_available() -> bool:

@@ -9,6 +9,7 @@ the smoke tests that exercise the underlying `CodebaseRAG` directly under
 the v2 schema's per-source storage layout.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -26,7 +27,8 @@ _THIS_DIR = Path(__file__).resolve().parent
 collect_ignore = [
     p.name
     for p in _THIS_DIR.glob("test_*.py")
-    if "def main(" in p.read_text(encoding="utf-8")
+    # a script's own `def main(`, at the start of a line: a test may have an inner `async def main()`
+    if re.search(r"(?m)^def main\(", p.read_text(encoding="utf-8"))
 ]
 
 

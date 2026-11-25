@@ -170,7 +170,7 @@ def test_cli_serve_zero_config_passes_in_memory_config(tmp_path, monkeypatch):
 
     captured = {}
 
-    def _fake_run_server(config_path=None, profile=None, sources=None, *, config=None):
+    def _fake_run_server(config_path=None, profile=None, sources=None, *, config=None, http_port=None):
         captured["config_path"] = config_path
         captured["profile"] = profile
         captured["sources"] = sources
@@ -195,7 +195,7 @@ def test_cli_serve_zero_config_no_graph_flag(tmp_path, monkeypatch):
 
     captured = {}
 
-    def _fake_run_server(config_path=None, profile=None, sources=None, *, config=None):
+    def _fake_run_server(config_path=None, profile=None, sources=None, *, config=None, http_port=None):
         captured["config"] = config
 
     import lynx.server as server_mod
