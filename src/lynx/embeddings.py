@@ -26,9 +26,11 @@ What this module does, and what it does not:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -117,6 +119,36 @@ def read_pad_token(files: ModelFiles, tokenizer) -> tuple:
     pad = pad or "[PAD]"
     pad_id = tokenizer.token_to_id(pad)
     return pad, (pad_id if pad_id is not None else 0)
+
+
+# While the file LYNX_PAUSE_FILE names exists, indexing waits between two ONNX
+# runs: a game measuring its frames, a benchmark or a meeting gets the machine
+# back within seconds, and the build goes on when the file is gone. Only the
+# thread that builds an index waits (`pausable`): the searches a server answers
+# meanwhile embed their queries as usual.
+PAUSE_POLL_SECONDS = 5.0
+_pausable = threading.local()
+
+
+@contextlib.contextmanager
+def pausable():
+    """Embedding calls made in this thread wait while LYNX_PAUSE_FILE exists."""
+    before = getattr(_pausable, "on", False)
+    _pausable.on = True
+    try:
+        yield
+    finally:
+        _pausable.on = before
+
+
+def wait_while_paused() -> None:
+    path = os.environ.get("LYNX_PAUSE_FILE", "").strip()
+    if not path or not getattr(_pausable, "on", False) or not os.path.exists(path):
+        return
+    print(f"[rag] indexing paused while {path} exists", file=sys.stderr, flush=True)
+    while os.path.exists(path):
+        time.sleep(PAUSE_POLL_SECONDS)
+    print("[rag] indexing resumed", file=sys.stderr, flush=True)
 
 
 def make_session(onnx_path) -> Any:
@@ -318,6 +350,7 @@ class OnnxEmbedding(BaseEmbedding):
         order = sorted(range(len(items)), key=lambda i: len(items[i]))
         out: List[Optional[List[float]]] = [None] * len(items)
         for start in range(0, len(order), step):
+            wait_while_paused()
             idx = order[start:start + step]
             vecs = self._runtime.encode([items[i] for i in idx], self.normalize).tolist()
             for i, v in zip(idx, vecs):

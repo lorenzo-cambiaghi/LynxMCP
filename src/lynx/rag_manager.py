@@ -52,7 +52,7 @@ from llama_index.core.schema import MetadataMode, TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 from llama_index.core import Settings
-from .embeddings import OnnxEmbedding
+from .embeddings import OnnxEmbedding, pausable
 from rank_bm25 import BM25Okapi
 from pathlib import Path
 import json
@@ -1087,21 +1087,23 @@ class CodebaseRAG:
                 self._save_file_hashes()
                 pending, pending_nodes = [], 0
 
-            for abs_path in files_to_index:
-                nodes = self._build_nodes_for_file(abs_path)
-                if abs_path in changed:
-                    dropped += self._delete_file_chunks(abs_path) or 0
-                if not nodes:
-                    # Legitimately empty (no chunks produced): record it below
-                    # with chunks=0 so we don't re-chunk it on every rebuild,
-                    # and so a coverage check knows the absence is expected.
-                    indexed[abs_path] = 0
-                    continue
-                pending.append((abs_path, nodes))
-                pending_nodes += len(nodes)
-                if pending_nodes >= INSERT_GROUP_NODES:
-                    flush()
-            flush()
+            # The embedding of a build waits while LYNX_PAUSE_FILE exists.
+            with pausable():
+                for abs_path in files_to_index:
+                    nodes = self._build_nodes_for_file(abs_path)
+                    if abs_path in changed:
+                        dropped += self._delete_file_chunks(abs_path) or 0
+                    if not nodes:
+                        # Legitimately empty (no chunks produced): record it below
+                        # with chunks=0 so we don't re-chunk it on every rebuild,
+                        # and so a coverage check knows the absence is expected.
+                        indexed[abs_path] = 0
+                        continue
+                    pending.append((abs_path, nodes))
+                    pending_nodes += len(nodes)
+                    if pending_nodes >= INSERT_GROUP_NODES:
+                        flush()
+                flush()
 
             # Prove the writes landed before trusting them. An insert can fail
             # WITHOUT raising — stale rows in chroma's `acquire_write` (left by

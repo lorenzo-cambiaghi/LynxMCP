@@ -18,6 +18,12 @@ the loopback interface only.
 Runtime takes every core, and a first index of a large repository held the
 whole machine for hours; with a cap it can run beside other work.
 
+`LYNX_PAUSE_FILE` names a file: while it exists, an index build waits
+between two embedding runs, and goes on when the file is gone. A game
+measuring its frames or a benchmark gets the machine back within seconds,
+without stopping the build. Only the build waits: the searches a server
+answers meanwhile run as usual.
+
 ### Fixed
 
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve

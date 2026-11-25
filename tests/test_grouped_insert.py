@@ -128,3 +128,19 @@ def test_a_build_cut_short_goes_on_from_where_it_stopped(tmp_path, inserts, monk
     assert len(sent) == 20, f"only what was missing is embedded again, not {len(sent)} files"
     assert rag._collection_count() == 30, "no file twice, none missing"
     assert len(_hashed(tmp_path / "s")) == 30
+
+
+def test_a_build_waits_while_the_pause_file_exists(tmp_path, monkeypatch, capsys):
+    import threading
+    import time
+    from lynx import embeddings
+    flag = tmp_path / "measuring.txt"
+    flag.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("LYNX_PAUSE_FILE", str(flag))
+    monkeypatch.setattr(embeddings, "PAUSE_POLL_SECONDS", 0.05)
+    threading.Timer(4.0, flag.unlink).start()   # past the model load
+    t = time.monotonic()
+    rag = _rag(_code(tmp_path, 5), tmp_path / "s")
+    assert time.monotonic() - t >= 4.0, "the build did not wait for the file to go"
+    assert rag._collection_count() == 5
+    assert "indexing paused" in capsys.readouterr().err
