@@ -52,7 +52,7 @@ from llama_index.core.schema import MetadataMode, TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 from llama_index.core import Settings
-from .embeddings import OnnxEmbedding, pausable
+from .embeddings import OnnxEmbedding, pausable, wait_while_paused
 from rank_bm25 import BM25Okapi
 from pathlib import Path
 import json
@@ -2122,6 +2122,11 @@ class CodebaseRAG:
             if cached_sha == new_sha:
                 # Genuine no-op save.
                 return False
+
+        # Waits while LYNX_PAUSE_FILE exists, as a build does, but before the
+        # write lock: a search that rebuilds its keyword index takes that lock.
+        with pausable():
+            wait_while_paused()
 
         with self._write_lock:
             removed = self._delete_file_chunks(abs_path)

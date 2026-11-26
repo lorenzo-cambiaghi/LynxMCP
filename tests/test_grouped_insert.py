@@ -144,3 +144,29 @@ def test_a_build_waits_while_the_pause_file_exists(tmp_path, monkeypatch, capsys
     assert time.monotonic() - t >= 4.0, "the build did not wait for the file to go"
     assert rag._collection_count() == 5
     assert "indexing paused" in capsys.readouterr().err
+
+
+def test_a_watcher_reindex_waits_for_the_pause_file_and_searches_go_on(tmp_path, monkeypatch):
+    # A shared server re-indexes the files a commit touched. During a measurement
+    # turn it waits like a build does, and it waits outside the write lock: a
+    # search that has to rebuild its keyword index takes that lock.
+    import threading
+    from lynx import embeddings
+    code = _code(tmp_path, 3)
+    rag = _rag(code, tmp_path / "s")
+    flag = tmp_path / "measuring.txt"
+    flag.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("LYNX_PAUSE_FILE", str(flag))
+    monkeypatch.setattr(embeddings, "PAUSE_POLL_SECONDS", 0.05)
+    (code / "f01.txt").write_text("File 1 now talks about pelicans.", encoding="utf-8")
+    worker = threading.Thread(target=rag.update_file, args=(str(code / "f01.txt"),))
+    worker.start()
+    worker.join(1.5)
+    assert worker.is_alive(), "the re-index did not wait for the file to go"
+    assert rag._write_lock.acquire(timeout=1.0), "the re-index waits holding the write lock"
+    rag._write_lock.release()
+    assert rag.search("topic number 2", top_k=1), "a search waited for the pause file"
+    flag.unlink()
+    worker.join(30)
+    assert not worker.is_alive()
+    assert "pelicans" in rag.search("pelicans", top_k=1)[0]["content"]

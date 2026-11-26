@@ -21,8 +21,9 @@ whole machine for hours; with a cap it can run beside other work.
 `LYNX_PAUSE_FILE` names a file: while it exists, an index build waits
 between two embedding runs, and goes on when the file is gone. A game
 measuring its frames or a benchmark gets the machine back within seconds,
-without stopping the build. Only the build waits: the searches a server
-answers meanwhile run as usual.
+without stopping the build. A server re-indexing the files a commit
+touched waits too, before each file. Only indexing waits: the searches a
+server answers meanwhile run as usual.
 
 ### Fixed
 

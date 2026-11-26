@@ -124,8 +124,8 @@ def read_pad_token(files: ModelFiles, tokenizer) -> tuple:
 # While the file LYNX_PAUSE_FILE names exists, indexing waits between two ONNX
 # runs: a game measuring its frames, a benchmark or a meeting gets the machine
 # back within seconds, and the build goes on when the file is gone. Only the
-# thread that builds an index waits (`pausable`): the searches a server answers
-# meanwhile embed their queries as usual.
+# threads that index wait (`pausable`: a build, a watcher's re-index): the
+# searches a server answers meanwhile embed their queries as usual.
 PAUSE_POLL_SECONDS = 5.0
 _pausable = threading.local()
 
