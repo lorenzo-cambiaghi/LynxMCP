@@ -194,3 +194,20 @@ def test_a_static_property_with_a_setter_is_global_state_too(tmp_path, monkeypat
     assert "Flags.Unwritable is mutable global state" in by_title, list(by_title)
     assert "setter" in by_title["Flags.Unwritable is mutable global state"].evidence
     assert not any(n in t for t in by_title for n in ("Limit", "Twice", "Instance")), list(by_title)
+
+
+def test_a_static_built_on_first_read_is_a_constant_not_shared_state(tmp_path, monkeypatch):
+    # Seen on a real library: four `static T? _x; ... _x ??= Build()` caches
+    # flagged as mutable global state. Written only by `??=`, each holds the same
+    # value for the whole process; one also assigned plainly stays a finding.
+    monkeypatch.setitem(CODE, "src/Pkg/Lazy.cs", (
+        "namespace Pkg;\npublic class Lazy {\n"
+        "  private static byte[]? _picture;\n"
+        "  private static string? _label;\n"
+        "  public static byte[] Picture => _picture ??= new byte[4];\n"
+        "  public static string Label => _label ??= \"x\";\n"
+        "  public static void Reset() { _label = null; }\n"
+        "}\n"))
+    titles = [f.title for f in _audit(tmp_path)[0]]
+    assert not any("_picture" in t for t in titles), titles
+    assert "Lazy._label is mutable global state" in titles

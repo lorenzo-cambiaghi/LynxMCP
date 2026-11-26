@@ -183,8 +183,15 @@ def _writes(node, src: bytes) -> set:
                 left = left.child_by_field_name("expression")
             target = _last_name(left, src)
             if target:
-                out.add(target)
+                op = n.child_by_field_name("operator")
+                # `X ??= Build()` fills X once, the first time it is read: kept
+                # apart (LAZY + name), so a field written only so is a constant.
+                out.add(LAZY + target if op is not None and op.type == "??=" else target)
     return out
+
+
+# The prefix of a name `_writes` saw filled by `??=` only.
+LAZY = "??"
 
 
 def _method(node, src: bytes, name: Optional[str] = None) -> Method:

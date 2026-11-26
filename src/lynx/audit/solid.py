@@ -27,7 +27,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .facts import read_file
+from .facts import LAZY, read_file
 
 NAMESPACE_KINDS = {"namespace_declaration", "file_scoped_namespace_declaration"}
 INBOUND = {"calls", "uses_type", "inherits"}
@@ -284,6 +284,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 if "static" not in f.modifiers or "const" in f.modifiers or "ThreadStatic" in f.attributes:
                     continue
                 if "readonly" not in f.modifiers:
+                    if "private" in f.modifiers and f.name not in writes and LAZY + f.name in writes:
+                        # `X ??= Build()` and nothing else: built on first read,
+                        # the same value for the whole process.
+                        continue
                     how = "static with a setter" if f.kind == "property" else "static and not readonly"
                     findings.append(Finding("D", f"{first.name}.{f.name} is mutable global state", f"{t.file}:{f.line}",
                                             f"{how} ({f.type}): every user shares it and can change it", key, 2.0))
