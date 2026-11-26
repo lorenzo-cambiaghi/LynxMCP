@@ -175,3 +175,22 @@ def test_a_clean_package_says_so_in_a_sentence():
     head = render("src/Clean", [])
     assert "0 findings. Ranked" not in head and "findings: ." not in head
     assert "No findings in src/Clean." in head
+
+
+def test_a_static_property_with_a_setter_is_global_state_too(tmp_path, monkeypatch):
+    # Seen on a real library: a `public static bool { get; private set; }` set
+    # by one call and read by the next carried one caller's state into
+    # another's, while the audit flagged only the locked set beside it.
+    monkeypatch.setitem(CODE, "src/Pkg/Flags.cs", (
+        "namespace Pkg;\npublic class Flags {\n"
+        "  public static bool Unwritable { get; private set; }\n"
+        "  public static int Limit { get; } = 3;\n"
+        "  public static int Twice => Limit * 2;\n"
+        "  public bool Instance { get; set; }\n"
+        "  public static void Fail() { Unwritable = true; }\n"
+        "}\n"))
+    findings, _ = _audit(tmp_path)
+    by_title = {f.title: f for f in findings}
+    assert "Flags.Unwritable is mutable global state" in by_title, list(by_title)
+    assert "setter" in by_title["Flags.Unwritable is mutable global state"].evidence
+    assert not any(n in t for t in by_title for n in ("Limit", "Twice", "Instance")), list(by_title)

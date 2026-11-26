@@ -75,6 +75,7 @@ class Field:
     modifiers: set
     type: str
     attributes: str = ""
+    kind: str = "field"    # or "property": `static T X { get; set; }`, a static field with a name on it
 
 
 @dataclass
@@ -97,6 +98,7 @@ class TypeDecl:
     methods: list = field(default_factory=list)
     fields: list = field(default_factory=list)
     properties: list = field(default_factory=list)
+    static_setters: list = field(default_factory=list)   # Field(kind="property") per static auto-property with a setter
     switches: list = field(default_factory=list)
     members: int = 0       # declared members (methods, properties, events, indexers)
     writes: set = field(default_factory=set)   # names its members change after construction (static constructors left out)
@@ -278,7 +280,14 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
                     decl.writes |= _writes(acc, src)
             pname = _name(m, src)
             if pname:
-                decl.properties.append((pname, _modifiers(m, src)))
+                mods = _modifiers(m, src)
+                decl.properties.append((pname, mods))
+                if t == "property_declaration" and "static" in mods and _auto_setter(m):
+                    typ = m.child_by_field_name("type")
+                    attrs = " ".join(_text(c, src) for c in m.children if c.type == "attribute_list")
+                    decl.static_setters.append(Field(
+                        name=pname, line=m.start_point[0] + 1, modifiers=mods,
+                        type=_text(typ, src) if typ is not None else "", attributes=attrs, kind="property"))
     for n in _walk_own(node):
         if n.type in ("switch_statement", "switch_expression"):
             subj = n.child_by_field_name("value")
@@ -287,6 +296,19 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
             cases = sum(1 for c in _walk(n) if c.type in ("switch_section", "switch_expression_arm"))
             if subj is not None:
                 decl.switches.append(Switch(subject=_text(subj, src).strip("() "), line=n.start_point[0] + 1, cases=cases))
+
+
+def _auto_setter(prop) -> bool:
+    """Whether a property has `set;` with no body: the compiler's backing field
+    is then as writable as a field declared by hand."""
+    for acc_list in prop.children:
+        if acc_list.type != "accessor_list":
+            continue
+        for acc in acc_list.named_children:
+            kinds = {c.type for c in acc.children}
+            if acc.type == "accessor_declaration" and "set" in kinds and not kinds & {"block", "arrow_expression_clause"}:
+                return True
+    return False
 
 
 def read_file(path: Path, rel: str) -> tuple[str, set, list]:

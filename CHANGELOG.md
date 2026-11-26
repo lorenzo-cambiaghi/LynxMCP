@@ -35,6 +35,12 @@ before the graph. They no longer open it or load the embedding model, so
 on a 128,000-node graph a query takes 17 s instead of 28. An audit of a
 package with nothing to report now says so in a sentence.
 
+The audit counts a static auto-property with a setter (`static bool X {
+get; private set; }`) as mutable global state, as it does a static field.
+It read only fields, and on a C# library it flagged a locked set that was
+fine and missed the flag beside it: set by one call and never cleared, it
+let a later call skip a check it needed.
+
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common
 extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`

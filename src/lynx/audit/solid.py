@@ -280,12 +280,13 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                     findings.append(Finding("L", f"{first.name}.{m.name} {what}", f"{t.file}:{m.line}",
                                             f"a caller holding {', '.join(t.bases) or 'the base'} gets a member that does not work",
                                             key, 2.0 if m.body == "throws" else 1.0))
-            for f in t.fields:
+            for f in [*t.fields, *t.static_setters]:
                 if "static" not in f.modifiers or "const" in f.modifiers or "ThreadStatic" in f.attributes:
                     continue
                 if "readonly" not in f.modifiers:
+                    how = "static with a setter" if f.kind == "property" else "static and not readonly"
                     findings.append(Finding("D", f"{first.name}.{f.name} is mutable global state", f"{t.file}:{f.line}",
-                                            f"static and not readonly ({f.type}): every user shares it and can change it", key, 2.0))
+                                            f"{how} ({f.type}): every user shares it and can change it", key, 2.0))
                 elif f.type.startswith(MUTABLE_COLLECTIONS) and (
                         f.name in writes or f.modifiers & {"public", "protected", "internal"}):
                     # A private table filled once by its initializer is a
@@ -360,7 +361,7 @@ def render(package: str, findings: list, commit: str = "", per_principle: int = 
     if not findings:
         return "\n".join([title, "", f"No findings in {package}."])
     out = [title, "",
-           f"{len(findings)} findings: " + ", ".join(f"{p} {n}" for p in PRINCIPLES if (n := sum(f.principle == p for f in findings))) +
+           f"{len(findings)} finding{'' if len(findings) == 1 else 's'}: " + ", ".join(f"{p} {n}" for p in PRINCIPLES if (n := sum(f.principle == p for f in findings))) +
            ". Ranked by severity, by how many files outside the package reach the type, and by how often its files changed in 180 days.",
            "Refactor inside the fence: keep the contract, build the dependents, run the tests; then run the audit again.", ""]
     for p, title in PRINCIPLES.items():
