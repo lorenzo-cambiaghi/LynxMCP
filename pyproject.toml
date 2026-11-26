@@ -80,7 +80,10 @@ dependencies = [
     "numpy>=1.24",
     "chromadb",
     "gitpython",
-    "watchdog",
+    # 7.1 says when the system dropped file events (EventsLostEvent), and the
+    # watcher then checks every file; it needs Python 3.11.
+    "watchdog>=7.1; python_version >= '3.11'",
+    "watchdog; python_version < '3.11'",
     "rank-bm25",
     # AST-aware chunking via tree-sitter. Per-language packages bundle the
     # compiled parser in the wheel — no runtime download (preserves the

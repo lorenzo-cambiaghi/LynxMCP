@@ -18,6 +18,10 @@ from typing import Any
 from ..file_kinds import TEST_PATH_PATTERN
 from .base import SourceBackend
 
+# After the system dropped file events, the pass over every file waits this
+# long for the burst to end: landing a batch of commits loses events many times.
+LOST_EVENTS_DEBOUNCE_SECONDS = 10.0
+
 
 def _rel_paths(method):
     """Give every result of `method` its path inside the source (`rel_path`,
@@ -253,6 +257,8 @@ class CodebaseBackend(SourceBackend):
         """
         observer = self._observer
         handler = getattr(self, "_handler", None)
+        if handler is not None:
+            handler._closed = True
         try:
             if observer is not None:
                 observer.stop()
@@ -269,6 +275,9 @@ class CodebaseBackend(SourceBackend):
                     with handler._lock:
                         pending = list(handler._pending.values())
                         handler._pending.clear()
+                        if handler._lost is not None:
+                            pending.append(handler._lost)
+                            handler._lost = None
                     for timer in pending:
                         timer.cancel()
                 except Exception:
@@ -324,6 +333,39 @@ class CodebaseBackend(SourceBackend):
                 super().__init__()
                 self._pending: dict = {}
                 self._lock = threading.Lock()
+                self._lost = None
+                # Set by stop_watcher before the observer stops: joining it can
+                # take longer than a timer's wait, and a timer firing meanwhile
+                # must write nothing.
+                self._closed = False
+
+            def on_events_lost(self, event):
+                # The system dropped events (Windows: the ReadDirectoryChangesW
+                # buffer overflowed, as when a batch of commits lands; Linux: the
+                # inotify queue). Which files changed is unknown, so every file's
+                # hash is checked, as at startup, once the burst is over.
+                with self._lock:
+                    if self._closed:
+                        return
+                    if self._lost is not None:
+                        self._lost.cancel()
+                    self._lost = threading.Timer(LOST_EVENTS_DEBOUNCE_SECONDS, self._catch_up)
+                    self._lost.daemon = True
+                    self._lost.start()
+
+            def _catch_up(self):
+                try:
+                    if self._closed or not backend.is_owner:
+                        return
+                    print(f"[watcher:{source_name}] the system lost file events: "
+                          f"checking every file, as at startup", file=sys.stderr)
+                    backend.catch_up()
+                except Exception as e:
+                    print(f"[watcher:{source_name}] the check after lost events failed: {e}",
+                          file=sys.stderr)
+                finally:
+                    with self._lock:
+                        self._lost = None
 
             def _flush(self, path: str, action: str):
                 try:

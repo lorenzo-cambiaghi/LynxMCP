@@ -96,3 +96,39 @@ def test_files_a_build_skips_are_skipped_by_the_watcher_too(watched):
     time.sleep(0.5)
     touched = {Path(p).name for _action, p in calls}
     assert touched == {"real.py"}, touched
+
+
+def test_events_the_system_lost_bring_a_pass_over_every_file(tmp_path, monkeypatch):
+    # A train landing hundreds of files at once overflows Windows'
+    # ReadDirectoryChangesW buffer (inotify's queue on Linux): watchdog says
+    # which watch lost events, not which files. A pass over every file's hash,
+    # as at startup, finds them; one pass for a burst of losses.
+    from watchdog.events import EventsLostEvent
+    import lynx.sources.codebase as codebase
+
+    monkeypatch.setattr(codebase, "LOST_EVENTS_DEBOUNCE_SECONDS", 0.2)
+    backend, code, _calls = _watch(tmp_path)
+    passes = []
+    backend.catch_up = lambda: passes.append(time.monotonic())
+    try:
+        for _ in range(3):
+            backend._handler.dispatch(EventsLostEvent(str(code), is_directory=True))
+        assert _until(lambda: passes), "lost events left the index behind"
+        time.sleep(0.5)
+        assert len(passes) == 1, "a burst of losses is one pass"
+    finally:
+        backend.stop_watcher()
+
+
+def test_stopping_the_watcher_cancels_a_pass_still_waiting(tmp_path, monkeypatch):
+    from watchdog.events import EventsLostEvent
+    import lynx.sources.codebase as codebase
+
+    monkeypatch.setattr(codebase, "LOST_EVENTS_DEBOUNCE_SECONDS", 0.3)
+    backend, code, _calls = _watch(tmp_path)
+    passes = []
+    backend.catch_up = lambda: passes.append(1)
+    backend._handler.dispatch(EventsLostEvent(str(code), is_directory=True))
+    backend.stop_watcher()
+    time.sleep(0.6)
+    assert passes == [], "a pass ran on a store this process let go of"

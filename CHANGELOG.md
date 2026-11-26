@@ -28,6 +28,14 @@ server answers meanwhile run as usual.
 
 ### Fixed
 
+The watcher catches up when the system drops file events. Landing a batch
+of commits at once overflows the buffer Windows keeps for a watched folder
+(the queue of inotify on Linux), and the files changed meanwhile were never
+re-indexed: on a 1.4-million-line library a shared server lost events three
+times in a morning. Now the watcher checks every file's hash, as at
+startup, once the burst is over. It needs watchdog 7.1, so Python 3.11 or
+later.
+
 `lynx graph query` and `lynx graph status` read the graph alone. With a
 `lynx serve` running they answered "no source has the graph layer
 enabled": the server held the vector store, and the CLI opened that store
