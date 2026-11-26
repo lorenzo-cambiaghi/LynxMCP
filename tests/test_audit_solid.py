@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 CODE = {
     "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
     "src/Pkg/ITransport.cs": "namespace Pkg;\npublic interface ITransport { void ConnectAsync(); }\n",
@@ -227,3 +229,43 @@ def test_an_empty_override_of_an_abstract_member_is_nothing_to_do(tmp_path, monk
     titles = [f.title for f in _audit(tmp_path)[0]]
     assert not any("Select.Cancel" in t for t in titles), titles
     assert "Tools.Muted.Hook is an empty override" in titles, titles
+
+
+DEAD_CODE_FALSE_ALARMS = {
+    # `HeldKind<T>.Instance`: a generic type named in a member access
+    "src/Pkg/Clips.cs": ("namespace Pkg;\npublic static class Clips {\n"
+                         "  public static object Held<T>() => HeldKind<T>.Instance;\n"
+                         "  private sealed class HeldKind<T> { public static readonly HeldKind<T> Instance = new(); }\n}\n"),
+    # `using static Pkg.Look;` and its members called bare
+    "src/Pkg/Look.cs": "namespace Pkg;\ninternal static class Look { public static int Size(int x) => x * 2; }\n",
+    "src/Pkg/UsesLook.cs": "using static Pkg.Look;\nnamespace Pkg;\npublic class UsesLook { public int Big() => Size(3); }\n",
+    # `[Menu(..)]` in its own namespace, with a public namesake that a `using` brings in
+    "src/Pkg/MenuAttribute.cs": ("namespace Pkg;\ninternal sealed class MenuAttribute(string path) : System.Attribute "
+                                 "{ public string Path { get; } = path; }\n"),
+    "src/Pkg/Shared.cs": ("namespace Pkg.Shared;\npublic sealed class MenuAttribute : System.Attribute "
+                          "{ public MenuAttribute(string path) { } }\n"),
+    "src/Pkg/Spline.cs": "using Pkg.Shared;\nnamespace Pkg;\n[Menu(\"Splines/Spline\")]\npublic class Spline { }\n",
+    # a module initializer: the runtime calls it
+    "src/Pkg/Kernels.cs": ("using System.Runtime.CompilerServices;\nnamespace Pkg;\n"
+                           "internal static class Kernels { [ModuleInitializer] internal static void Register() { } }\n"),
+    # a nested partial type over two files, made from a third, with a partial namesake nested in another type
+    "src/Pkg/Doc.cs": "namespace Pkg;\npublic static partial class Doc {\n  public static void Save() { new Writing(1).Go(); }\n}\n",
+    "src/Pkg/Doc.Writing.cs": ("namespace Pkg;\npublic static partial class Doc {\n"
+                               "  private sealed partial class Writing { private readonly int _n; public Writing(int n) { _n = n; } }\n}\n"),
+    "src/Pkg/Doc.Writing.More.cs": ("namespace Pkg;\npublic static partial class Doc {\n"
+                                    "  private sealed partial class Writing { public void Go() { } }\n}\n"),
+    "src/Pkg/Compiler.cs": ("namespace Pkg;\npublic static partial class Compiler {\n"
+                            "  public static void Run() => new Writing().Go();\n"
+                            "  internal sealed partial class Writing { public void Go() { } }\n}\n"),
+    "src/Pkg/Compiler.More.cs": ("namespace Pkg;\npublic static partial class Compiler {\n"
+                                 "  internal sealed partial class Writing { public void Stop() { } }\n}\n"),
+}
+
+
+@pytest.mark.parametrize("name", ["HeldKind", "Look", "MenuAttribute", "Kernels", "Doc.Writing", "Compiler.Writing"])
+def test_a_type_used_in_these_ways_is_not_dead_code(tmp_path, monkeypatch, name):
+    # Seen on a real library: six types flagged «used by nothing», each used.
+    for rel, text in DEAD_CODE_FALSE_ALARMS.items():
+        monkeypatch.setitem(CODE, rel, text)
+    dead = [f.title for f in _audit(tmp_path)[0] if f.title.endswith("is used by nothing")]
+    assert not any(name in t for t in dead), dead

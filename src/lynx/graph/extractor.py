@@ -2102,6 +2102,9 @@ def _cs_type_refs(node, source_id: str, source: bytes, raw_calls: list, file_pat
             name = _text(expr, source).strip()
             if name[:1].isupper() and name not in (declared or {}):
                 _cs_type_ref(source_id, expr, "static", source, raw_calls, file_path)
+        elif expr is not None and expr.type == "generic_name":
+            # `Cache<T>.Instance`: a generic type's static member.
+            _cs_type_ref(source_id, expr, "static", source, raw_calls, file_path)
     elif t == "object_creation_expression":
         _cs_type_ref(source_id, node.child_by_field_name("type"), "new", source, raw_calls, file_path)
     elif t == "typeof_expression":
@@ -2128,6 +2131,26 @@ def _cs_walk_type_refs(node, source_id: str, source: bytes, raw_calls: list, fil
         n = stack.pop()
         _cs_type_refs(n, source_id, source, raw_calls, file_path, declared, declared_kind)
         stack.extend(n.children)
+
+
+def _cs_using_static_refs(root, file_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
+    """`using static Game.Look;` names the type Look of namespace Game: its
+    members are called bare from then on, so without this the type looks
+    unused. A reference from the file node, with the namespace written."""
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "using_directive":
+            if any(not c.is_named and _text(c, source) == "static" for c in n.children):
+                name = next((c for c in n.named_children if c.type in ("qualified_name", "identifier", "generic_name")), None)
+                simple = _cs_type_name(name, source) if name is not None else None
+                if simple:
+                    full = _text(name, source).strip()
+                    raw_calls.append({"caller": file_id, "callee_name": simple, "is_member": False, "file": file_path,
+                                      "line": name.start_point[0] + 1, "recv": "typeref", "ref": "using",
+                                      "qualifier": full.rsplit(".", 1)[0] if "." in full else None})
+        elif n.type in ("compilation_unit", "namespace_declaration", "file_scoped_namespace_declaration", "declaration_list"):
+            stack.extend(n.children)
 
 
 def _cs_signature_refs(fn, source_id: str, source: bytes, raw_calls: list, file_path: str) -> None:
@@ -2577,6 +2600,7 @@ def extract_file(abs_path: str, content: str) -> "Optional[dict]":
                     _cs_member_refs(n, nid, source, raw_calls, abs_path_norm)
             if n.type not in METHOD_LIKE_CS:
                 stack.extend(cs_recovery.children(n))
+        _cs_using_static_refs(tree.root_node, file_id, source, raw_calls, abs_path_norm)
 
     # Every import the file tries, resolved or not, travels on its file node:
     # when another file appears or goes, the builder finds the files whose

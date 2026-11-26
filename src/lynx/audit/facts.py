@@ -66,6 +66,7 @@ class Method:
     type_tests: int
     writes: set = field(default_factory=set)   # names the body changes: `X.Add(..)`, `X[k] = v`, `X = ..`
     explicit: bool = False                     # `void IFoo.Bar()`: an interface member, private by syntax
+    attributes: str = ""                       # its attribute lists, as written: `[ModuleInitializer]`
 
 
 @dataclass
@@ -218,7 +219,8 @@ def _method(node, src: bytes, name: Optional[str] = None) -> Method:
     return Method(name=name or _name(node, src) or "?", line=node.start_point[0] + 1, end=node.end_point[0] + 1,
                   params=params, branches=branches, modifiers=_modifiers(node, src), body=_body_kind(body, src),
                   names=names, type_tests=tests, writes=writes,
-                  explicit=any(c.type == "explicit_interface_specifier" for c in node.children))
+                  explicit=any(c.type == "explicit_interface_specifier" for c in node.children),
+                  attributes=" ".join(_text(c, src) for c in node.children if c.type == "attribute_list"))
 
 
 def _bases(node, src: bytes) -> list:

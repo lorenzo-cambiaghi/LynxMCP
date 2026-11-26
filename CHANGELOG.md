@@ -54,6 +54,19 @@ empty override of a member the base leaves abstract (a gesture with
 nothing to cancel) means there is nothing to do, so it is no longer a
 substitution finding; an empty override of a member with a body still is.
 
+The C# graph finds the uses the audit called dead code. On a library six
+types flagged «used by nothing» were each used: a generic type's static
+member (`Cache<T>.Instance`), a type brought in by `using static`, a module
+initializer the runtime calls, an attribute with a public namesake that a
+`using` brings in, and a nested partial type created from a third file
+while another type of the namespace nests one of the same name. Names now
+resolve in C#'s order: the types nested in the referring type and the ones
+around it, in any file of a partial type, then the same file, then the
+namespace from the innermost out, and only then what `using` brings in.
+`[ModuleInitializer]` and `[UnmanagedCallersOnly]` count as uses. A graph
+built before is rebuilt in full on the next start, and so is one built
+before a change to the recovery of broken C# types.
+
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common
 extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`

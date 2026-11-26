@@ -77,7 +77,7 @@ GRAPH_SCHEMA_VERSION = 3
 
 # What a graph depends on besides the files it was built from: the code that
 # extracts and resolves it, relative to the package root.
-_EXTRACTOR_SOURCES = ("graph/extractor.py", "graph/builder.py", "chunking.py")
+_EXTRACTOR_SOURCES = ("graph/extractor.py", "graph/builder.py", "graph/cs_recovery.py", "chunking.py")
 
 
 @functools.lru_cache(maxsize=1)
@@ -866,13 +866,16 @@ class GraphLayer:
         scope = owner if owner is not None else (
             caller if (self._nodes_by_id.get(caller) or {}).get("kind") == "class" else None)
         if scope is None:
-            return 0
+            if rc.get("ref") != "using":
+                return 0
+            scope = caller                   # `using static A.B;`, from the file, with A written
         types = [c for c in (self._symbol_index.get(rc["callee_name"].lower()) or [])
                  if (self._nodes_by_id.get(c) or {}).get("kind") == "class"
                  and (self._nodes_by_id.get(c) or {}).get("subkind") not in CSHARP_NAMESPACE_KINDS]
         if not types:
             return 0
-        types = self._csharp_base_candidates({"child": scope, "base_name": rc["callee_name"]},
+        types = self._csharp_base_candidates({"child": scope, "base_name": rc["callee_name"],
+                                              "qualifier": rc.get("qualifier")},
                                              file_path, types, cs["usings"])
         if not types or len({self._type_key(t) for t in types}) != 1:
             return 0
@@ -1077,29 +1080,33 @@ class GraphLayer:
         the file imports with `using`, or the one a qualified base names
         (`Util.Base`). None visible: the base comes from outside the
         codebase, and no edge is drawn."""
-        same = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
-        if same:
-            # The types nested in the referring type come first, then those
-            # nested in each enclosing type: two runners in one file each
-            # with its own `Registration` mean each its own.
-            def outer(c):
-                label = (self._nodes_by_id.get(c) or {}).get("label") or ""
-                return label.rsplit(".", 1)[0] if "." in label else ""
-            scope = (self._nodes_by_id.get(ri["child"]) or {}).get("label") or ""
-            while scope and len(same) > 1:
-                inner = [c for c in same if outer(c) == scope]
-                if inner:
-                    return inner
-                scope = scope.rsplit(".", 1)[0] if "." in scope else ""
-            return same
         child = self._nodes_by_id.get(ri["child"]) or {}
         ns = child.get("namespace", "")
-        parts = ns.split(".") if ns else []
-        visible = {".".join(parts[:i]) for i in range(len(parts) + 1)} | usings.get(file_path, set())
         q = ri.get("qualifier")
 
         def ns_of(c):
             return (self._nodes_by_id.get(c) or {}).get("namespace", "")
+
+        def outer(c):
+            label = (self._nodes_by_id.get(c) or {}).get("label") or ""
+            return label.rsplit(".", 1)[0] if "." in label else ""
+
+        if not q and child.get("kind") == "class":
+            # The types nested in the referring type come first, then those
+            # nested in each enclosing type, in any file of a partial type:
+            # `new Writing()` in a third file of `Doc` is Doc's Writing, not
+            # the Writing of another type of the namespace.
+            scope = child.get("label") or ""
+            while scope:
+                inner = [c for c in candidates if outer(c) == scope and ns_of(c) == ns]
+                if inner:
+                    return inner
+                scope = scope.rsplit(".", 1)[0] if "." in scope else ""
+        same = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("file") == file_path]
+        if same and not q:
+            return same
+        parts = ns.split(".") if ns else []
+        visible = {".".join(parts[:i]) for i in range(len(parts) + 1)} | usings.get(file_path, set())
 
         if q:
             name = ri["base_name"]
@@ -1107,7 +1114,14 @@ class GraphLayer:
                     if ns_of(c) == q or ns_of(c).endswith("." + q)
                     or (self._nodes_by_id.get(c) or {}).get("label", "").endswith(f"{q}.{name}")
                     or any(ns_of(c) == f"{v}.{q}" for v in visible if v)]
-        return [c for c in candidates if ns_of(c) in visible]
+        # The namespace and the ones around it, innermost first, win over
+        # what a `using` brings in: `[AddComponentMenu]` in a namespace with
+        # its own attribute is that one, whatever `using VooDodo.Data;` adds.
+        for i in range(len(parts), -1, -1):
+            here = [c for c in candidates if ns_of(c) == ".".join(parts[:i])]
+            if here:
+                return here
+        return [c for c in candidates if ns_of(c) in usings.get(file_path, set())]
 
     def _resolve_raw_inherits(self, only_names: "set | None" = None) -> int:
         """Walk every raw_inherit and emit `inherits` edges using the same

@@ -31,6 +31,9 @@ from .facts import LAZY, read_file
 
 NAMESPACE_KINDS = {"namespace_declaration", "file_scoped_namespace_declaration"}
 INBOUND = {"calls", "uses_type", "inherits"}
+
+# Attributes whose method the runtime calls with no caller in the code.
+RUNTIME_ENTRIES = ("ModuleInitializer", "UnmanagedCallersOnly")
 MUTABLE_COLLECTIONS = ("List<", "Dictionary<", "HashSet<", "Queue<", "Stack<", "ConcurrentDictionary<",
                        "ConcurrentQueue<", "ConcurrentBag<", "SortedDictionary<", "SortedList<")
 # Verbs and glue words left out when method names are read for the jobs of a type.
@@ -354,6 +357,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
         reached = any(d.get("relation") in INBOUND and src not in ids and owner.get(src) not in ids
                       for x in ids | {f for f, o in owner.items() if o in ids}
                       for src, _, d in G.in_edges(x, data=True))
+        # A method the runtime calls by itself (`[ModuleInitializer]`, a native
+        # entry point) uses its type, though no code names it.
+        reached = reached or any(word in m.attributes for t in by_key.get(key, ()) for m in t.methods
+                                 for word in RUNTIME_ENTRIES)
         first = G.nodes[pkg_types[key][0]]
         # The modifiers of every partial declaration, as parsed: a public type
         # is API for code outside this codebase. No facts, no verdict.
