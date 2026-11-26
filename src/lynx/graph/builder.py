@@ -806,7 +806,8 @@ class GraphLayer:
                      if (self._nodes_by_id.get(c) or {}).get("kind") == "class"
                      and (self._nodes_by_id.get(c) or {}).get("subkind") not in CSHARP_NAMESPACE_KINDS]
             if types and owner is not None:
-                types = self._csharp_base_candidates({"child": owner, "base_name": rc.get("recv_type")},
+                types = self._csharp_base_candidates({"child": owner, "base_name": rc.get("recv_type"),
+                                                      "qualifier": rc.get("recv_qualifier")},
                                                      file_path, types, cs["usings"])
             start = sorted({self._type_key(t) for t in types})
         targets = []

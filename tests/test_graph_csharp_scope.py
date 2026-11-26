@@ -96,6 +96,29 @@ def test_a_csharp_call_binds_by_the_receivers_type_not_by_name(tmp_path):
     assert _calls(G, "Match.Tick") == ["LoopExtensions.AddBullets", "Server.Poll", "Server.Run", "Systems.Add"]
 
 
+def test_a_pattern_variable_has_the_type_it_was_tested_from(tmp_path):
+    # `Panels is { } panels`, `host is var h` and a `switch` take the tested
+    # property's or parameter's type, written `Docking.IHost` from a namespace
+    # that reaches it as Docking: `panels.Restore()` is the host's, not the
+    # one visible Restore a receiver of no known type would fall to.
+    # `o is Docking.Dock { } d` names Dock and types d.
+    G = _graph(tmp_path, {
+        "Docking/Host.cs": ("namespace App.Docking;\npublic interface IHost { void Restore(int l); }\n"
+                            "public class Dock { public void Restore(int l) { } }\n"),
+        "Docs/Doc.cs": "namespace App.Docs;\npublic abstract class Doc { public abstract void Restore(byte[] s); }\n",
+        "Shell/Shell.cs": ("using App.Docs;\nnamespace App.Shell;\npublic class Shell {\n"
+                           "  public Docking.IHost? Panels { get; set; }\n"
+                           "  public void Switch(object o, Docking.IHost host) {\n"
+                           "    if (Panels is { } panels) panels.Restore(1);\n"
+                           "    if (host is var h) h.Restore(2);\n"
+                           "    switch (Panels) { case { } s: s.Restore(3); break; }\n"
+                           "    if (o is Docking.Dock { } d) d.Restore(4);\n  }\n}\n"),
+    })
+    assert _calls(G, "Shell.Switch") == ["Dock.Restore", "IHost.Restore"]
+    assert ("Shell.Switch", "Dock") in _uses(G)
+    assert ("Shell", "IHost") in _uses(G), "a property typed Docking.IHost uses IHost"
+
+
 def test_an_inherited_method_is_found_in_the_base(tmp_path):
     # Bases are resolved before calls: `base.Start()`, `BaseOnly()` and
     # `_child.BaseOnly()` all live in BaseServer.

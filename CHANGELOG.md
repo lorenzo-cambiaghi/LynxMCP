@@ -67,6 +67,16 @@ namespace from the innermost out, and only then what `using` brings in.
 built before is rebuilt in full on the next start, and so is one built
 before a change to the recovery of broken C# types.
 
+A C# call on a pattern variable goes to the type it was tested from.
+`if (Panels is { } panels) panels.Restore(layout)` had a receiver of no
+known type, so the call fell to the one visible type with a `Restore`, a
+document class, and `callers` listed a caller that never called it. The
+variables of `x is { } v`, `x is var v` and a `switch` on `x` now take the
+type of `x`, and `x is Foo { } f` counts as a use of Foo. A type written
+with a qualifier (`Docking.IHost` from a namespace that reaches it as
+`Docking`) keeps it, so such a field, property or local now finds its type
+instead of none.
+
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common
 extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`

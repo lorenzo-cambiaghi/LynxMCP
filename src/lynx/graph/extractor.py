@@ -1988,23 +1988,68 @@ def _cs_type_name(node, source: bytes) -> Optional[str]:
     return None
 
 
+def _cs_type_qualifier(node, source: bytes) -> Optional[str]:
+    """What a C# type name is qualified with, as written: `Docking` of
+    `Docking.IHost?`, `A.B` of `global::A.B.C<int>`. None for a bare name."""
+    if node is not None and node.type == "nullable_type":
+        node = node.named_children[0] if node.named_children else None
+    q = node.child_by_field_name("qualifier") if node is not None and node.type == "qualified_name" else None
+    if q is None:
+        return None
+    text = _text(q, source).split("::", 1)[-1]
+    while "<" in text:
+        bare = re.sub(r"<[^<>]*>", "", text)
+        if bare == text:
+            break
+        text = bare
+    return re.sub(r"\s+", "", text) or None
+
+
+def _cs_written_type(node, source: bytes) -> Optional[str]:
+    """A C# type's simple name with the qualifier it was written with:
+    `Docking.IHost` names the IHost of a namespace the file reaches as
+    `Docking`, which a bare `IHost` would not find."""
+    tn = _cs_type_name(node, source)
+    q = _cs_type_qualifier(node, source) if tn else None
+    return f"{q}.{tn}" if q else tn
+
+
+def _cs_tested(pattern):
+    """The expression a C# pattern tests: `x is P`, `switch (x) { case P: }`,
+    `x switch { P => .. }`. None for a pattern inside another one."""
+    p = pattern.parent
+    if p is None:
+        return None
+    if p.type == "is_pattern_expression":
+        return p.child_by_field_name("expression")
+    if p.type == "switch_section":
+        s = p.parent.parent if p.parent is not None else None
+        return s.child_by_field_name("value") if s is not None and s.type == "switch_statement" else None
+    if p.type == "switch_expression_arm":
+        s = p.parent
+        return s.named_children[0] if s is not None and s.type == "switch_expression" and s.named_children else None
+    return None
+
+
 def _cs_declared_types(fn_node, source: bytes, members: dict) -> dict:
     """name -> type name for what a C# method body can name: the enclosing
     type's fields and properties (`members`), then the method's parameters,
-    locals (`var x = new T()` included), foreach variables and patterns."""
+    locals (`var x = new T()` included), foreach variables and patterns. A
+    type keeps the qualifier it was written with (`Docking.IHost`)."""
     out = dict(members)
+    tested = []
     stack = [fn_node]
     while stack:
         n = stack.pop()
         t = n.type
         if t == "parameter":
             name, typ = n.child_by_field_name("name"), n.child_by_field_name("type")
-            tn = _cs_type_name(typ, source)
+            tn = _cs_written_type(typ, source)
             if name is not None and tn:
                 out[_text(name, source)] = tn
         elif t == "variable_declaration":
             typ = n.child_by_field_name("type")
-            tn = _cs_type_name(typ, source)
+            tn = _cs_written_type(typ, source)
             for d in n.named_children:
                 if d.type != "variable_declarator":
                     continue
@@ -2012,20 +2057,29 @@ def _cs_declared_types(fn_node, source: bytes, members: dict) -> dict:
                 found = tn
                 if found is None:
                     made = next((c for c in d.named_children if c.type == "object_creation_expression"), None)
-                    found = _cs_type_name(made.child_by_field_name("type"), source) if made is not None else None
+                    found = _cs_written_type(made.child_by_field_name("type"), source) if made is not None else None
                 if name is not None and found:
                     out[_text(name, source)] = found
         elif t == "foreach_statement":
             left, typ = n.child_by_field_name("left"), n.child_by_field_name("type")
-            tn = _cs_type_name(typ, source)
+            tn = _cs_written_type(typ, source)
             if left is not None and tn:
                 out[_text(left, source)] = tn
-        elif t == "declaration_pattern":
+        elif t in ("declaration_pattern", "recursive_pattern"):
             name, typ = n.child_by_field_name("name"), n.child_by_field_name("type")
-            tn = _cs_type_name(typ, source)
-            if name is not None and tn:
-                out[_text(name, source)] = tn
+            if name is not None and name.type == "identifier":
+                tn = _cs_written_type(typ, source)
+                expr = _cs_tested(n) if not tn else None
+                if tn:
+                    out[_text(name, source)] = tn
+                elif expr is not None:
+                    # `Panels is { } panels`, `host is var h`: the variable has the tested one's type
+                    tested.append((_text(name, source), _text(expr, source).strip().removeprefix("this.")))
         stack.extend(n.children)
+    for _ in range(2):                       # `a is { } b` then `b is { } c`
+        for name, expr in tested:
+            if expr in out:
+                out[name] = out[expr]
     return out
 
 
@@ -2044,21 +2098,21 @@ def _cs_member_types(fn_node, source: bytes, cache: dict) -> dict:
         if c.type == "parameter_list":
             for prm in c.named_children:
                 name, typ = prm.child_by_field_name("name"), prm.child_by_field_name("type")
-                tn = _cs_type_name(typ, source)
+                tn = _cs_written_type(typ, source)
                 if name is not None and tn:
                     out[_text(name, source)] = tn
         elif c.type == "declaration_list":
             for m in c.named_children:
                 if m.type == "property_declaration":
                     name, typ = m.child_by_field_name("name"), m.child_by_field_name("type")
-                    tn = _cs_type_name(typ, source)
+                    tn = _cs_written_type(typ, source)
                     if name is not None and tn:
                         out[_text(name, source)] = tn
                 elif m.type in ("field_declaration", "event_field_declaration"):
                     var = next((x for x in m.named_children if x.type == "variable_declaration"), None)
                     if var is None:
                         continue
-                    tn = _cs_type_name(var.child_by_field_name("type"), source)
+                    tn = _cs_written_type(var.child_by_field_name("type"), source)
                     for d in var.named_children:
                         name = d.child_by_field_name("name") if d.type == "variable_declarator" else None
                         if name is not None and tn:
@@ -2075,15 +2129,19 @@ def _cs_type_ref(source_id: str, type_node, kind: str, source: bytes, raw_calls:
     if name and kind == "attribute" and not name.endswith("Attribute"):
         name += "Attribute"          # `[Serializable]` is SerializableAttribute
     if name:
-        raw_calls.append({"caller": source_id, "callee_name": name, "is_member": False, "file": file_path,
-                          "line": type_node.start_point[0] + 1, "recv": "typeref", "ref": kind})
+        rc = {"caller": source_id, "callee_name": name, "is_member": False, "file": file_path,
+              "line": type_node.start_point[0] + 1, "recv": "typeref", "ref": kind}
+        q = _cs_type_qualifier(type_node, source)
+        if q:
+            rc["qualifier"] = q              # `Docking.IHost`: the IHost the file reaches as Docking
+        raw_calls.append(rc)
 
 
 # Nodes whose `type` field is a type the code depends on: a local's declared
 # type, a cast, a caught exception, an array element, a pattern, a tuple
 # element, `default(T)`, `sizeof(T)`, a `where T : IFoo` constraint.
 _CS_TYPED_NODES = {"variable_declaration": "local", "cast_expression": "cast", "catch_declaration": "catch",
-                   "array_creation_expression": "new", "declaration_pattern": "pattern",
+                   "array_creation_expression": "new", "declaration_pattern": "pattern", "recursive_pattern": "pattern",
                    "default_expression": "typeof", "sizeof_expression": "typeof", "tuple_element": "local",
                    "type_parameter_constraint": "constraint"}
 
@@ -2270,7 +2328,10 @@ def _walk_calls(node, caller_id: str, rules: LangGraphRules, source: bytes,
                         "recv": recv[0],
                     }
                     if len(recv) > 1 and recv[1]:
-                        rc["recv_type"] = recv[1]
+                        q, _, simple = recv[1].rpartition(".") if recv[0] == "type" else ("", "", recv[1])
+                        rc["recv_type"] = simple
+                        if q:
+                            rc["recv_qualifier"] = q
                     raw_calls.append(rc)
                 extracted = None
             if extracted is not None:
