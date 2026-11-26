@@ -49,7 +49,10 @@ It read only fields, and on a C# library it flagged a locked set that was
 fine and missed the flag beside it: set by one call and never cleared, it
 let a later call skip a check it needed. A private static written only by
 `??=` (`_x ??= Build()`) is built on first read and keeps that value, so
-it is no longer flagged; on the same library four such caches were.
+it is no longer flagged; on the same library four such caches were. An
+empty override of a member the base leaves abstract (a gesture with
+nothing to cancel) means there is nothing to do, so it is no longer a
+substitution finding; an empty override of a member with a body still is.
 
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common

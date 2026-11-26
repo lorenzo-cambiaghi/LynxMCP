@@ -240,6 +240,14 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
         for t in types:
             by_key[key_of(t)].append(t)
 
+    # The members each type of the package leaves abstract, by its simple name:
+    # an empty override of one of them is "nothing to do here", not a member
+    # that stopped doing its base's work.
+    abstract_members = defaultdict(set)
+    for ts in by_key.values():
+        for t in ts:
+            abstract_members[t.name.rsplit(".", 1)[-1]] |= {m.name for m in t.methods if "abstract" in m.modifiers}
+
     findings = []
     for key, ts in by_key.items():
         first = min(ts, key=lambda t: (t.file, t.line))
@@ -274,6 +282,9 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 reachable = (m.explicit or first.kind == "interface"
                              or m.modifiers & {"public", "protected", "internal", "override", "virtual", "abstract"})
                 if not reachable:
+                    continue
+                if m.body == "empty" and any(m.name in abstract_members.get(base.split("<", 1)[0].rsplit(".", 1)[-1], ())
+                                             for base in t.bases):
                     continue
                 if m.body == "throws" or (m.body == "empty" and "override" in m.modifiers):
                     what = "only throws NotImplemented/NotSupported" if m.body == "throws" else "is an empty override"

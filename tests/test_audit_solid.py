@@ -211,3 +211,19 @@ def test_a_static_built_on_first_read_is_a_constant_not_shared_state(tmp_path, m
     titles = [f.title for f in _audit(tmp_path)[0]]
     assert not any("_picture" in t for t in titles), titles
     assert "Lazy._label is mutable global state" in titles
+
+
+def test_an_empty_override_of_an_abstract_member_is_nothing_to_do(tmp_path, monkeypatch):
+    # Seen on a real library: a selection gesture's Cancel was empty because the
+    # selection is only made at End, and the abstract Gesture.Cancel asks every
+    # gesture for one. An empty override that drops the base's work stays.
+    monkeypatch.setitem(CODE, "src/Pkg/Gestures.cs", (
+        "namespace Pkg;\npublic class Tools {\n"
+        "  public abstract class Gesture { public abstract void Cancel(); }\n"
+        "  public sealed class Select : Gesture { public override void Cancel() { } }\n"
+        "  public class Hooked { public virtual void Hook() { System.Console.WriteLine(1); } }\n"
+        "  public sealed class Muted : Hooked { public override void Hook() { } }\n"
+        "}\n"))
+    titles = [f.title for f in _audit(tmp_path)[0]]
+    assert not any("Select.Cancel" in t for t in titles), titles
+    assert "Tools.Muted.Hook is an empty override" in titles, titles
