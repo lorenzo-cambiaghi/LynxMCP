@@ -77,6 +77,19 @@ with a qualifier (`Docking.IHost` from a namespace that reaches it as
 `Docking`) keeps it, so such a field, property or local now finds its type
 instead of none.
 
+The audit's open/closed check groups switches by the type their labels
+name. `switch (op)` over a math operator and `switch (op)` over a
+comparison were one subject «in 5 places» because both parameters are
+called `op`; `MathOperator.Add =>` and `case ComparisonOperator.Equal:`
+now say which enum each switch is on, and a subject with no such labels
+is still grouped by its name. A type that says it lacks a capability
+(`CanWrite => false`, `CanSeek => false`, `IsReadOnly => true`) and throws
+NotSupported or does nothing in the members of that capability is no
+substitution finding: that is the contract of `Stream` and
+`ICollection<T>`. A private static that is not readonly is still mutable
+global state, but the finding no longer says every user can change it:
+it says only the type does, and ranks below the exposed ones.
+
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common
 extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`

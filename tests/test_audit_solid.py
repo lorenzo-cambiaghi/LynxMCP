@@ -67,6 +67,71 @@ def test_the_checks_name_what_breaks_and_leave_the_harmless_alone(tmp_path):
     assert len(switch) == 1 and "3 places" in switch[0].title, titles
 
 
+def test_switches_on_one_name_over_two_enums_are_two_subjects(tmp_path):
+    # Three `switch (op)` in two types, but over two enums: two over MathOp,
+    # one over Cmp. A new MathOp value edits two places, not three, and
+    # nothing groups them. An `or` pattern names its enum too.
+    root = tmp_path / "code"
+    arms = "MathOp.Add or MathOp.Sub => 1, MathOp.Mul => 2, MathOp.Div => 3, MathOp.Min => 4, _ => 0"
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Ops.cs": "namespace Pkg;\npublic enum MathOp { Add, Sub, Mul, Div, Min }\npublic enum Cmp { Eq, Ne, Lt, Gt }\n",
+        "src/Pkg/MathExpr.cs": ("namespace Pkg;\npublic class MathExpr {\n"
+                                f"  public int Eval(MathOp op) => op switch {{ {arms} }};\n"
+                                f"  public int Symbol(MathOp op) => op switch {{ {arms} }};\n}}\n"),
+        "src/Pkg/Numbers.cs": ("namespace Pkg;\npublic static class Numbers {\n"
+                               "  public static bool Compare(Cmp op) { switch (op) { case Cmp.Eq: return true; case Cmp.Ne: return false;"
+                               " case Cmp.Lt: return true; case Cmp.Gt: return false; default: return false; } }\n}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    findings, _ = audit(layer.graph, root, "Pkg")
+    assert not [f.title for f in findings if f.principle == "O"]
+
+
+def test_a_capability_a_type_says_it_lacks_is_no_substitution_finding(tmp_path):
+    # A read-only Stream throws NotSupported from Write and SetLength and does
+    # nothing in Flush: Stream's own contract once CanWrite says false. One
+    # that says it can write and throws still is a finding, and so is a Read
+    # that throws when only seeking was declined.
+    root = tmp_path / "code"
+    rest = ("  public override long Seek(long o, System.IO.SeekOrigin s) => 0;\n"
+            "  public override long Length => 0;\n  public override long Position { get; set; }\n")
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Window.cs": ("namespace Pkg;\npublic sealed class Window : System.IO.Stream {\n"
+                              "  public override bool CanRead => true;\n  public override bool CanSeek => true;\n"
+                              "  public override bool CanWrite { get { return false; } }\n"
+                              "  public override int Read(byte[] b, int o, int c) => 0;\n" + rest +
+                              "  public override void Flush() { }\n"
+                              "  public override void SetLength(long v) => throw new NotSupportedException();\n"
+                              "  public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();\n}\n"),
+        "src/Pkg/Liar.cs": ("namespace Pkg;\npublic sealed class Liar : System.IO.Stream {\n"
+                            "  public override bool CanRead => true;\n  public override bool CanSeek => false;\n"
+                            "  public override bool CanWrite => true;\n"
+                            "  public override int Read(byte[] b, int o, int c) => throw new NotSupportedException();\n" + rest +
+                            "  public override void Flush() { }\n  public override void SetLength(long v) { }\n"
+                            "  public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();\n}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    findings, _ = audit(layer.graph, root, "Pkg")
+    l = sorted(f.title for f in findings if f.principle == "L")
+    assert not [t for t in l if t.startswith("Window.")], l
+    assert "Liar.Write only throws NotImplemented/NotSupported" in l, l
+    assert "Liar.Read only throws NotImplemented/NotSupported" in l, l
+
+
 def test_a_finding_carries_the_fence_of_its_refactor(tmp_path):
     findings, _ = _audit(tmp_path)
     fence = next(f for f in findings if f.title.startswith("Server._count")).fence

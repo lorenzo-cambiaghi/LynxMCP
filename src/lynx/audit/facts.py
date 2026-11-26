@@ -84,6 +84,7 @@ class Switch:
     subject: str
     line: int
     cases: int
+    over: Optional[str] = None   # the type its labels name values by: MathOperator of `case MathOperator.Add:`
 
 
 @dataclass
@@ -101,6 +102,7 @@ class TypeDecl:
     properties: list = field(default_factory=list)
     static_setters: list = field(default_factory=list)   # Field(kind="property") per static auto-property with a setter
     switches: list = field(default_factory=list)
+    declines: set = field(default_factory=set)   # what it says it cannot do: `CanWrite => false`, `IsReadOnly => true`
     members: int = 0       # declared members (methods, properties, events, indexers)
     writes: set = field(default_factory=set)   # names its members change after construction (static constructors left out)
 
@@ -291,6 +293,9 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
             if pname:
                 mods = _modifiers(m, src)
                 decl.properties.append((pname, mods))
+                said = _constant_bool(m, src) if t == "property_declaration" else None
+                if (pname.startswith("Can") and said is False) or (pname in ("IsReadOnly", "IsFixedSize") and said is True):
+                    decl.declines.add(pname)
                 if t == "property_declaration" and "static" in mods and _auto_setter(m):
                     typ = m.child_by_field_name("type")
                     attrs = " ".join(_text(c, src) for c in m.children if c.type == "attribute_list")
@@ -304,7 +309,54 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
                 subj = next((c for c in n.named_children if c.type not in ("switch_body", "switch_expression_arm")), None)
             cases = sum(1 for c in _walk(n) if c.type in ("switch_section", "switch_expression_arm"))
             if subj is not None:
-                decl.switches.append(Switch(subject=_text(subj, src).strip("() "), line=n.start_point[0] + 1, cases=cases))
+                decl.switches.append(Switch(subject=_text(subj, src).strip("() "), line=n.start_point[0] + 1, cases=cases,
+                                            over=_switch_over(n, src)))
+
+
+def _switch_over(n, src: bytes) -> Optional[str]:
+    """The type a switch's labels name their values by: MathOperator of
+    `case MathOperator.Add:` and of `MathOperator.Add or MathOperator.Min =>`.
+    Two switches on parameters both called `op` are one subject only when
+    they are on one type. None when the labels name no type, or no one type
+    names most of them."""
+    if n.type == "switch_expression":
+        labels = [a.named_children[0] for a in n.named_children if a.type == "switch_expression_arm" and a.named_children]
+    else:
+        body = n.child_by_field_name("body") or next((c for c in n.named_children if c.type == "switch_body"), None)
+        labels = [c for sec in (body.named_children if body is not None else ()) if sec.type == "switch_section"
+                  for c in sec.named_children if c.type.endswith("pattern")]
+    seen: dict = {}
+    for label in labels:
+        for c in _walk(label):
+            if c.type == "constant_pattern" and c.named_children and c.named_children[0].type == "member_access_expression":
+                q = c.named_children[0].child_by_field_name("expression")
+                if q is not None:
+                    name = _text(q, src).rsplit(".", 1)[-1].strip()
+                    seen[name] = seen.get(name, 0) + 1
+    if not seen:
+        return None
+    name, count = max(seen.items(), key=lambda kv: kv[1])
+    return name if count * 2 > sum(seen.values()) else None
+
+
+def _constant_bool(prop, src: bytes) -> Optional[bool]:
+    """The literal a property always gives: `=> false`, `{ get => true; }`,
+    `{ get { return false; } }`. None for anything computed."""
+    bodies = [c for c in prop.children if c.type == "arrow_expression_clause"]
+    for acc_list in prop.children:
+        if acc_list.type == "accessor_list":
+            gets = [a for a in acc_list.named_children if a.type == "accessor_declaration"
+                    and any(not c.is_named and _text(c, src) == "get" for c in a.children)]
+            for a in gets:
+                bodies.extend(c for c in a.children if c.type in ("arrow_expression_clause", "block"))
+    if len(bodies) != 1:
+        return None
+    inner = [c for c in bodies[0].named_children if c.type != "comment"]
+    if len(inner) == 1 and inner[0].type == "return_statement":
+        inner = inner[0].named_children
+    if len(inner) == 1 and inner[0].type == "boolean_literal":
+        return _text(inner[0], src).strip() == "true"
+    return None
 
 
 def _auto_setter(prop) -> bool:

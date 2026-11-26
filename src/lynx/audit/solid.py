@@ -34,6 +34,17 @@ INBOUND = {"calls", "uses_type", "inherits"}
 
 # Attributes whose method the runtime calls with no caller in the code.
 RUNTIME_ENTRIES = ("ModuleInitializer", "UnmanagedCallersOnly")
+# What a type says it cannot do (facts: `CanWrite => false`, `IsReadOnly =>
+# true`), and the members, by the start of their names, that then throw
+# NotSupported or do nothing: the contract of Stream and ICollection<T>
+# themselves, not a substitution that breaks.
+DECLINED = {
+    "CanWrite": ("Write", "BeginWrite", "EndWrite", "SetLength", "Flush"),
+    "CanSeek": ("Seek", "SetLength"),
+    "CanRead": ("Read", "BeginRead", "EndRead", "CopyTo"),
+    "IsReadOnly": ("Add", "Remove", "Insert", "Clear"),
+    "IsFixedSize": ("Add", "Remove", "Insert", "Clear"),
+}
 MUTABLE_COLLECTIONS = ("List<", "Dictionary<", "HashSet<", "Queue<", "Stack<", "ConcurrentDictionary<",
                        "ConcurrentQueue<", "ConcurrentBag<", "SortedDictionary<", "SortedList<")
 # Verbs and glue words left out when method names are read for the jobs of a type.
@@ -289,6 +300,8 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 if m.body == "empty" and any(m.name in abstract_members.get(base.split("<", 1)[0].rsplit(".", 1)[-1], ())
                                              for base in t.bases):
                     continue
+                if "override" in m.modifiers and any(m.name.startswith(DECLINED.get(c, ())) for d in ts for c in d.declines):
+                    continue
                 if m.body == "throws" or (m.body == "empty" and "override" in m.modifiers):
                     what = "only throws NotImplemented/NotSupported" if m.body == "throws" else "is an empty override"
                     findings.append(Finding("L", f"{first.name}.{m.name} {what}", f"{t.file}:{m.line}",
@@ -303,8 +316,14 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                         # the same value for the whole process.
                         continue
                     how = "static with a setter" if f.kind == "property" else "static and not readonly"
+                    if f.modifiers & {"public", "protected", "internal"}:
+                        said, weight = f"{how} ({f.type}): every user shares it and can change it", 2.0
+                    else:
+                        # Only the type writes it: one value per process, which
+                        # a cache or a counter may well mean to be.
+                        said, weight = f"private, {how} ({f.type}): one value for the whole process, that only the type changes", 1.0
                     findings.append(Finding("D", f"{first.name}.{f.name} is mutable global state", f"{t.file}:{f.line}",
-                                            f"{how} ({f.type}): every user shares it and can change it", key, 2.0))
+                                            said, key, weight))
                 elif f.type.startswith(MUTABLE_COLLECTIONS) and (
                         f.name in writes or f.modifiers & {"public", "protected", "internal"}):
                     # A private table filled once by its initializer is a
@@ -312,17 +331,20 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                     # anybody can reach, is global state.
                     findings.append(Finding("D", f"{first.name}.{f.name} is a shared mutable collection", f"{t.file}:{f.line}",
                                             f"static readonly {f.type}: the reference is fixed, the contents are global state", key, 1.5))
-    # O: one switch subject in several places.
+    # O: one switch subject in several places: one type, when the labels name
+    # it (two parameters called `op` over two enums are two subjects).
     subjects = defaultdict(list)
     for key, ts in by_key.items():
         for t in ts:
             for s in t.switches:
                 if s.cases >= 4:
-                    subjects[s.subject.rsplit(".", 1)[-1]].append((key, t.file, s.line))
-    for subj, places in subjects.items():
+                    subj = ("over", s.over) if s.over else ("subject", s.subject.rsplit(".", 1)[-1])
+                    subjects[subj].append((key, t.file, s.line))
+    for (how, subj), places in subjects.items():
         if len(places) >= 3 and len({p[0] for p in places}) >= 2:
             k, f, line = places[0]
-            findings.append(Finding("O", f"`switch ({subj})` in {len(places)} places", f"{f}:{line}",
+            said = f"`switch` over {subj}" if how == "over" else f"`switch ({subj})`"
+            findings.append(Finding("O", f"{said} in {len(places)} places", f"{f}:{line}",
                                     "a new value means editing " + ", ".join(f"{p[0][1]} ({p[1].rsplit('/', 1)[-1]}:{p[2]})" for p in places[:5]),
                                     k, 2.0))
     # D: a package that many depend on, depending on one that is less stable.
