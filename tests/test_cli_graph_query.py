@@ -271,7 +271,7 @@ def _patch_manager(monkeypatch, mgr):
     import lynx.cli as cli
 
     mgr.backends = {"demo": _FakeBackend()}
-    monkeypatch.setattr(cli, "_build_manager", lambda config_path: (None, mgr))
+    monkeypatch.setattr(cli, "_build_manager", lambda config_path, **_kw: (None, mgr))
     return cli
 
 
@@ -595,7 +595,7 @@ def test_source_without_a_graph_layer_is_rejected(monkeypatch, capsys):
     mgr = _FakeManager()
     mgr.backends = {"demo": _FakeBackend(), "plain": type("_B", (), {})()}
     import lynx.cli as cli
-    monkeypatch.setattr(cli, "_build_manager", lambda config_path: (None, mgr))
+    monkeypatch.setattr(cli, "_build_manager", lambda config_path, **_kw: (None, mgr))
 
     rc = cli.main(["graph", "query", "--source", "plain", "--op", "status",
                    "--json"])
@@ -617,7 +617,7 @@ def test_cli_json_survives_a_library_greeting_on_stdout(monkeypatch, capfd):
     mgr = _FakeManager(edges=[_edge()])
     mgr.backends = {"demo": _FakeBackend()}
 
-    def _noisy_build(config_path):
+    def _noisy_build(config_path, **_kw):
         os.write(1, b"LLM is explicitly disabled. Using MockLLM.\n")
         return None, mgr
 
@@ -641,7 +641,7 @@ def test_text_mode_keeps_the_library_output_visible(monkeypatch, capfd):
     mgr = _FakeManager(edges=[_edge()])
     mgr.backends = {"demo": _FakeBackend()}
 
-    def _noisy_build(config_path):
+    def _noisy_build(config_path, **_kw):
         os.write(1, b"loading model...\n")
         return None, mgr
 
@@ -649,3 +649,37 @@ def test_text_mode_keeps_the_library_output_visible(monkeypatch, capfd):
     cli.main(["graph", "query", "--op", "callers", "--symbol", "helper"])
 
     assert "loading model" in capfd.readouterr().out
+
+
+def test_graph_query_and_status_read_the_graph_alone(tmp_path, monkeypatch, capsys):
+    # With a `lynx serve` running, the vector store is that server's and the
+    # CLI could not open it: `graph query` answered "no source has the graph
+    # layer enabled". The graph is JSON beside the store; the CLI reads it
+    # alone, without the store, its probe or the embedding model.
+    import lynx.integrity
+    import lynx.rag_manager
+    from lynx.cli import main as cli_main
+    from lynx.graph import GraphLayer
+
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "a.py").write_text("def helper():\n    return 1\n\n\ndef main():\n    return helper()\n",
+                               encoding="utf-8")
+    GraphLayer(storage_dir=tmp_path / "storage" / "src" / "graph", codebase_path=code,
+               supported_extensions=[".py"])
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"config_version": 2, "storage_path": "./storage", "sources": {"src": {
+        "type": "codebase", "path": str(code), "supported_extensions": [".py"],
+        "graph": {"enabled": True}}}}), encoding="utf-8")
+
+    def _untouchable(*_a, **_k):
+        raise AssertionError("the vector store was opened")
+
+    monkeypatch.setattr(lynx.integrity, "check_index", _untouchable)
+    monkeypatch.setattr(lynx.rag_manager, "CodebaseRAG", _untouchable)
+
+    assert cli_main(["graph", "query", "--config", str(cfg), "--op", "callers",
+                     "--symbol", "helper"]) == 0
+    assert "main" in capsys.readouterr().out
+    assert cli_main(["graph", "status", "--config", str(cfg)]) == 0
+    assert "nodes:" in capsys.readouterr().out

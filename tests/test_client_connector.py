@@ -348,3 +348,56 @@ def test_corrupt_claude_settings_are_not_overwritten(tmp_path):
 
     assert not res.ok and "invalid JSON" in res.message
     assert bad.read_text(encoding="utf-8") == "{ not json"
+
+
+# ---------------------------------------------------------------------------
+# A shared `lynx serve --http` server
+# ---------------------------------------------------------------------------
+
+URL = "http://127.0.0.1:8791/mcp"
+
+
+def test_connect_claude_to_a_shared_server_registers_its_url_and_the_hook(tmp_path):
+    calls, which, run = _fake_claude_cli()
+
+    res = connect_client("claude", url=URL, home=tmp_path, which=which, runner=run)
+
+    assert res.ok, res.message
+    assert calls[1] == ["/bin/claude", "mcp", "add", "--transport", "http", "--scope", "user",
+                        "lynx", URL]
+    assert _lynx_hooks(_settings(tmp_path))[0]["server"] == "lynx"
+
+
+def test_connect_claude_to_a_shared_server_without_the_cli_writes_an_http_entry(tmp_path):
+    (tmp_path / ".claude.json").write_text(json.dumps({"mcpServers": {"lynx": {
+        "command": "/py", "args": ["-m", "lynx", "serve", "."]}}}), encoding="utf-8")
+
+    res = connect_client("claude", url=URL, home=tmp_path, which=lambda _n: None)
+
+    assert res.ok, res.message
+    servers = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert servers == {"lynx": {"type": "http", "url": URL}}
+
+
+def test_a_shared_server_url_is_for_claude_code_only(tmp_path):
+    res = connect_client("cursor", url=URL, home=tmp_path)
+
+    assert not res.ok and "Claude Code" in res.message
+    assert not (tmp_path / ".cursor" / "mcp.json").exists()
+
+
+def test_cli_connect_url_skips_the_config_and_refuses_a_path(tmp_path, monkeypatch):
+    import lynx.client_connector as cc
+
+    seen = {}
+
+    def _fake_connect(key, **kw):
+        seen.update(kw)
+        return cc.ConnectResult(ok=True, client_key=key, message="ok")
+
+    monkeypatch.setattr(cc, "connect_client", _fake_connect)
+    monkeypatch.chdir(tmp_path)
+
+    assert cli_main(["connect", "claude", "--url", URL]) == 0
+    assert seen["url"] == URL and seen["config_path"] is None and seen["repo_path"] is None
+    assert cli_main(["connect", "claude", "--url", URL, "--path", str(tmp_path)]) == 2

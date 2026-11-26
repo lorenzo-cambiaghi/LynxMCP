@@ -168,3 +168,10 @@ def test_a_class_the_grammar_left_in_pieces_is_read(tmp_path):
     assert box is not None and ns == "A"
     assert box.bases == ["Base"] and [f.name for f in box.fields] == ["_n"]
     assert {m.name for m in box.methods} == {"Box", "Bad"}
+
+
+def test_a_clean_package_says_so_in_a_sentence():
+    from lynx.audit.solid import render
+    head = render("src/Clean", [])
+    assert "0 findings. Ranked" not in head and "findings: ." not in head
+    assert "No findings in src/Clean." in head

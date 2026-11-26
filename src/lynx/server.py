@@ -1218,7 +1218,8 @@ def _run_http(mcp, port: int) -> None:
     import anyio
     mcp.settings.host = "127.0.0.1"
     mcp.settings.port = port
-    print(f"[server] MCP over HTTP at http://127.0.0.1:{port}{mcp.settings.streamable_http_path}",
+    url = f"http://127.0.0.1:{port}{mcp.settings.streamable_http_path}"
+    print(f"[server] MCP over HTTP at {url} (Claude Code: lynx connect claude --url {url})",
           file=sys.stderr)
     anyio.run(mcp.run_streamable_http_async)
 

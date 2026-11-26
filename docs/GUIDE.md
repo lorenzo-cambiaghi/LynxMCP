@@ -1132,6 +1132,23 @@ Restart Claude Code. The next session lists the tools of the profile you
 chose (see [Tool profiles](#tool-profiles)); the tool set does not grow with
 the number of sources.
 
+#### One server for every session
+
+Over stdio each Claude Code session starts its own server, with its own copy
+of the indexes in memory. On a large repository that adds up: a server on a
+1.4-million-line library held 2 to 3.7 GB. With many sessions or agents
+running at once, start one server over HTTP and point them all at it:
+
+```bash
+lynx serve --http 8791 --config C:/path/to/config.json
+lynx connect claude --url http://127.0.0.1:8791/mcp
+```
+
+The server listens on the loopback interface only. `connect --url`
+registers it at user scope and adds the prompt hook as usual. Keep the
+server running while sessions use it: a session started while it is down
+lists Lynx as failed until `/mcp` reconnects it.
+
 #### The prompt hook
 
 Claude Code with Lynx connected still tends to explore with grep and cat,

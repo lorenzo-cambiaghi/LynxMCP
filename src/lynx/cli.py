@@ -188,7 +188,7 @@ def _resolve_source(args, config, allow_all: bool = False) -> str:
     sys.exit(1)
 
 
-def _build_manager(config_path):
+def _build_manager(config_path, *, graph_only: bool = False):
     """Construct SourceManager synchronously. Used by build / search / status /
     list-sources. The MCP `serve` subcommand uses its own threaded loader."""
     config = _load_config_or_exit(config_path)
@@ -196,7 +196,7 @@ def _build_manager(config_path):
     from .config import configure_hf_offline
     configure_hf_offline(config)
     from .source_manager import SourceManager
-    return config, SourceManager(config)
+    return config, SourceManager(config, graph_only=graph_only)
 
 
 # ----------------------------------------------------------------------
@@ -900,7 +900,10 @@ def _cmd_graph(args) -> int:
     # import. Mute it while there's a JSON object to keep clean.
     as_json = getattr(args, "as_json", False)
     with _muted_stdout(as_json):
-        config, manager = _build_manager(getattr(args, "config", None))
+        # Questions read the graph alone: a running `lynx serve` may hold the
+        # vector store, and the embedding model took 24 s to load for nothing.
+        config, manager = _build_manager(getattr(args, "config", None),
+                                         graph_only=sub in ("query", "status"))
 
     if sub == "query":
         # Rendering is shared with the `graph_query` MCP tool, so without
@@ -1111,8 +1114,10 @@ def _cmd_connect(args) -> int:
 
     repo_path = getattr(args, "path", None)
     cfg_arg = getattr(args, "config", None)
-    if repo_path and cfg_arg:
-        msg = "--config cannot be combined with --path."
+    url = getattr(args, "url", None)
+    if (repo_path and cfg_arg) or (url and (repo_path or cfg_arg)):
+        msg = ("--url cannot be combined with --path or --config: the server it names "
+               "has its own." if url else "--config cannot be combined with --path.")
         if as_json:
             _emit_json({"ok": False, "error": msg})
         else:
@@ -1129,7 +1134,7 @@ def _cmd_connect(args) -> int:
         return 2
 
     resolved_cfg = None
-    if resolved_repo is None:
+    if resolved_repo is None and not url:
         candidate = resolve_config_path(cfg_arg)
         if candidate.is_file():
             resolved_cfg = candidate
@@ -1156,6 +1161,7 @@ def _cmd_connect(args) -> int:
         profile=getattr(args, "profile", None),
         dry_run=getattr(args, "dry_run", False),
         hook=not getattr(args, "no_hook", False),
+        url=url,
     )
     if as_json:
         _emit_json({

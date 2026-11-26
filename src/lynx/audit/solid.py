@@ -356,7 +356,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
 
 
 def render(package: str, findings: list, commit: str = "", per_principle: int = 5) -> str:
-    out = [f"# Audit of {package}" + (f" at {commit}" if commit else ""), "",
+    title = f"# Audit of {package}" + (f" at {commit}" if commit else "")
+    if not findings:
+        return "\n".join([title, "", f"No findings in {package}."])
+    out = [title, "",
            f"{len(findings)} findings: " + ", ".join(f"{p} {n}" for p in PRINCIPLES if (n := sum(f.principle == p for f in findings))) +
            ". Ranked by severity, by how many files outside the package reach the type, and by how often its files changed in 180 days.",
            "Refactor inside the fence: keep the contract, build the dependents, run the tests; then run the audit again.", ""]

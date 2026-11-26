@@ -45,9 +45,41 @@ class CodebaseBackend(SourceBackend):
         source_config: dict,
         shared_config: Any,
         storage_dir: Path,
+        *,
+        graph_only: bool = False,
     ):
         super().__init__(name, source_config, shared_config, storage_dir)
+        # `graph_only` reads the graph alone (`lynx graph query`, `status`):
+        # no vector store to open, which a running server may hold, and no
+        # embedding model to load. It never writes, so it claims nothing.
+        self.rag = None
+        if graph_only:
+            self.is_owner = False
+        else:
+            self._open_vector_index(name, source_config, shared_config)
 
+        # Watcher state — populated lazily by start_watcher().
+        self._observer = None
+        self._handler = None
+
+        # Opt-in graph layer (call graph + import graph + analyzer).
+        # Disabled by default; activated via `graph: { enabled: true }` in
+        # the source's config. When enabled, every search/update/watcher
+        # event also keeps the graph in sync.
+        self.graph = None
+        graph_cfg = source_config.get("graph") or {}
+        if graph_cfg.get("enabled"):
+            from ..graph import GraphLayer
+            self.graph = GraphLayer(
+                storage_dir=self.storage_dir / "graph",
+                codebase_path=source_config["path"],
+                supported_extensions=source_config["supported_extensions"],
+                ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
+                ignored_globs=source_config.get("ignored_globs") or (),
+                follower=not self.is_owner,
+            )
+
+    def _open_vector_index(self, name: str, source_config: dict, shared_config: Any) -> None:
         # Imported here (not at module level) to keep the `sources` package
         # importable without pulling in the heavy llama-index stack until a
         # backend is actually instantiated.
@@ -81,27 +113,6 @@ class CodebaseBackend(SourceBackend):
             ignored_globs=source_config.get("ignored_globs") or (),
             follower=not self.is_owner,
         )
-
-        # Watcher state — populated lazily by start_watcher().
-        self._observer = None
-        self._handler = None
-
-        # Opt-in graph layer (call graph + import graph + analyzer).
-        # Disabled by default; activated via `graph: { enabled: true }` in
-        # the source's config. When enabled, every search/update/watcher
-        # event also keeps the graph in sync.
-        self.graph = None
-        graph_cfg = source_config.get("graph") or {}
-        if graph_cfg.get("enabled"):
-            from ..graph import GraphLayer
-            self.graph = GraphLayer(
-                storage_dir=self.storage_dir / "graph",
-                codebase_path=source_config["path"],
-                supported_extensions=source_config["supported_extensions"],
-                ignored_path_fragments=source_config.get("ignored_path_fragments") or [],
-                ignored_globs=source_config.get("ignored_globs") or (),
-                follower=not self.is_owner,
-            )
 
     # ------------------------------------------------------------------
     # Search dispatch (thin delegation to the underlying CodebaseRAG)

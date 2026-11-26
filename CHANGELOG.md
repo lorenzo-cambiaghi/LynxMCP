@@ -6,8 +6,9 @@
 
 `lynx serve --http PORT` serves MCP over HTTP at
 `http://127.0.0.1:PORT/mcp`, so every session of a machine shares one
-process and one copy of the indexes (`claude mcp add --transport http lynx
-http://127.0.0.1:PORT/mcp`). Over stdio each session starts its own server:
+process and one copy of the indexes. `lynx connect claude --url
+http://127.0.0.1:PORT/mcp` registers it in Claude Code with the prompt hook,
+and `serve --http` prints that line. Over stdio each session starts its own server:
 on a 1.4-million-line library one took 3.7 GB while it built its index, and
 a machine running a dozen agents cannot hold a dozen of them. Over HTTP the
 sync tools run on a worker thread, one at a time as on stdio, so a long
@@ -26,6 +27,13 @@ touched waits too, before each file. Only indexing waits: the searches a
 server answers meanwhile run as usual.
 
 ### Fixed
+
+`lynx graph query` and `lynx graph status` read the graph alone. With a
+`lynx serve` running they answered "no source has the graph layer
+enabled": the server held the vector store, and the CLI opened that store
+before the graph. They no longer open it or load the embedding model, so
+on a 128,000-node graph a query takes 17 s instead of 28. An audit of a
+package with nothing to report now says so in a sentence.
 
 `lynx source add` without `--ext` now picks what the web UI and `lynx serve
 PATH` pick: only formats Lynx reads. It used to take the ten most common

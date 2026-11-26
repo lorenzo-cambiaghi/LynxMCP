@@ -753,6 +753,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Connect directly to a repository folder in zero-config mode (no config.json needed).",
     )
     sp_connect.add_argument(
+        "--url", metavar="URL",
+        help="Claude Code only: use a running `lynx serve --http PORT` "
+             "(http://127.0.0.1:PORT/mcp), one server for every session, "
+             "instead of a server started per session.",
+    )
+    sp_connect.add_argument(
         "--profile", choices=["core", "standard", "full"],
         help="Tool profile to configure for this client.",
     )

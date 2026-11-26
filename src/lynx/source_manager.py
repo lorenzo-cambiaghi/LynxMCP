@@ -35,7 +35,10 @@ def with_identifiers(query: str, identifiers=None) -> str:
 class SourceManager:
     """Holds N backends and dispatches operations to them."""
 
-    def __init__(self, config: Any, *, probe_integrity: bool = True):
+    def __init__(self, config: Any, *, probe_integrity: bool = True,
+                 graph_only: bool = False):
+        """`graph_only` brings up the graph of each codebase source that has
+        one and nothing else (see CodebaseBackend)."""
         self.config = config
         # Lazy shared cross-encoder for cross-source reranking (search_all).
         # Per-source search already reranks within a source; this reorders the
@@ -63,13 +66,21 @@ class SourceManager:
                 )
 
             per_source_storage = storage_root / name
+            extra = {}
+            if graph_only:
+                if type_name != "codebase" or not (src_cfg.get("graph") or {}).get("enabled"):
+                    continue
+                if not (per_source_storage / "graph" / "nodes.json").exists():
+                    print(f"[manager] source {name!r} has no graph on disk yet: "
+                          f"`lynx graph build --source {name}` makes it.", file=sys.stderr)
+                extra = {"graph_only": True}
 
             # Pre-flight integrity probe (out-of-process): a corrupt or
             # version-incompatible Chroma index can SEGFAULT on open/count,
             # which no try/except can catch — it would kill the whole host
             # process. Probing in a child means a crash there only fails the
             # probe; we mark the source broken and never touch the bad index.
-            if probe_integrity and type_name == "codebase":
+            if probe_integrity and type_name == "codebase" and not graph_only:
                 from .integrity import check_index
                 result = check_index(per_source_storage, name)
                 if result["status"] == "corrupt":
@@ -104,6 +115,7 @@ class SourceManager:
                     source_config=src_cfg,
                     shared_config=config,
                     storage_dir=per_source_storage,
+                    **extra,
                 )
             except Exception as e:
                 # Any failure to bring a source up is isolated: register it as

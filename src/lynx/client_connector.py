@@ -478,17 +478,25 @@ def _connect_servers(
     platform: Optional[str] = None,
     which: Optional[Callable[[str], Optional[str]]] = None,
     runner: Optional[Callable[[List[str]], subprocess.CompletedProcess]] = None,
+    url: Optional[str] = None,
 ) -> ConnectResult:
     """Safely merge Lynx's MCP entry into `client_key`'s configuration file.
 
-    `which` and `runner` locate and run the `claude` CLI (Claude Code only);
-    tests pass fakes. Without the CLI the JSON file is edited directly."""
+    `url` points the client at a running `lynx serve --http` instead of a
+    server started per session (Claude Code only). `which` and `runner`
+    locate and run the `claude` CLI (Claude Code only); tests pass fakes.
+    Without the CLI the JSON file is edited directly."""
     spec = get_client_spec(client_key)
     if spec is None:
         return ConnectResult(
             ok=False,
             client_key=client_key,
             message=f"Unknown client {client_key!r}. Supported: {', '.join(supported_client_keys(auto_only=True))}.",
+        )
+    if url and spec.key != "claude":
+        return ConnectResult(
+            ok=False, client_key=spec.key,
+            message=f"--url connects Claude Code only; {spec.short_label} starts its own server.",
         )
     if not spec.supports_auto_connect and target_file is None:
         return ConnectResult(
@@ -522,7 +530,7 @@ def _connect_servers(
             config_path=dest,
         )
 
-    entry = build_server_entry(
+    entry = {"type": "http", "url": url} if url else build_server_entry(
         config_path=config_path,
         repo_path=repo_path,
         profile=profile,
@@ -586,7 +594,10 @@ def _project_scope_note(spec: ClientSpec, data: dict) -> str:
 def _connect_with_claude_cli(cli, name, entry, dest, dry_run, note, runner) -> ConnectResult:
     """Register through `claude mcp add`: Claude Code rewrites ~/.claude.json
     all the time, so its own CLI is the safe writer while it runs."""
-    add = [cli, "mcp", "add", "--scope", "user", name, "--", entry["command"], *entry["args"]]
+    if entry.get("type") == "http":
+        add = [cli, "mcp", "add", "--transport", "http", "--scope", "user", name, entry["url"]]
+    else:
+        add = [cli, "mcp", "add", "--scope", "user", name, "--", entry["command"], *entry["args"]]
     if dry_run:
         return ConnectResult(
             ok=True, client_key="claude", dry_run=True, config_path=dest,
