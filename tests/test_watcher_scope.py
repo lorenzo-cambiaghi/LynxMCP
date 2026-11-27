@@ -98,12 +98,21 @@ def test_files_a_build_skips_are_skipped_by_the_watcher_too(watched):
     assert touched == {"real.py"}, touched
 
 
+def _events_lost_event():
+    # watchdog reports lost events from 7.1, which needs Python 3.11; on 3.10
+    # it installs 6.x, where the handler is simply never called.
+    events = pytest.importorskip("watchdog.events")
+    if not hasattr(events, "EventsLostEvent"):
+        pytest.skip("this watchdog reports no lost events (7.1 or later does)")
+    return events.EventsLostEvent
+
+
 def test_events_the_system_lost_bring_a_pass_over_every_file(tmp_path, monkeypatch):
     # A train landing hundreds of files at once overflows Windows'
     # ReadDirectoryChangesW buffer (inotify's queue on Linux): watchdog says
     # which watch lost events, not which files. A pass over every file's hash,
     # as at startup, finds them; one pass for a burst of losses.
-    from watchdog.events import EventsLostEvent
+    EventsLostEvent = _events_lost_event()
     import lynx.sources.codebase as codebase
 
     monkeypatch.setattr(codebase, "LOST_EVENTS_DEBOUNCE_SECONDS", 0.2)
@@ -121,7 +130,7 @@ def test_events_the_system_lost_bring_a_pass_over_every_file(tmp_path, monkeypat
 
 
 def test_stopping_the_watcher_cancels_a_pass_still_waiting(tmp_path, monkeypatch):
-    from watchdog.events import EventsLostEvent
+    EventsLostEvent = _events_lost_event()
     import lynx.sources.codebase as codebase
 
     monkeypatch.setattr(codebase, "LOST_EVENTS_DEBOUNCE_SECONDS", 0.3)
