@@ -109,6 +109,15 @@ lynx connect cursor --config ./config.json
 
 One `config.json` holds all sources. You can scope any editor window to a subset with `--source myproject --source reactdocs`, and multiple editor windows share the same index safely.
 
+Running many Claude Code sessions or agents on one machine? Over stdio each one starts its own server with its own copy of the indexes in memory. Start one server over HTTP instead and point every session at it:
+
+```bash
+lynx serve --http 8791 --config ./config.json
+lynx connect claude --url http://127.0.0.1:8791/mcp
+```
+
+It listens on the loopback interface only, and a rebuild one session asks for does not hold up the searches of the others.
+
 ---
 
 ## Visual tour
@@ -225,7 +234,7 @@ Select a profile with `--profile core|standard|full`, `LYNX_TOOL_PROFILE`, or `t
 | `read_guard(file_path?, offset?, limit?, command?)` | core | Optional `PreToolUse` hook on `Read` / `Bash` (not for the model): refuses a read of more than 200 lines of an indexed file once, with the file's outline; the same read asked again goes through. |
 | `find_definition(symbol)` | standard | Where a symbol is defined: full body for the top match, signatures for the rest. |
 | `find_similar(snippet)` | standard | Checks whether a draft duplicates existing code and ranks similar implementations. |
-| `graph_query(operation, symbol?)` | standard | `callers`, `callees`, `subclasses`, `superclasses`, `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `status`. |
+| `graph_query(operation, symbol?, depth?)` | standard | `callers`, `callees`, `subclasses`, `superclasses` (the whole hierarchy in one call with `depth` 1-10), `imports`, `neighbors`, `shortest_path`, `overview`, `surprising_connections`, `audit` (a C# package's SOLID findings, each with the files its refactor touches), `status`. |
 | `repo_overview()` | standard | Languages, frameworks, entry points and build/test/run commands. |
 | `search_diff(query, base?)` | standard | Search scoped to files changed against a base branch, useful for code review. |
 | `deep_search(queries, source?)` | full | Tries multiple query phrasings in sequence when a single `search` is weak. |
