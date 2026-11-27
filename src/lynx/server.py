@@ -1050,19 +1050,27 @@ class LynxServer(FastMCP):
         self.hidden_tools = {}
         self._mcp_server.version = package_version()
         self._offload = False
-        self._limiter = None
+        self._limiters: dict = {}
 
     def offload_sync_tools(self) -> None:
-        """Run the sync tools registered from now on in a worker thread, one at a
-        time. FastMCP calls a sync tool on the event loop: on stdio, with one
-        client, that is harmless; over HTTP a long call of one session would
-        hold up every other session's requests, its handshake included."""
+        """Run the sync tools registered from now on in worker threads. FastMCP
+        calls a sync tool on the event loop: on stdio, with one client, that is
+        harmless; over HTTP a long call of one session would hold up every
+        other session's requests, its handshake included.
+
+        The read-only tools run one at a time, as on stdio, and so do the
+        others (a rebuild, feedback, an export), but in a queue of their own:
+        a rebuild that takes an hour does not hold up the searches and the
+        hooks of every session, which read the index while it is written as
+        they do while the startup catch-up or the watcher writes it."""
         self._offload = True
 
     def tool(self, *args, **kwargs):
         register = super().tool(*args, **kwargs)
         if not self._offload:
             return register
+        annotations = kwargs.get("annotations")
+        queue = "read" if getattr(annotations, "readOnlyHint", False) else "write"
 
         def decorator(fn):
             import functools
@@ -1073,9 +1081,10 @@ class LynxServer(FastMCP):
             @functools.wraps(fn)
             async def run(**arguments):
                 import anyio
-                if self._limiter is None:
-                    self._limiter = anyio.CapacityLimiter(1)
-                return await anyio.to_thread.run_sync(functools.partial(fn, **arguments), limiter=self._limiter)
+                limiter = self._limiters.get(queue)
+                if limiter is None:
+                    limiter = self._limiters[queue] = anyio.CapacityLimiter(1)
+                return await anyio.to_thread.run_sync(functools.partial(fn, **arguments), limiter=limiter)
             register(run)
             return fn
         return decorator
