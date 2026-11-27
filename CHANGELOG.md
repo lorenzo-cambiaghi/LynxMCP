@@ -1,127 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-`lynx serve --http PORT` serves MCP over HTTP at
-`http://127.0.0.1:PORT/mcp`, so every session of a machine shares one
-process and one copy of the indexes. `lynx connect claude --url
-http://127.0.0.1:PORT/mcp` registers it in Claude Code with the prompt hook,
-and `serve --http` prints that line. Over stdio each session starts its own server:
-on a 1.4-million-line library one took 3.7 GB while it built its index, and
-a machine running a dozen agents cannot hold a dozen of them. Over HTTP the
-sync tools run on a worker thread, one at a time as on stdio, so a long
-call of one session does not hold up the others' requests. It listens on
-the loopback interface only.
-
-`LYNX_EMBED_THREADS` caps the threads the embedder uses. By default ONNX
-Runtime takes every core, and a first index of a large repository held the
-whole machine for hours; with a cap it can run beside other work.
-
-`LYNX_PAUSE_FILE` names a file: while it exists, an index build waits
-between two embedding runs, and goes on when the file is gone. A game
-measuring its frames or a benchmark gets the machine back within seconds,
-without stopping the build. A server re-indexing the files a commit
-touched waits too, before each file. Only indexing waits: the searches a
-server answers meanwhile run as usual.
-
-### Fixed
-
-The watcher catches up when the system drops file events. Landing a batch
-of commits at once overflows the buffer Windows keeps for a watched folder
-(the queue of inotify on Linux), and the files changed meanwhile were never
-re-indexed: on a 1.4-million-line library a shared server lost events three
-times in a morning. Now the watcher checks every file's hash, as at
-startup, once the burst is over. It needs watchdog 7.1, so Python 3.11 or
-later.
-
-`lynx graph query` and `lynx graph status` read the graph alone. With a
-`lynx serve` running they answered "no source has the graph layer
-enabled": the server held the vector store, and the CLI opened that store
-before the graph. They no longer open it or load the embedding model, so
-on a 128,000-node graph a query takes 17 s instead of 28. An audit of a
-package with nothing to report now says so in a sentence.
-
-The audit counts a static auto-property with a setter (`static bool X {
-get; private set; }`) as mutable global state, as it does a static field.
-It read only fields, and on a C# library it flagged a locked set that was
-fine and missed the flag beside it: set by one call and never cleared, it
-let a later call skip a check it needed. A private static written only by
-`??=` (`_x ??= Build()`) is built on first read and keeps that value, so
-it is no longer flagged; on the same library four such caches were. An
-empty override of a member the base leaves abstract (a gesture with
-nothing to cancel) means there is nothing to do, so it is no longer a
-substitution finding; an empty override of a member with a body still is.
-
-The C# graph finds the uses the audit called dead code. On a library six
-types flagged «used by nothing» were each used: a generic type's static
-member (`Cache<T>.Instance`), a type brought in by `using static`, a module
-initializer the runtime calls, an attribute with a public namesake that a
-`using` brings in, and a nested partial type created from a third file
-while another type of the namespace nests one of the same name. Names now
-resolve in C#'s order: the types nested in the referring type and the ones
-around it, in any file of a partial type, then the same file, then the
-namespace from the innermost out, and only then what `using` brings in.
-`[ModuleInitializer]` and `[UnmanagedCallersOnly]` count as uses. A graph
-built before is rebuilt in full on the next start, and so is one built
-before a change to the recovery of broken C# types.
-
-A C# call on a pattern variable goes to the type it was tested from.
-`if (Panels is { } panels) panels.Restore(layout)` had a receiver of no
-known type, so the call fell to the one visible type with a `Restore`, a
-document class, and `callers` listed a caller that never called it. The
-variables of `x is { } v`, `x is var v` and a `switch` on `x` now take the
-type of `x`, and `x is Foo { } f` counts as a use of Foo. A type written
-with a qualifier (`Docking.IHost` from a namespace that reaches it as
-`Docking`) keeps it, so such a field, property or local now finds its type
-instead of none.
-
-The audit's open/closed check groups switches by the type their labels
-name. `switch (op)` over a math operator and `switch (op)` over a
-comparison were one subject «in 5 places» because both parameters are
-called `op`; `MathOperator.Add =>` and `case ComparisonOperator.Equal:`
-now say which enum each switch is on, and a subject with no such labels
-is still grouped by its name. A type that says it lacks a capability
-(`CanWrite => false`, `CanSeek => false`, `IsReadOnly => true`) and throws
-NotSupported or does nothing in the members of that capability is no
-substitution finding: that is the contract of `Stream` and
-`ICollection<T>`. A private static that is not readonly is still mutable
-global state, but the finding no longer says every user can change it:
-it says only the type does, and ranks below the exposed ones.
-
-`lynx source add` without `--ext` now picks what the web UI and `lynx serve
-PATH` pick: only formats Lynx reads. It used to take the ten most common
-extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`
-and `.log`. A new codebase source also skips its engine's generated folders
-when nobody set a list (`Library/` and `Temp/` for Unity), whether it comes
-from the CLI, the UI or `--block`. Slang shaders (`.slang`), XAML and
-Avalonia markup (`.xaml`, `.axaml`) and PowerShell scripts (`.ps1`) join the
-formats a scan picks.
-
-A C# type the grammar leaves in pieces stays in the graph and in the audit.
-When tree-sitter cannot parse part of a file it may keep the whole type as
-loose tokens inside an error node, and the type and everything it owned
-left the graph. It happens while a statement is half written, and
-tree-sitter-c-sharp 0.24.0, the version a new install gets, does it to valid
-code too: on a 1.4-million-line library a 2,400-line class vanished over a
-local variable named `partial`, and its constructor took the class's place.
-The type is now rebuilt from those tokens, with its bases and the members
-the grammar did parse.
-
-A build cut short goes on from where it stopped. The index recorded its
-files only at the end of a pass, so a first index of a large repository
-interrupted after hours (a laptop going to sleep, a closed editor) left no
-record, and the next pass wiped what was there and started again. Each group
-of files is now on record as soon as its pieces are in, and a file caught
-halfway is indexed again on the next pass without being in twice. The record
-itself is written whole or not at all.
-
-A confirmation of `lynx source remove` or `lynx reset` that reads no answer
-(Git Bash reports a terminal and then reads end of file) aborts and names
-`--yes`, instead of raising `EOFError`.
-
-## 1.13.0 - 2026-11-24
+## 1.13.0 - 2026-11-27
 
 ### Added
 
@@ -171,6 +50,28 @@ named two classes of 2,376 and 1,943 lines with the jobs in their names
 (broadcast, drain, frame, peer, handshake, resume), three handshake
 methods over 90 lines and a transport whose `ConnectAsync` only throws.
 
+`lynx serve --http PORT` serves MCP over HTTP at
+`http://127.0.0.1:PORT/mcp`, so every session of a machine shares one
+process and one copy of the indexes. `lynx connect claude --url
+http://127.0.0.1:PORT/mcp` registers it in Claude Code with the prompt
+hook, and `serve --http` prints that line. Over stdio each session starts
+its own server: on a 1.4-million-line library one took 3.7 GB while it
+built its index, and a machine running a dozen agents cannot hold a dozen
+of them. Over HTTP the sync tools run on a worker thread, one at a time as
+on stdio, so a long call of one session does not hold up the others'
+requests. It listens on the loopback interface only.
+
+`LYNX_EMBED_THREADS` caps the threads the embedder uses. By default ONNX
+Runtime takes every core, and a first index of a large repository held the
+whole machine for hours; with a cap it can run beside other work.
+
+`LYNX_PAUSE_FILE` names a file: while it exists, an index build waits
+between two embedding runs, and goes on when the file is gone. A game
+measuring its frames or a benchmark gets the machine back within seconds,
+without stopping the build. A server re-indexing the files a commit
+touched waits too, before each file. Only indexing waits: the searches a
+server answers meanwhile run as usual.
+
 ### Changed
 
 With the graph on, the startup instructions send a new type to its
@@ -219,6 +120,156 @@ no edge. On the 1.4-million-line library the call edges went from
 1,115,634, 91% of them ambiguous (a plain `Foo()` was linked to every
 method named `Foo`, 46 on average), to 146,981, none ambiguous; bases
 are resolved first, so a call to an inherited member finds it.
+
+The watcher catches up when the system drops file events. Landing a batch
+of commits at once overflows the buffer Windows keeps for a watched folder
+(the queue of inotify on Linux), and the files changed meanwhile were never
+re-indexed: on a 1.4-million-line library a shared server lost events three
+times in a morning. Now the watcher checks every file's hash, as at
+startup, once the burst is over. It needs watchdog 7.1, so Python 3.11 or
+later.
+
+`lynx graph query` and `lynx graph status` read the graph alone. With a
+`lynx serve` running they answered "no source has the graph layer
+enabled": the server held the vector store, and the CLI opened that store
+before the graph. They no longer open it or load the embedding model, so
+on a 128,000-node graph a query takes 17 s instead of 28. An audit of a
+package with nothing to report now says so in a sentence.
+
+The audit counts a static auto-property with a setter (`static bool X {
+get; private set; }`) as mutable global state, as it does a static field.
+It read only fields, and on a C# library it flagged a locked set that was
+fine and missed the flag beside it: set by one call and never cleared, it
+let a later call skip a check it needed. A private static written only by
+`??=` (`_x ??= Build()`) is built on first read and keeps that value, so
+it is no longer flagged; on the same library four such caches were. An
+empty override of a member the base leaves abstract (a gesture with
+nothing to cancel) means there is nothing to do, so it is no longer a
+substitution finding; an empty override of a member with a body still is.
+
+A virtual member that throws `NotSupportedException` in the type that
+declares it is that type's default: it declines something a derived type
+may take on, so it is no longer a substitution finding. On a library the
+two such findings were a scene format whose `Make` refuses to read for a
+format that only writes, and a prefab rule whose `PutPose` refuses for an
+app that keeps no pose; the type that makes the promise cannot break it.
+A virtual member left `NotImplementedException` is unfinished, and an
+override that throws is still a finding.
+
+The C# graph finds the uses the audit called dead code. On a library six
+types flagged «used by nothing» were each used: a generic type's static
+member (`Cache<T>.Instance`), a type brought in by `using static`, a module
+initializer the runtime calls, an attribute with a public namesake that a
+`using` brings in, and a nested partial type created from a third file
+while another type of the namespace nests one of the same name. Names now
+resolve in C#'s order: the types nested in the referring type and the ones
+around it, in any file of a partial type, then the same file, then the
+namespace from the innermost out, and only then what `using` brings in.
+`[ModuleInitializer]` and `[UnmanagedCallersOnly]` count as uses. A graph
+built before is rebuilt in full on the next start, and so is one built
+before a change to the recovery of broken C# types.
+
+A C# call on a pattern variable goes to the type it was tested from.
+`if (Panels is { } panels) panels.Restore(layout)` had a receiver of no
+known type, so the call fell to the one visible type with a `Restore`, a
+document class, and `callers` listed a caller that never called it. The
+variables of `x is { } v`, `x is var v` and a `switch` on `x` now take the
+type of `x`, and `x is Foo { } f` counts as a use of Foo. A type written
+with a qualifier (`Docking.IHost` from a namespace that reaches it as
+`Docking`) keeps it, so such a field, property or local now finds its type
+instead of none.
+
+The audit's open/closed check groups switches by the type their labels
+name. `switch (op)` over a math operator and `switch (op)` over a
+comparison were one subject «in 5 places» because both parameters are
+called `op`; `MathOperator.Add =>` and `case ComparisonOperator.Equal:`
+now say which enum each switch is on, and a subject with no such labels is
+still grouped by its name and by what its labels are: two `switch (type)`
+over glTF's `"VEC2"` strings and two over FBX's `'f'` type codes were «in
+4 places», and are now two subjects of two. Switches over literals, or
+over what type a value is (`case Box b:`), are one subject only where they
+list mostly the same values (two thirds of the shorter list): «`switch
+(verb)` in 20 places» were command families, each with its own verbs and
+an `add` in common, and «`switch (shape)` in 4 places» were two over the
+3D shapes and two over the 2D ones. A switch on `word.ToLowerInvariant()`
+is on `word`, not on `ToLowerInvariant`. The enum a switch is over is
+found as C# finds it: nested in the switch's type or one around it, then
+the namespaces, then the file's usings, its project's `global using` lines
+and the `<Using>` items of its csproj. Two views with a private `DragKind`
+each were «`switch` over DragKind in 3 places», and are now two enums. A
+switch over an enum the codebase does not declare (a UI toolkit's `Key`,
+`JsonValueKind`) is no open/closed finding, since no value the codebase
+adds goes there; a `Key` of the codebase's own, in a namespace the file
+does not use, does not change that. C# enums are now nodes of the graph,
+as Java's are, so `find_usages` and `describe_symbol` find them too; a
+graph built before is rebuilt in full on the next start. A type that says
+it lacks a capability (`CanWrite => false`, `CanSeek => false`,
+`IsReadOnly => true`) and throws NotSupported or does nothing in the
+members of that capability is no substitution finding: that is the
+contract of `Stream` and `ICollection<T>`. A private static that is not
+readonly is still mutable global state, but the finding no longer says
+every user can change it: it says only the type does, and ranks below the
+exposed ones.
+
+The audit fixes below were found reading the findings of 115 packages of
+a C# library one by one. With them the same packages go from 254
+findings to 228, and each of the 23 that were listed before and are gone
+had been read and was a false alarm.
+
+A private static changed only by `Interlocked.Increment`, `Decrement` or
+`Add` is a counter of the process (an id source, how many times something
+ran), safe from any thread, and no longer mutable global state; one
+filled by `Interlocked.CompareExchange(ref X, made, null)` is built once,
+as one filled by `??=`. On a C# library five packages had one flagged. A
+field also set by `Exchange` or by a plain assignment, or one other types
+can reach, is still a finding.
+
+A type whose file the grammar could not read whole is no longer called
+dead code: in tree-sitter-c-sharp an assignment to a ref return
+(`GatherScatter.GetFirst(ref data.X) = v;`) ends a struct early, and the
+members after it, with the uses they hold, are lost. On a 7,259-file
+library two files do this, and three types one of them registers were
+«used by nothing».
+
+A package folder with no C# source, only the `bin/` and `obj/` a removed
+project left behind, is now said to hold none instead of «No findings»,
+which read as a clean package.
+
+The audit lists five findings per principle and now says so when there
+are more, and which `limit` shows them all: "12 findings" over five listed
+read as seven lost. A `limit` of 50 or more in `graph_query audit` was
+taken as the default and gave five; only 50 itself is the default now.
+
+`lynx source add` without `--ext` now picks what the web UI and `lynx serve
+PATH` pick: only formats Lynx reads. It used to take the ten most common
+extensions of any kind, so on a C# library it chose `.pdb`, `.mp4`, `.png`
+and `.log`. A new codebase source also skips its engine's generated folders
+when nobody set a list (`Library/` and `Temp/` for Unity), whether it comes
+from the CLI, the UI or `--block`. Slang shaders (`.slang`), XAML and
+Avalonia markup (`.xaml`, `.axaml`) and PowerShell scripts (`.ps1`) join the
+formats a scan picks.
+
+A C# type the grammar leaves in pieces stays in the graph and in the audit.
+When tree-sitter cannot parse part of a file it may keep the whole type as
+loose tokens inside an error node, and the type and everything it owned
+left the graph. It happens while a statement is half written, and
+tree-sitter-c-sharp 0.24.0, the version a new install gets, does it to valid
+code too: on a 1.4-million-line library a 2,400-line class vanished over a
+local variable named `partial`, and its constructor took the class's place.
+The type is now rebuilt from those tokens, with its bases and the members
+the grammar did parse.
+
+A build cut short goes on from where it stopped. The index recorded its
+files only at the end of a pass, so a first index of a large repository
+interrupted after hours (a laptop going to sleep, a closed editor) left no
+record, and the next pass wiped what was there and started again. Each group
+of files is now on record as soon as its pieces are in, and a file caught
+halfway is indexed again on the next pass without being in twice. The record
+itself is written whole or not at all.
+
+A confirmation of `lynx source remove` or `lynx reset` that reads no answer
+(Git Bash reports a terminal and then reads end of file) aborts and names
+`--yes`, instead of raising `EOFError`.
 
 ## 1.12.0 - 2026-11-23
 
