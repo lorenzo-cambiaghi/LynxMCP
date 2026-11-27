@@ -275,3 +275,25 @@ def test_a_class_the_grammar_left_in_pieces_is_put_back_together(tmp_path):
     owned = sorted(G.nodes[v]["label"] for _, v, d in G.out_edges(box[0], data=True) if d.get("relation") == "contains")
     assert owned == ["Box.Bad", "Box.Box"]
     assert _bases(G, "Box") == [("Base", "resolved")]
+
+
+def test_a_csharp_base_is_never_a_python_class_of_its_name(tmp_path):
+    # A Python class has no namespace, as a global C# type has none: in a
+    # source with both, the C# file's `Item` from `using Game.Data;` is the
+    # C# one, never the Python tool's.
+    code = tmp_path / "code"
+    files = {
+        "Data/Item.cs": "namespace Game.Data;\npublic class Item { }\n",
+        "tools/item.py": "class Item:\n    pass\n",
+        "Sword.cs": "using Game.Data;\nnamespace Game;\npublic class Sword : Item { }\n",
+    }
+    for rel, text in files.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text, encoding="utf-8")
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=code, supported_extensions=[".cs", ".py"])
+    layer.rebuild(force=True)
+    G = layer._graph
+    edges = [(G.nodes[v].get("file", ""), d.get("confidence")) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "inherits" and G.nodes[u].get("label") == "Sword"]
+    assert len(edges) == 1 and edges[0][0].endswith("Item.cs") and edges[0][1] == "resolved", edges

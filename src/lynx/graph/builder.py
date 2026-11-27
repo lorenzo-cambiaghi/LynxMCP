@@ -1087,6 +1087,9 @@ class GraphLayer:
         the file imports with `using`, or the one a qualified base names
         (`Util.Base`). None visible: the base comes from outside the
         codebase, and no edge is drawn."""
+        # A C# file sees C# types only: in a source that also holds Python, a
+        # Python `Item` has no namespace, as a global C# type has none.
+        candidates = [c for c in candidates if (self._nodes_by_id.get(c) or {}).get("lang_key") == "c_sharp"]
         child = self._nodes_by_id.get(ri["child"]) or {}
         ns = child.get("namespace", "")
         q = ri.get("qualifier")
