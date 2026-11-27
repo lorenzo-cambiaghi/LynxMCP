@@ -158,6 +158,40 @@ def _atomic_write_json(path: Path, data) -> None:
 # ---------------------------------------------------------------------------
 
 
+_MSBUILD_USING = re.compile(r'<Using\s+Include="([^"]+)"([^>]*)>')
+
+
+def msbuild_usings(project_dir: str, root: str, cache: dict | None = None) -> set:
+    """The `<Using Include="..."/>` items of a project's csproj and of the
+    Directory.Build.props/.targets above it, up to `root`: usings for every
+    file of the project. An alias (`Alias="X"`) names its target's namespace."""
+    if cache is not None and project_dir in cache:
+        return cache[project_dir]
+    found: set = set()
+    d, root = project_dir, os.path.normpath(root)
+    while d:
+        try:
+            names = [e.path for e in os.scandir(d) if e.name.endswith(".csproj") and d == project_dir
+                     or e.name in ("Directory.Build.props", "Directory.Build.targets")]
+        except OSError:
+            names = []
+        for path in names:
+            try:
+                text = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for include, rest in _MSBUILD_USING.findall(text):
+                found.add(include)
+                if "Alias=" in rest and "." in include:
+                    found.add(include.rsplit(".", 1)[0])
+        if os.path.normpath(d) == root or os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+    if cache is not None:
+        cache[project_dir] = found
+    return found
+
+
 class GraphLayer:
     """One graph index per `codebase` source. Lives next to the ChromaDB
     collection in `storage_dir/graph/` and survives process restarts via
@@ -1017,36 +1051,8 @@ class GraphLayer:
             cache.setdefault(w, found)
         return found
 
-    _MSBUILD_USING = re.compile(r'<Using\s+Include="([^"]+)"([^>]*)>')
-
     def _msbuild_usings(self, project_dir: str) -> set:
-        """The `<Using Include="..."/>` items of a project's csproj and of the
-        Directory.Build.props/.targets above it: usings for every file."""
-        cache = self.__dict__.setdefault("_msbuild_using_cache", {})
-        if project_dir in cache:
-            return cache[project_dir]
-        found: set = set()
-        d, root = project_dir, os.path.normpath(str(self.codebase_path))
-        while d:
-            try:
-                names = [e.path for e in os.scandir(d) if e.name.endswith(".csproj") and d == project_dir
-                         or e.name in ("Directory.Build.props", "Directory.Build.targets")]
-            except OSError:
-                names = []
-            for path in names:
-                try:
-                    text = Path(path).read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                for include, rest in self._MSBUILD_USING.findall(text):
-                    found.add(include)
-                    if "Alias=" in rest and "." in include:
-                        found.add(include.rsplit(".", 1)[0])
-            if os.path.normpath(d) == root or os.path.dirname(d) == d:
-                break
-            d = os.path.dirname(d)
-        cache[project_dir] = found
-        return found
+        return msbuild_usings(project_dir, str(self.codebase_path), self.__dict__.setdefault("_msbuild_using_cache", {}))
 
     def _csharp_usings(self) -> dict:
         """file -> the namespaces it can name without qualifying: its own

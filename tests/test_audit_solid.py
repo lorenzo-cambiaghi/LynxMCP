@@ -9,7 +9,7 @@ import pytest
 
 CODE = {
     "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
-    "src/Pkg/ITransport.cs": "namespace Pkg;\npublic interface ITransport { void ConnectAsync(); }\n",
+    "src/Pkg/ITransport.cs": "namespace Pkg;\npublic interface ITransport { void ConnectAsync(); }\npublic enum Kind { A, B, C, D }\n",
     "src/Pkg/Server.cs": (
         "namespace Pkg;\npublic class Server : ITransport {\n"
         "  private static int _count;\n"
@@ -94,6 +94,168 @@ def test_switches_on_one_name_over_two_enums_are_two_subjects(tmp_path):
     assert not [f.title for f in findings if f.principle == "O"]
 
 
+def test_switches_on_one_name_over_strings_and_over_chars_are_two_subjects(tmp_path):
+    # Seen on a real library: «`switch (type)` in 4 places», two over glTF's
+    # "SCALAR"/"VEC2" strings and two over FBX's 'f'/'d' type codes. A third
+    # switch over strings makes the strings a finding of three, alone.
+    root = tmp_path / "code"
+    strings = '"SCALAR" => 1, "VEC2" => 2, "VEC3" => 3, "VEC4" => 4, _ => 0'
+    chars = "case 'f': return 1; case 'd': return 2; case 'i': return 3; case 'l': return 4; default: return 0;"
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Gltf.cs": ("namespace Pkg;\npublic class Gltf {\n"
+                            f"  public int Width(string type) => type switch {{ {strings} }};\n}}\n"
+                            "public class GltfReader {\n"
+                            f"  public int Count(string type) => type switch {{ {strings} }};\n}}\n"),
+        "src/Pkg/Fbx.cs": ("namespace Pkg;\npublic class Fbx {\n"
+                           f"  public int Size(char type) {{ switch (type) {{ {chars} }} }}\n"
+                           f"  public int Read(char type) {{ switch (type) {{ {chars} }} }}\n}}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    assert not [f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O"]
+    (root / "src/Pkg/Writer.cs").write_text(
+        f"namespace Pkg;\npublic class Writer {{\n  public int Of(string type) => type switch {{ {strings} }};\n}}\n", encoding="utf-8")
+    layer.rebuild(force=True)
+    assert [f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O"] == ["`switch (type)` in 3 places"]
+
+
+def test_a_type_in_a_file_the_grammar_could_not_read_whole_is_not_called_dead(tmp_path, monkeypatch):
+    # Seen on a real library: `Get(ref data.X) = v;` (a ref return written to)
+    # ends a struct in tree-sitter-c-sharp; the members after it were lost,
+    # and three sweep types they register were «used by nothing».
+    monkeypatch.setitem(CODE, "src/Pkg/Grid.cs", (
+        "namespace Pkg;\ninternal static class Cells { public static ref int First(ref int x) => ref x; }\n"
+        "internal struct Wide { public int X; }\n"
+        "internal struct Grid {\n"
+        "  private Wide _cell;\n"
+        "  public void Set(ref Wide data) { Cells.First(ref data.X) = _cell.X; }\n"
+        "  public static object Register() => new Sweep();\n"
+        "}\ninternal sealed class Sweep { }\n"))
+    from lynx.audit.facts import read_file
+    probe = tmp_path / "Grid.cs"
+    probe.write_text(CODE["src/Pkg/Grid.cs"], encoding="utf-8")
+    assert any(t.unread for t in read_file(probe, "Grid.cs")[2]), "the grammar reads the case whole: the test proves nothing"
+    titles = [f.title for f in _audit(tmp_path)[0]]
+    assert not any(t.startswith("Sweep ") for t in titles), titles
+    assert "Dead is used by nothing" in titles
+
+
+def test_switches_over_an_enum_of_another_library_are_no_open_closed_finding(tmp_path):
+    # Seen on a real library: «`switch` over Key in 8 places», the keys of a UI
+    # toolkit each control handles, and «over JsonValueKind in 3 places»: the
+    # codebase adds no value to them. Its own enum in three places stays.
+    root = tmp_path / "code"
+    keys = "case Key.Left: return 1; case Key.Right: return 2; case Key.Up: return 3; case Key.Down: return 4; default: return 0;"
+    mine = "Mode.A => 1, Mode.B => 2, Mode.C => 3, Mode.D => 4, _ => 0"
+    # Seen on the same library: its own `Key` (in another namespace, not used
+    # by the views) did not make the toolkit's one its own, and two views with
+    # a private `DragKind` each were «`switch` over DragKind in 3 places».
+    # And `Side` of a namespace a csproj's `<Using>` brings to every file is
+    # the codebase's: its switches stay a finding.
+    drags = "DragKind.Move => 1, DragKind.Pan => 2, DragKind.Zoom => 3, DragKind.Box => 4, _ => 0"
+    sides = "Side.North => 1, Side.East => 2, Side.South => 3, Side.West => 4, _ => 0"
+    files = {
+        "src/Pkg/Pkg.csproj": ('<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Using Include="Lib.Map" />'
+                               '<ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>\n'),
+        "src/Lib/Lib.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Lib/Side.cs": "namespace Lib.Map;\npublic enum Side { North, East, South, West }\n",
+        "src/Pkg/Sides.cs": ("namespace Pkg.Zones;\n"
+                             f"public class Stage {{ int A(Side s) => s switch {{ {sides} }}; int B(Side s) => s switch {{ {sides} }}; }}\n"
+                             f"public class Stamp {{ int A(Side s) => s switch {{ {sides} }}; }}\n"),
+        "src/Pkg/Mode.cs": "namespace Pkg;\npublic enum Mode { A, B, C, D }\n",
+        "src/Lib/Keyboard.cs": "namespace Lib.Input;\npublic enum Key { Left, Right, Up, Down }\n",
+        "src/Pkg/Drags.cs": ("namespace Pkg;\n"
+                             "public class Curves { private enum DragKind { Move, Pan, Zoom, Box }"
+                             f" int A(DragKind d) => d switch {{ {drags} }}; }}\n"
+                             "public class Keys { private enum DragKind { Move, Pan, Zoom, Box }"
+                             f" int A(DragKind d) => d switch {{ {drags} }}; int B(DragKind d) => d switch {{ {drags} }}; }}\n"),
+        "src/Pkg/Views.cs": ("using Avalonia.Input;\nnamespace Pkg;\n"
+                             + "".join(f"public class View{i} {{ public int On(Key key) {{ switch (key) {{ {keys} }} }}"
+                                       f" public int Of(Mode mode) => mode switch {{ {mine} }}; }}\n" for i in range(3))),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    assert sorted(f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O") == [
+        "`switch` over Mode in 3 places", "`switch` over Side in 3 places"]
+
+
+def test_switches_on_the_type_of_a_shape_in_3d_and_in_2d_are_two_subjects(tmp_path):
+    # Seen on a real library: «`switch (shape)` in 4 places», two over the
+    # 3D shapes and two over the 2D ones, which share no type.
+    root = tmp_path / "code"
+    three = "case Sphere s: return 1; case Box b: return 2; case Capsule c: return 3; case Mesh m: return 4; default: return 0;"
+    two = "Circle c => 1, Box2 b => 2, Capsule2 { } p => 3, Chain h => 4, _ => 0"
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Shapes.cs": ("namespace Pkg;\npublic class Shape {}\n"
+                              + "".join(f"public class {n} : Shape {{}}\n"
+                                        for n in ("Sphere", "Box", "Capsule", "Mesh", "Circle", "Box2", "Capsule2", "Chain"))),
+        "src/Pkg/World.cs": ("namespace Pkg;\n"
+                             f"public class Volume {{ public int Of(Shape shape) {{ switch (shape) {{ {three} }} }} }}\n"
+                             f"public class World {{ public int Of(Shape shape) {{ switch (shape) {{ {three} }} }} }}\n"
+                             f"public class Flat {{ public int Of(Shape shape) => shape switch {{ {two} }}; }}\n"
+                             f"public class FlatWorld {{ public int Of(Shape shape) => shape switch {{ {two} }}; }}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    assert not [f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O"]
+    (root / "src/Pkg/Third.cs").write_text(
+        f"namespace Pkg;\npublic class Third {{ public int Of(Shape shape) {{ switch (shape) {{ {three} }} }} }}\n", encoding="utf-8")
+    layer.rebuild(force=True)
+    assert [f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O"] == ["`switch (shape)` in 3 places"]
+
+
+def test_command_parsers_with_their_own_verbs_are_no_open_closed_finding(tmp_path):
+    # Seen on a real library: «`switch (verb)` in 20 places», each command
+    # family taking its own verbs and sharing an `add`, and «`switch
+    # (ToLowerInvariant)` in 14 places», named after the call, not the word.
+    # Three copies of one table on `word.ToLowerInvariant()` stay a finding.
+    root = tmp_path / "code"
+
+    def verbs(*names):
+        return " ".join(f'case "{n}": return {i};' for i, n in enumerate(names)) + " default: return -1;"
+
+    table = '"red" => 1, "green" => 2, "blue" => 3, "alpha" => 4, _ => 0'
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Commands.cs": (
+            "namespace Pkg;\n"
+            f"public class Components {{ public int Run(string verb) {{ switch (verb) {{ {verbs('types', 'class', 'edit', 'add')} }} }} }}\n"
+            f"public class Colliders {{ public int Run(string verb) {{ switch (verb) {{ {verbs('add', 'remove', 'collider', 'breakable')} }} }} }}\n"
+            f"public class Rules {{ public int Run(string verb) {{ switch (verb) {{ {verbs('set', 'prob', 'list', 'add')} }} }} }}\n"),
+        "src/Pkg/Colors.cs": (
+            "namespace Pkg;\n"
+            f"public class A {{ public int Of(string word) => word.ToLowerInvariant() switch {{ {table} }}; }}\n"
+            f"public class B {{ public int Of(string word) => (word.ToLowerInvariant()) switch {{ {table} }}; }}\n"
+            f"public class C {{ public int Of(string word) => word.Trim().ToLowerInvariant() switch {{ {table} }}; }}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    titles = [f.title for f in audit(layer.graph, root, "Pkg")[0] if f.principle == "O"]
+    assert titles == ["`switch (word)` in 3 places"], titles
+
+
 def test_a_capability_a_type_says_it_lacks_is_no_substitution_finding(tmp_path):
     # A read-only Stream throws NotSupported from Write and SetLength and does
     # nothing in Flush: Stream's own contract once CanWrite says false. One
@@ -130,6 +292,31 @@ def test_a_capability_a_type_says_it_lacks_is_no_substitution_finding(tmp_path):
     assert not [t for t in l if t.startswith("Window.")], l
     assert "Liar.Write only throws NotImplemented/NotSupported" in l, l
     assert "Liar.Read only throws NotImplemented/NotSupported" in l, l
+
+
+def test_a_virtual_member_a_type_declines_by_default_is_no_substitution_finding(tmp_path):
+    # Seen on a real library: a scene format's `virtual Make` throws
+    # NotSupported for a format that only writes, and a prefab rule's
+    # `virtual PutPose` for an app that keeps no pose of its own. The type
+    # that makes the promise breaks no substitution. A virtual member left
+    # NotImplemented is unfinished, not declined, and stays a finding.
+    root = tmp_path / "code"
+    files = {
+        "src/Pkg/Pkg.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>\n',
+        "src/Pkg/Format.cs": ("namespace Pkg;\npublic abstract class Format {\n"
+                              '  public virtual object Make(string json) => throw new NotSupportedException("only writes");\n'
+                              "  public virtual bool PutPose(object o) { throw new NotSupportedException(); }\n"
+                              "  public virtual void Load() => throw new NotImplementedException();\n}\n"),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    findings, _ = audit(layer.graph, root, "Pkg")
+    assert sorted(f.title for f in findings if f.principle == "L") == ["Format.Load only throws NotImplemented/NotSupported"]
 
 
 def test_a_finding_carries_the_fence_of_its_refactor(tmp_path):
@@ -230,11 +417,28 @@ def test_a_class_the_grammar_left_in_pieces_is_read(tmp_path):
     from lynx.audit.facts import read_file
     p = tmp_path / "Box.cs"
     p.write_text(HALF_WRITTEN, encoding="utf-8")
-    ns, _, types = read_file(p, "Box.cs")
+    ns, _, types, _ = read_file(p, "Box.cs")
     box = next((t for t in types if t.name == "Box"), None)
     assert box is not None and ns == "A"
     assert box.bases == ["Base"] and [f.name for f in box.fields] == ["_n"]
     assert {m.name for m in box.methods} == {"Box", "Bad"}
+
+
+def test_a_folder_with_only_build_output_is_no_clean_package(tmp_path):
+    # Seen on a real library: two projects removed a month before left their
+    # bin/ and obj/ in src/, and the audit called them «No findings».
+    from lynx.audit.solid import audit
+    from lynx.graph import GraphLayer
+    root = tmp_path / "code"
+    (root / "src/Gone/obj/Debug").mkdir(parents=True)
+    (root / "src/Gone/obj/Debug/Gone.AssemblyInfo.cs").write_text("// generated\n", encoding="utf-8")
+    (root / "src/Here").mkdir(parents=True)
+    (root / "src/Here/Here.cs").write_text("namespace Here;\npublic class Here { }\n", encoding="utf-8")
+    layer = GraphLayer(storage_dir=tmp_path / "graph", codebase_path=root, supported_extensions=[".cs"])
+    layer.rebuild(force=True)
+    with pytest.raises(FileNotFoundError, match="holds no C# source"):
+        audit(layer.graph, root, "Gone")
+    assert audit(layer.graph, root, "Here")[0] == []
 
 
 def test_a_clean_package_says_so_in_a_sentence():
@@ -242,6 +446,22 @@ def test_a_clean_package_says_so_in_a_sentence():
     head = render("src/Clean", [])
     assert "0 findings. Ranked" not in head and "findings: ." not in head
     assert "No findings in src/Clean." in head
+
+
+def test_findings_past_the_cap_are_counted_where_they_are_left_out():
+    # Seen on a real library: "12 findings: S 12" over five listed, and nothing
+    # said that seven more were held back or how to see them.
+    from lynx.audit.solid import Finding, render
+    long = [Finding("S", f"M{i} is long", f"F.cs:{i}", "90 lines", ("F",), 1.0, _FENCE) for i in range(7)]
+    text = render("src/Pkg", long + [Finding("D", "F._x is mutable global state", "F.cs:1", "static", ("F",), 1.0, _FENCE)])
+    assert "The first 5 of 7; limit=7 shows them all." in text
+    assert text.count("is long**") == 5
+    assert "The first" not in text.split("## D:")[1]
+    assert "The first" not in render("src/Pkg", long, per_principle=7)
+
+
+_FENCE = {"files": ["F.cs"], "outside_files": 0, "outside_projects": [], "contract": [], "contract_total": 0,
+          "build": [], "tests": [], "churn": 0}
 
 
 def test_a_static_property_with_a_setter_is_global_state_too(tmp_path, monkeypatch):
@@ -278,6 +498,39 @@ def test_a_static_built_on_first_read_is_a_constant_not_shared_state(tmp_path, m
     titles = [f.title for f in _audit(tmp_path)[0]]
     assert not any("_picture" in t for t in titles), titles
     assert "Lazy._label is mutable global state" in titles
+
+
+def test_a_private_counter_changed_only_by_interlocked_counts_is_no_global_state(tmp_path, monkeypatch):
+    # Seen on a real library, in four packages: test counters and id sources,
+    # `private static int s_n; ... Interlocked.Increment(ref s_n)`, flagged as
+    # mutable global state, and a scheduler made once by
+    # `CompareExchange(ref s, mine, null)`. A flag set by Exchange, a swap,
+    # a counter also assigned, and an exposed one stay findings.
+    monkeypatch.setitem(CODE, "src/Pkg/Counts.cs", (
+        "using System.Threading;\nnamespace Pkg;\npublic class Counts {\n"
+        "  private static int s_packs;\n"
+        "  private static long _next;\n"
+        "  private static int _live;\n"
+        "  private static int _flag;\n"
+        "  private static int _reset;\n"
+        "  private static object? _made;\n"
+        "  private static object? _swapped;\n"
+        "  internal static int Shown;\n"
+        "  public static object Made() => Interlocked.CompareExchange(ref _made, new object(), null) ?? _made!;\n"
+        "  public static void Swap(object o) { Interlocked.CompareExchange(ref _swapped, o, _swapped); }\n"
+        "  internal static int Packs => Volatile.Read(ref s_packs);\n"
+        "  public static long Next() => Interlocked.Add(ref Counts._next, 2);\n"
+        "  public Counts() { Interlocked.Increment(ref s_packs); Interlocked.Increment(ref _live); }\n"
+        "  ~Counts() { Interlocked.Decrement(ref _live); }\n"
+        "  public static void Raise() { Interlocked.Exchange(ref _flag, 1); }\n"
+        "  public static void Bump() { Interlocked.Increment(ref _reset); Interlocked.Increment(ref Shown); }\n"
+        "  public static void Reset() { _reset = 0; }\n"
+        "}\n"))
+    titles = [f.title for f in _audit(tmp_path)[0]]
+    for quiet in ("s_packs", "_next", "_live", "_made"):
+        assert not any(f"Counts.{quiet} " in t for t in titles), titles
+    for loud in ("_flag", "_reset", "_swapped", "Shown"):
+        assert f"Counts.{loud} is mutable global state" in titles, titles
 
 
 def test_an_empty_override_of_an_abstract_member_is_nothing_to_do(tmp_path, monkeypatch):

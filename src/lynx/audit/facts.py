@@ -67,6 +67,7 @@ class Method:
     writes: set = field(default_factory=set)   # names the body changes: `X.Add(..)`, `X[k] = v`, `X = ..`
     explicit: bool = False                     # `void IFoo.Bar()`: an interface member, private by syntax
     attributes: str = ""                       # its attribute lists, as written: `[ModuleInitializer]`
+    unsupported: bool = False                  # its body only throws NotSupportedException, not NotImplemented
 
 
 @dataclass
@@ -85,6 +86,8 @@ class Switch:
     line: int
     cases: int
     over: Optional[str] = None   # the type its labels name values by: MathOperator of `case MathOperator.Add:`
+    literal: Optional[str] = None   # what its labels are when literals or types: string, char, number or type
+    labels: frozenset = frozenset()  # those labels, as written
 
 
 @dataclass
@@ -105,6 +108,7 @@ class TypeDecl:
     declines: set = field(default_factory=set)   # what it says it cannot do: `CanWrite => false`, `IsReadOnly => true`
     members: int = 0       # declared members (methods, properties, events, indexers)
     writes: set = field(default_factory=set)   # names its members change after construction (static constructors left out)
+    unread: bool = False   # its file has parts the grammar could not read: what they use is unknown
 
 
 def _text(node, src: bytes) -> str:
@@ -176,7 +180,17 @@ def _writes(node, src: bytes) -> set:
             fn = n.child_by_field_name("function")
             if fn is not None and fn.type == "member_access_expression":
                 verb = fn.child_by_field_name("name")
-                if verb is not None and _text(verb, src) in MUTATORS:
+                if verb is not None and _last_name(fn.child_by_field_name("expression"), src) == "Interlocked":
+                    # `Interlocked.Increment(ref X)` counts, one atomic step at a
+                    # time: kept apart (COUNTED + name). `CompareExchange(ref X, v,
+                    # null)` fills X once, as `??=` does but from any thread (LAZY +
+                    # name). Exchange and the rest set X.
+                    target = _ref_argument(n, src)
+                    if target:
+                        how = _text(verb, src)
+                        once = how == "CompareExchange" and _argument_text(n, src, 2) == "null"
+                        out.add((COUNTED if how in COUNTING else LAZY if once else "") + target)
+                elif verb is not None and _text(verb, src) in MUTATORS:
                     target = _last_name(fn.child_by_field_name("expression"), src)
                     if target:
                         out.add(target)
@@ -195,6 +209,26 @@ def _writes(node, src: bytes) -> set:
 
 # The prefix of a name `_writes` saw filled by `??=` only.
 LAZY = "??"
+
+# The prefix of a name `_writes` saw changed by an Interlocked count, and the counts.
+COUNTED = "++"
+COUNTING = {"Increment", "Decrement", "Add"}
+
+
+def _ref_argument(call, src: bytes) -> Optional[str]:
+    """X of a call whose first argument is `ref X` (`ref this.X`, `ref Type.X`)."""
+    args = call.child_by_field_name("arguments")
+    first = next((a for a in args.named_children if a.type == "argument"), None) if args is not None else None
+    if first is None or not first.named_children or _text(first, src).split(None, 1)[0] != "ref":
+        return None
+    return _last_name(first.named_children[-1], src)
+
+
+def _argument_text(call, src: bytes, index: int) -> Optional[str]:
+    """The text of a call's argument at `index`, None past the last."""
+    args = call.child_by_field_name("arguments")
+    given = [a for a in args.named_children if a.type == "argument"] if args is not None else []
+    return _text(given[index], src).strip() if index < len(given) else None
 
 
 def _method(node, src: bytes, name: Optional[str] = None) -> Method:
@@ -218,11 +252,13 @@ def _method(node, src: bytes, name: Optional[str] = None) -> Method:
     if plist is None:
         plist = next((c for c in node.children if c.type == "parameter_list"), None)
     params = sum(1 for c in plist.named_children if c.type == "parameter") if plist is not None else 0
+    kind = _body_kind(body, src)
     return Method(name=name or _name(node, src) or "?", line=node.start_point[0] + 1, end=node.end_point[0] + 1,
-                  params=params, branches=branches, modifiers=_modifiers(node, src), body=_body_kind(body, src),
+                  params=params, branches=branches, modifiers=_modifiers(node, src), body=kind,
                   names=names, type_tests=tests, writes=writes,
                   explicit=any(c.type == "explicit_interface_specifier" for c in node.children),
-                  attributes=" ".join(_text(c, src) for c in node.children if c.type == "attribute_list"))
+                  attributes=" ".join(_text(c, src) for c in node.children if c.type == "attribute_list"),
+                  unsupported=kind == "throws" and "NotImplementedException" not in _text(body, src))
 
 
 def _bases(node, src: bytes) -> list:
@@ -309,8 +345,75 @@ def _read_type(node, src: bytes, file: str, namespace: str, outer: str, out: lis
                 subj = next((c for c in n.named_children if c.type not in ("switch_body", "switch_expression_arm")), None)
             cases = sum(1 for c in _walk(n) if c.type in ("switch_section", "switch_expression_arm"))
             if subj is not None:
-                decl.switches.append(Switch(subject=_text(subj, src).strip("() "), line=n.start_point[0] + 1, cases=cases,
-                                            over=_switch_over(n, src)))
+                literal, labels = _switch_literal(n, src)
+                decl.switches.append(Switch(subject=_subject_name(subj, src), line=n.start_point[0] + 1, cases=cases,
+                                            over=_switch_over(n, src), literal=literal, labels=labels))
+
+
+def _subject_name(node, src: bytes) -> str:
+    """The name a switch is on: `word` of `word`, `this.word`, `(word)`,
+    `word.ToLowerInvariant()` and `words[0]`: a call or an index on it reads
+    the same thing, so switches on `a.Trim()` and `b.Trim()` are not one."""
+    while node is not None:
+        if node.type == "parenthesized_expression" and node.named_children:
+            node = node.named_children[0]
+        elif node.type == "invocation_expression":
+            fn = node.child_by_field_name("function")
+            if fn is None or fn.type != "member_access_expression":
+                break
+            node = fn.child_by_field_name("expression")
+        elif node.type == "element_access_expression":
+            node = node.child_by_field_name("expression")
+        else:
+            break
+    if node is None:
+        return ""
+    return _last_name(node, src) or _text(node, src).strip("() ")
+
+
+def _switch_labels(n) -> list:
+    """The labels of a switch statement's sections or of a switch expression's arms."""
+    if n.type == "switch_expression":
+        return [a.named_children[0] for a in n.named_children if a.type == "switch_expression_arm" and a.named_children]
+    body = n.child_by_field_name("body") or next((c for c in n.named_children if c.type == "switch_body"), None)
+    return [c for sec in (body.named_children if body is not None else ()) if sec.type == "switch_section"
+            for c in sec.named_children if c.type.endswith("pattern")]
+
+
+# What a literal label is, by the node that writes it.
+_LITERALS = {"string_literal": "string", "verbatim_string_literal": "string", "raw_string_literal": "string",
+             "character_literal": "char", "integer_literal": "number", "real_literal": "number"}
+
+
+def _switch_literal(n, src: bytes) -> tuple:
+    """What most of a switch's labels are when they are literals (string,
+    char or number) or types (`case Box b:`), and those labels. A switch on
+    a char and one on a string called alike are two subjects, as a reader of
+    one format and a writer of another are. (None, empty) otherwise."""
+    def parts(p):
+        # `A or B`, `(A)`: each side; not the patterns inside `Box { Width: 1 }`
+        if p.type in ("or_pattern", "and_pattern", "binary_pattern", "parenthesized_pattern"):
+            for c in p.named_children:
+                yield from parts(c)
+        else:
+            yield p
+
+    seen: dict = {}
+    for label in _switch_labels(n):
+        for c in parts(label):
+            if c.type == "constant_pattern" and c.named_children and c.named_children[0].type in _LITERALS:
+                seen.setdefault(_LITERALS[c.named_children[0].type], set()).add(_text(c.named_children[0], src))
+            elif c.type in ("declaration_pattern", "recursive_pattern", "type_pattern") and c.child_by_field_name("type") is not None:
+                # `case Box b:`, `Hinge h =>`, `Box { } b`: a switch on what
+                # type a value is; the types named are its labels
+                seen.setdefault("type", set()).add(_text(c.child_by_field_name("type"), src))
+            elif c.type == "constant_pattern" and c.named_children and c.named_children[0].type in ("identifier", "generic_name"):
+                # `case Box:`, which C# reads as a type when one is so named
+                seen.setdefault("type", set()).add(_text(c.named_children[0], src))
+    if not seen:
+        return None, frozenset()
+    kind, values = max(seen.items(), key=lambda kv: len(kv[1]))
+    return (kind, frozenset(values)) if len(values) * 2 > sum(len(v) for v in seen.values()) else (None, frozenset())
 
 
 def _switch_over(n, src: bytes) -> Optional[str]:
@@ -319,12 +422,7 @@ def _switch_over(n, src: bytes) -> Optional[str]:
     Two switches on parameters both called `op` are one subject only when
     they are on one type. None when the labels name no type, or no one type
     names most of them."""
-    if n.type == "switch_expression":
-        labels = [a.named_children[0] for a in n.named_children if a.type == "switch_expression_arm" and a.named_children]
-    else:
-        body = n.child_by_field_name("body") or next((c for c in n.named_children if c.type == "switch_body"), None)
-        labels = [c for sec in (body.named_children if body is not None else ()) if sec.type == "switch_section"
-                  for c in sec.named_children if c.type.endswith("pattern")]
+    labels = _switch_labels(n)
     seen: dict = {}
     for label in labels:
         for c in _walk(label):
@@ -372,12 +470,14 @@ def _auto_setter(prop) -> bool:
     return False
 
 
-def read_file(path: Path, rel: str) -> tuple[str, set, list]:
-    """(namespace, using namespaces, type declarations) of one C# file."""
+def read_file(path: Path, rel: str) -> tuple[str, set, list, set]:
+    """(namespace, using namespaces, type declarations, the `global using`
+    namespaces among them, which hold for every file of the project) of one
+    C# file."""
     from ..chunking import _get_parser
     src = path.read_bytes()
     tree = _get_parser("c_sharp").parse(src)
-    namespace, usings, types = "", set(), []
+    namespace, usings, types, project_usings = "", set(), [], set()
 
     def visit(node, ns: str):
         # The type declarations an ERROR node holds in pieces count as declarations.
@@ -398,6 +498,8 @@ def read_file(path: Path, rel: str) -> tuple[str, set, list]:
                 n = next((x for x in c.named_children if x.type in ("qualified_name", "identifier")), None)
                 if n is not None and not any(x.type == "name_equals" for x in c.children):
                     usings.add(_text(n, src))
+                    if any(x.type == "global" for x in c.children):
+                        project_usings.add(_text(n, src))
             elif t in TYPE_NODES:
                 _read_type(c, src, rel, ns, "", types)
             elif t == "ERROR":
@@ -407,4 +509,5 @@ def read_file(path: Path, rel: str) -> tuple[str, set, list]:
     # A file-scoped namespace is a sibling of the types that follow it.
     for t in types:
         t.namespace = t.namespace or namespace
-    return namespace, usings, types
+        t.unread = tree.root_node.has_error
+    return namespace, usings, types, project_usings

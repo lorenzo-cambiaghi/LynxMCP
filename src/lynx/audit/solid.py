@@ -25,9 +25,11 @@ import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
-from .facts import LAZY, read_file
+from ..graph.builder import msbuild_usings
+from .facts import COUNTED, LAZY, read_file
 
 NAMESPACE_KINDS = {"namespace_declaration", "file_scoped_namespace_declaration"}
 INBOUND = {"calls", "uses_type", "inherits"}
@@ -66,6 +68,45 @@ class Finding:
     severity: float
     fence: dict = field(default_factory=dict)
     score: float = 0.0
+
+
+def _project_dir(path: Path) -> str:
+    """The folder of the nearest .csproj above a file ('' if none)."""
+    return _csproj_folder(str(path.parent))
+
+
+@lru_cache(maxsize=4096)
+def _csproj_folder(d: str) -> str:
+    try:
+        if any(e.name.endswith(".csproj") for e in os.scandir(d)):
+            return d
+    except OSError:
+        pass
+    parent = os.path.dirname(d)
+    return "" if parent == d else _csproj_folder(parent)
+
+
+def _alike(places: list) -> list:
+    """The places of switches over literals, in groups that list mostly the
+    same values: two are alike when they share two thirds of the smaller
+    one's labels, and a group is what alike pairs join. Order kept."""
+    group = list(range(len(places)))
+
+    def root(i):
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+
+    for i, a in enumerate(places):
+        for j in range(i + 1, len(places)):
+            b = places[j]
+            if a[3] and b[3] and 3 * len(a[3] & b[3]) >= 2 * min(len(a[3]), len(b[3])):
+                group[root(j)] = root(i)
+    out: dict = {}
+    for i, p in enumerate(places):
+        out.setdefault(root(i), []).append(p)
+    return list(out.values())
 
 
 def _pct(values, q, floor):
@@ -177,6 +218,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
             raise FileNotFoundError(f"no folder {package!r} under {root}")
         pkg_dir = hits[0]
     package_rel = pkg_dir.relative_to(root).as_posix()
+    # A folder a project left behind holds only its build output: "no
+    # findings" would read as a clean package.
+    if not any(not {"bin", "obj"} & set(p.relative_to(pkg_dir).parts) for p in pkg_dir.rglob("*.cs")):
+        raise FileNotFoundError(f"{package_rel} holds no C# source (only build output, or nothing)")
     if package_rel in ("", "."):
         inside = lambda f: True  # noqa: E731  the whole codebase is the package
     else:
@@ -188,8 +233,15 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
     for u, v, d in G.edges(data=True):
         if d.get("relation") == "contains" and G.nodes[v].get("kind") == "function":
             members[u] += 1
+    # An enum is a type the switches name (see `own` below), not one with
+    # jobs: left out of the sizes, or a thousand small ones lower the bar.
+    enums = set()
     for nid, n in G.nodes(data=True):
-        if n.get("kind") == "class" and n.get("subkind") not in NAMESPACE_KINDS and n.get("file"):
+        if n.get("kind") != "class" or n.get("subkind") in NAMESPACE_KINDS or not n.get("file"):
+            continue
+        if n.get("subkind") == "enum_declaration":
+            enums.add(cb.type_key(nid))
+        else:
             decls[cb.type_key(nid)].append(nid)
     src_types = {k: v for k, v in decls.items() if not cb.is_test(G.nodes[v[0]]["file"])}
     sizes = [sum(G.nodes[x]["end_line"] - G.nodes[x]["start_line"] + 1 for x in v) for v in src_types.values()]
@@ -236,15 +288,24 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 "build": dependents, "tests": sorted(tests), "churn": sum(churn.get(f, 0) for f in files)}
 
     # The package's files, parsed for the facts the graph does not keep.
-    facts = {}
+    facts, usings_of, project_usings = {}, {}, defaultdict(set)
     for p in pkg_dir.rglob("*.cs"):
         if any(part in ("bin", "obj") for part in p.parts):
             continue
         rel = p.relative_to(root).as_posix()
         try:
-            facts[rel] = read_file(p, rel)[2]
+            _, usings_of[rel], facts[rel], global_usings = read_file(p, rel)
         except Exception:
             continue
+        project_usings[_project_dir(p)] |= global_usings
+    # what every file of a project may name unqualified: the `global using`
+    # lines of any of its files and the `<Using>` items of its csproj and of
+    # the Directory.Build files above it
+    msbuild_cache: dict = {}
+    for rel in usings_of:
+        d = _project_dir(root / rel)
+        if d:
+            usings_of[rel] = usings_of[rel] | project_usings[d] | msbuild_usings(d, str(root), msbuild_cache)
 
     def key_of(t) -> tuple:
         return (t.namespace, t.name)
@@ -302,6 +363,12 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                     continue
                 if "override" in m.modifiers and any(m.name.startswith(DECLINED.get(c, ())) for d in ts for c in d.declines):
                     continue
+                # A type's own virtual member that throws NotSupported is its
+                # default, which declines what a type derived from it may take
+                # on (a scene format that only writes makes no object): the
+                # type that makes the promise breaks no substitution of it.
+                if m.unsupported and "virtual" in m.modifiers and "override" not in m.modifiers:
+                    continue
                 if m.body == "throws" or (m.body == "empty" and "override" in m.modifiers):
                     what = "only throws NotImplemented/NotSupported" if m.body == "throws" else "is an empty override"
                     findings.append(Finding("L", f"{first.name}.{m.name} {what}", f"{t.file}:{m.line}",
@@ -311,9 +378,12 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
                 if "static" not in f.modifiers or "const" in f.modifiers or "ThreadStatic" in f.attributes:
                     continue
                 if "readonly" not in f.modifiers:
-                    if "private" in f.modifiers and f.name not in writes and LAZY + f.name in writes:
+                    if "private" in f.modifiers and f.name not in writes and (
+                            LAZY + f.name in writes or COUNTED + f.name in writes):
                         # `X ??= Build()` and nothing else: built on first read,
-                        # the same value for the whole process.
+                        # the same value for the whole process. Only
+                        # `Interlocked.Increment(ref X)`: a counter of the
+                        # process (ids, how many), safe from any thread.
                         continue
                     how = "static with a setter" if f.kind == "property" else "static and not readonly"
                     if f.modifiers & {"public", "protected", "internal"}:
@@ -334,15 +404,54 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
     # O: one switch subject in several places: one type, when the labels name
     # it (two parameters called `op` over two enums are two subjects).
     subjects = defaultdict(list)
+    # The enum a switch's labels name, found as C# finds it: nested in the
+    # switch's type or one around it, then its namespace and the ones around,
+    # then the file's usings. Two private `DragKind`s of two views are two
+    # enums. One the codebase does not declare (a UI toolkit's `Key`, the JSON
+    # reader's value kinds) gets no value from it: no place to edit.
+    own = defaultdict(set)
+    for k in (*decls, *enums):
+        own[k[1].rsplit(".", 1)[-1]].add(k)
+
+    def enum_of(name: str, t) -> tuple | None:
+        found = own.get(name)
+        if not found:
+            return None
+        scopes = t.name.split(".")
+        for i in range(len(scopes), 0, -1):
+            if (t.namespace, ".".join(scopes[:i] + [name])) in found:
+                return (t.namespace, ".".join(scopes[:i] + [name]))
+        ns = t.namespace
+        while True:
+            if (ns, name) in found:
+                return (ns, name)
+            if not ns:
+                break
+            ns = ns.rsplit(".", 1)[0] if "." in ns else ""
+        return next(((u, name) for u in sorted(usings_of.get(t.file, ())) if (u, name) in found), None)
+
     for key, ts in by_key.items():
         for t in ts:
             for s in t.switches:
-                if s.cases >= 4:
-                    subj = ("over", s.over) if s.over else ("subject", s.subject.rsplit(".", 1)[-1])
-                    subjects[subj].append((key, t.file, s.line))
-    for (how, subj), places in subjects.items():
-        if len(places) >= 3 and len({p[0] for p in places}) >= 2:
-            k, f, line = places[0]
+                if s.cases < 4:
+                    continue
+                if s.over:
+                    enum = enum_of(s.over, t)
+                    if enum is None:
+                        continue
+                    subjects[("over", s.over, enum)].append((key, t.file, s.line, s.labels))
+                else:
+                    # a subject of no enum is its name and what its labels are:
+                    # `switch (type)` on a char and on a string are two
+                    subjects[("subject", s.subject.rsplit(".", 1)[-1], s.literal)].append((key, t.file, s.line, s.labels))
+    for (how, subj, literal), all_places in subjects.items():
+        # switches over literals are one subject only where they list mostly
+        # the same values: command parsers that each take their own verbs and
+        # share an `add` are not a table copied around
+        for places in (_alike(all_places) if how == "subject" and literal else [all_places]):
+            if len(places) < 3 or len({p[0] for p in places}) < 2:
+                continue
+            k, f, line, _ = places[0]
             said = f"`switch` over {subj}" if how == "over" else f"`switch ({subj})`"
             findings.append(Finding("O", f"{said} in {len(places)} places", f"{f}:{line}",
                                     "a new value means editing " + ", ".join(f"{p[0][1]} ({p[1].rsplit('/', 1)[-1]}:{p[2]})" for p in places[:5]),
@@ -383,6 +492,10 @@ def audit(G, root: Path, package: str, top_contract: int = 6, repo: Path | None 
         # entry point) uses its type, though no code names it.
         reached = reached or any(word in m.attributes for t in by_key.get(key, ()) for m in t.methods
                                  for word in RUNTIME_ENTRIES)
+        # A file the grammar could not read whole may hold the use: an
+        # assignment to a ref return (`Get(ref x) = v;`) ends a struct early
+        # in tree-sitter-c-sharp, and its later members are lost.
+        reached = reached or any(t.unread for t in by_key.get(key, ()))
         first = G.nodes[pkg_types[key][0]]
         # The modifiers of every partial declaration, as parsed: a public type
         # is API for code outside this codebase. No facts, no verdict.
@@ -409,10 +522,17 @@ def render(package: str, findings: list, commit: str = "", per_principle: int = 
            ". Ranked by severity, by how many files outside the package reach the type, and by how often its files changed in 180 days.",
            "Refactor inside the fence: keep the contract, build the dependents, run the tests; then run the audit again.", ""]
     for p, title in PRINCIPLES.items():
-        fs = [f for f in findings if f.principle == p][:per_principle]
+        every = [f for f in findings if f.principle == p]
+        fs = every[:per_principle]
         if not fs:
             continue
         out += [f"## {p}: {title}", ""]
+        if len(every) > len(fs):
+            # The count above is the whole package's: say where the rest went. A limit of
+            # 50 is the query's default and reads as unset, so 50 findings ask for 51.
+            n = len(every)
+            out.append(f"The first {len(fs)} of {n}; limit={n + (n == 50)} shows them all.")
+            out.append("")
         for f in fs:
             fe = f.fence
             contract = ", ".join(f"{name} ({n})" for name, n in fe["contract"])

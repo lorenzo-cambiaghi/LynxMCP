@@ -243,6 +243,21 @@ def test_status_renders_counts():
     assert "Raw inherits pending: 0" in out
 
 
+@pytest.mark.parametrize("limit, cap", [(50, 5), (None, 5), (12, 12), (60, 60)])
+def test_audit_limit_caps_findings_per_principle(limit, cap):
+    # The audit says "limit=N shows them all" with N the whole count, which
+    # can pass the query's default of 50: only the default itself reads as unset.
+    seen = []
+
+    class _Auditing(_FakeManager):
+        def audit(self, source, path, per_principle=5):
+            seen.append(per_principle)
+            return "# Audit"
+
+    query_graph(_Auditing(), "demo", "audit", symbol="src/Pkg", **({} if limit is None else {"limit": limit}))
+    assert seen == [cap]
+
+
 def test_unknown_operation_lists_the_valid_ones():
     mgr = _FakeManager()
     out = run_graph_query(mgr, "demo", "nope")

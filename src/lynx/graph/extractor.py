@@ -1624,7 +1624,7 @@ GRAPH_RULES: dict = {
     "c_sharp": LangGraphRules(
         container_types=frozenset({
             "class_declaration", "interface_declaration", "struct_declaration",
-            "record_declaration", "namespace_declaration",
+            "record_declaration", "enum_declaration", "namespace_declaration",
             "file_scoped_namespace_declaration",
         }),
         function_types=frozenset({
