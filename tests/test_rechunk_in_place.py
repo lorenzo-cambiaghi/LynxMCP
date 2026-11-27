@@ -2,9 +2,11 @@
 
 The SHA cache records which chunker version cut the stored chunks. When only
 that version moved, the vectors live in the same space and stay usable until
-each file is replaced, so the cache keeps every file, marked as changed. Any
-other change (embedding model, collection, extensions) still means a clean
-rebuild: vectors from two models must not mix.
+each file is replaced, so the cache keeps every file, marked as changed. A
+change of extensions keeps it too: they say which files are candidates, so a
+file of an added one reads as added and one of a dropped one as removed. Any
+other change (embedding model, collection) still means a clean rebuild:
+vectors from two models must not mix.
 """
 from __future__ import annotations
 
@@ -41,6 +43,30 @@ def test_a_new_chunker_keeps_every_file_as_changed(tmp_path):
 
 def test_a_new_embedding_model_still_rebuilds_from_scratch(tmp_path):
     rag = _rag(tmp_path, {"chunker_version": CHUNKER_VERSION - 1,
+                          "embedding_model_name": "another/model"})
+    assert rag._load_file_hashes() == {}
+
+
+def test_a_new_extension_keeps_the_hashes(tmp_path):
+    # `lynx serve PATH` picks the extensions at every start: 1.13.0 reads
+    # .ps1, .slang, .xaml and .axaml too, and a source with one such file
+    # was embedded again from scratch.
+    rag = _rag(tmp_path, {"supported_extensions": [".md", ".py"]})
+    files = rag._load_file_hashes()
+    assert files["/src/a.py"]["sha256"] == "abc"
+    assert files["/src/b.py"]["sha256"] == "def"
+
+
+def test_new_extensions_and_a_new_chunker_keep_every_file_as_changed(tmp_path):
+    rag = _rag(tmp_path, {"supported_extensions": [".md", ".py"],
+                          "chunker_version": CHUNKER_VERSION - 1})
+    files = rag._load_file_hashes()
+    assert set(files) == {"/src/a.py", "/src/b.py"}
+    assert all(entry["sha256"] is None for entry in files.values())
+
+
+def test_new_extensions_and_a_new_model_still_rebuild_from_scratch(tmp_path):
+    rag = _rag(tmp_path, {"supported_extensions": [".md", ".py"],
                           "embedding_model_name": "another/model"})
     assert rag._load_file_hashes() == {}
 

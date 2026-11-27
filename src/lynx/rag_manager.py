@@ -466,6 +466,14 @@ class CodebaseRAG:
         # sessions on one store these paths interleave far more than they used
         # to, and a plain Lock turns that into a deadlock instead of a wait.
         self._write_lock = threading.RLock()
+        # One build at a time, and no watcher write to a file while a build is
+        # on: a build deletes a changed file's chunks and puts the new ones in
+        # a group later, and a watcher write in between left the file in
+        # twice. Taken before `_write_lock`, never after it; searches take
+        # only that one. `building` lets the watcher put its files off instead
+        # of waiting here, one thread each.
+        self._build_lock = threading.RLock()
+        self.building = False
 
         # Configure LlamaIndex for fully offline operation.
         _configure_local_only(embedding_model_name)
@@ -763,6 +771,19 @@ class CodebaseRAG:
         if stored_snapshot != live_snapshot:
             differ = {k for k in set(stored_snapshot) | set(live_snapshot)
                       if stored_snapshot.get(k) != live_snapshot.get(k)}
+            if "supported_extensions" in differ and differ <= {"supported_extensions", "chunker_version"}:
+                # The extensions say which files are candidates, not what their
+                # vectors are: a file of an added extension reads as added, one
+                # of a dropped extension as removed, and the others keep their
+                # vectors. `lynx serve PATH` picks the extensions anew at every
+                # start, so a release that reads one more format would
+                # otherwise embed such a source again from scratch.
+                log(
+                    f"[rag] extensions changed ({', '.join(stored_snapshot.get('supported_extensions') or [])} -> "
+                    f"{', '.join(live_snapshot['supported_extensions'])}): files of an added one are "
+                    f"indexed, files of a dropped one leave the index, the rest are kept."
+                )
+                differ.discard("supported_extensions")
             if differ == {"chunker_version"}:
                 # Same model, same collection: the stored vectors are still
                 # valid, only cut the old way. Every file reads as changed and
@@ -776,11 +797,12 @@ class CodebaseRAG:
                 )
                 return {path: {**entry, "sha256": None}
                         for path, entry in (raw.get("files") or {}).items()}
-            log(
-                "[rag] file_hashes.json config snapshot disagrees with live "
-                "config; cache is invalid, will rebuild from scratch."
-            )
-            return {}
+            if differ:
+                log(
+                    "[rag] file_hashes.json config snapshot disagrees with live "
+                    "config; cache is invalid, will rebuild from scratch."
+                )
+                return {}
 
         files = raw.get("files") or {}
         regrammared = self._grammar_changes(raw.get("grammars"))
@@ -816,17 +838,27 @@ class CodebaseRAG:
             "schema_version": FILE_HASHES_SCHEMA_VERSION,
             "config_snapshot": self._file_hashes_snapshot(),
             "grammars": self._grammar_extensions(),
-            "files": self._file_hashes,
+            # A copy, taken in one step: encoding the live dict while another
+            # thread records a file raises "dictionary changed size".
+            "files": dict(self._file_hashes),
         }
         # Written whole or not at all: a build records each group as it goes,
         # and a file cut in half by a kill reads as no record, which wipes the
-        # index on the next pass.
-        tmp = self.file_hashes_file.with_name(self.file_hashes_file.name + ".tmp")
+        # index on the next pass. The temporary file is this thread's own, so
+        # two writers never write into one.
+        tmp = self.file_hashes_file.with_name(
+            f"{self.file_hashes_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            # Compact: the C encoder, five times faster than indented, and a
+            # build saves after every group.
+            tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             os.replace(tmp, self.file_hashes_file)
         except OSError as e:
             log(f"[rag] could not persist file_hashes.json: {e}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _record_file_hash(self, abs_path: str, sha: str, *, chunks: int | None = None):
         """Update one entry in the in-memory cache. Caller persists via
@@ -1250,8 +1282,13 @@ class CodebaseRAG:
             return
 
         log("[rag] Updating codebase index...")
-        self.index = self._build_index()
-        self._record_build_metadata()
+        with self._build_lock:
+            self.building = True
+            try:
+                self.index = self._build_index()
+                self._record_build_metadata()
+            finally:
+                self.building = False
         log("[rag] Index updated successfully.")
 
     def search(
@@ -2128,7 +2165,7 @@ class CodebaseRAG:
         with pausable():
             wait_while_paused()
 
-        with self._write_lock:
+        with self._build_lock, self._write_lock:
             removed = self._delete_file_chunks(abs_path)
             nodes = self._build_nodes_for_file(abs_path)
             if not nodes:
@@ -2174,7 +2211,7 @@ class CodebaseRAG:
         abs_path = _norm(filepath)
         if Path(abs_path).suffix.lower() not in self.supported_extensions:
             return False
-        with self._write_lock:
+        with self._build_lock, self._write_lock:
             removed = self._delete_file_chunks(abs_path)
             if removed:
                 self._bm25_apply_file_removal(abs_path)

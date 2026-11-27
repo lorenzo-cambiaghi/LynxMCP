@@ -22,6 +22,10 @@ from .base import SourceBackend
 # long for the burst to end: landing a batch of commits loses events many times.
 LOST_EVENTS_DEBOUNCE_SECONDS = 10.0
 
+# While a build runs, the files the watcher saw change wait for its end; this
+# is how often it looks whether the build is over.
+BUILD_WAIT_SECONDS = 2.0
+
 
 def _rel_paths(method):
     """Give every result of `method` its path inside the source (`rel_path`,
@@ -278,6 +282,10 @@ class CodebaseBackend(SourceBackend):
                         if handler._lost is not None:
                             pending.append(handler._lost)
                             handler._lost = None
+                        if handler._deferred_timer is not None:
+                            pending.append(handler._deferred_timer)
+                            handler._deferred_timer = None
+                        handler._deferred.clear()
                     for timer in pending:
                         timer.cancel()
                 except Exception:
@@ -334,6 +342,10 @@ class CodebaseBackend(SourceBackend):
                 self._pending: dict = {}
                 self._lock = threading.Lock()
                 self._lost = None
+                # Files changed while a build ran, put off to its end, and the
+                # one timer that looks whether it is over.
+                self._deferred: dict = {}
+                self._deferred_timer = None
                 # Set by stop_watcher before the observer stops: joining it can
                 # take longer than a timer's wait, and a timer firing meanwhile
                 # must write nothing.
@@ -367,12 +379,49 @@ class CodebaseBackend(SourceBackend):
                     with self._lock:
                         self._lost = None
 
+            def _defer(self, path: str, action: str):
+                # A build is on (the startup catch-up, the one after lost
+                # events, a rebuild a session asked for): a write now would
+                # wait for it, a thread per file. The files wait here instead,
+                # the last action of each, and go in when the build is over.
+                with self._lock:
+                    if self._closed:
+                        return
+                    if path is not None:
+                        self._deferred[path] = action
+                    if self._deferred_timer is None:
+                        t = threading.Timer(BUILD_WAIT_SECONDS, self._after_build)
+                        t.daemon = True
+                        self._deferred_timer = t
+                        t.start()
+
+            def _after_build(self):
+                with self._lock:
+                    self._deferred_timer = None
+                    if self._closed:
+                        return
+                    if not getattr(rag, "building", False):
+                        deferred, self._deferred = self._deferred, {}
+                    else:
+                        deferred = None
+                if deferred is None:
+                    self._defer(None, "")
+                    return
+                for path, action in deferred.items():
+                    with self._lock:
+                        newer = path in self._pending     # changed again since: its timer goes on
+                    if not newer:
+                        self._flush(path, action)
+
             def _flush(self, path: str, action: str):
                 try:
                     if not backend.is_owner:
                         # Stood down (or stopped) between the event and this
                         # timer firing. Writing now would be the second writer
                         # ownership exists to prevent.
+                        return
+                    if getattr(rag, "building", False):
+                        self._defer(path, action)
                         return
                     if action == "delete":
                         rag.remove_file(path)

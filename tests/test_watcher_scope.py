@@ -132,3 +132,41 @@ def test_stopping_the_watcher_cancels_a_pass_still_waiting(tmp_path, monkeypatch
     backend.stop_watcher()
     time.sleep(0.6)
     assert passes == [], "a pass ran on a store this process let go of"
+
+
+def test_files_changed_during_a_build_go_in_when_it_is_over(tmp_path, monkeypatch):
+    # A build deletes a changed file's chunks and puts the new ones in later,
+    # with a group: a watcher write in between left the file in twice. While
+    # a build is on, the watcher's files wait, and go in after it.
+    import lynx.sources.codebase as codebase
+
+    monkeypatch.setattr(codebase, "BUILD_WAIT_SECONDS", 0.2)
+    backend, code, calls = _watch(tmp_path)
+    try:
+        backend.rag.building = True
+        (code / "late.py").write_text("x = 1\n", encoding="utf-8")
+        handler = backend._handler
+        late = os.path.normcase(str(code / "late.py"))
+        assert _until(lambda: any(os.path.normcase(p) == late for p in list(handler._deferred))), \
+            "not put off while a build was on"
+        time.sleep(0.5)                                 # the build still on: it waits
+        assert _last_for(calls, code / "late.py") is None, "written while a build was on"
+        backend.rag.building = False
+        assert _until(lambda: _last_for(calls, code / "late.py") == "update")
+    finally:
+        backend.stop_watcher()
+
+
+def test_stopping_the_watcher_drops_the_files_waiting_for_a_build(tmp_path, monkeypatch):
+    import lynx.sources.codebase as codebase
+
+    monkeypatch.setattr(codebase, "BUILD_WAIT_SECONDS", 0.2)
+    backend, code, calls = _watch(tmp_path)
+    backend.rag.building = True
+    (code / "late.py").write_text("x = 1\n", encoding="utf-8")
+    handler = backend._handler
+    assert _until(lambda: handler._deferred), "not put off while a build was on"
+    backend.stop_watcher()
+    backend.rag.building = False
+    time.sleep(0.6)
+    assert calls == [], "a file went in on a store this process let go of"
