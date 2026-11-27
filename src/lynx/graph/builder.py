@@ -1117,7 +1117,7 @@ class GraphLayer:
                     or any(ns_of(c) == f"{v}.{q}" for v in visible if v)]
         # The namespace and the ones around it, innermost first, win over
         # what a `using` brings in: `[AddComponentMenu]` in a namespace with
-        # its own attribute is that one, whatever `using VooDodo.Data;` adds.
+        # its own attribute is that one, whatever `using Game.Data;` adds.
         for i in range(len(parts), -1, -1):
             here = [c for c in candidates if ns_of(c) == ".".join(parts[:i])]
             if here:
