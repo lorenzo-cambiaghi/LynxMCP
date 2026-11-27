@@ -57,9 +57,15 @@ http://127.0.0.1:PORT/mcp` registers it in Claude Code with the prompt
 hook, and `serve --http` prints that line. Over stdio each session starts
 its own server: on a 1.4-million-line library one took 3.7 GB while it
 built its index, and a machine running a dozen agents cannot hold a dozen
-of them. Over HTTP the sync tools run on a worker thread, one at a time as
-on stdio, so a long call of one session does not hold up the others'
-requests. It listens on the loopback interface only.
+of them. Over HTTP the tools run on worker threads, off the event loop:
+the read-only ones one at a time, as on stdio, and the others (a rebuild,
+feedback, an export) one at a time in a queue of their own. A rebuild one
+session asks for does not hold up the searches and the hooks of the
+others, which read the index while it is written, as they do during the
+startup catch-up. It listens on the loopback interface only and refuses a
+request whose Host or Origin is not the loopback, so a web page cannot
+reach it through DNS rebinding; that needs mcp 1.23 or later, now the
+lowest version Lynx installs with.
 
 `LYNX_EMBED_THREADS` caps the threads the embedder uses. By default ONNX
 Runtime takes every core, and a first index of a large repository held the
@@ -98,7 +104,8 @@ modules). C# looks in the same file, the namespace and the enclosing ones,
 the file's `using` lines (aliases included), the project's `global using`
 lines and MSBuild `<Using>` items, or the namespace a qualified base
 names; a base none of them can see comes from outside the codebase and
-gets no edge. Partial declarations count as one type. On Django 5.2 the
+gets no edge, and a C# base is never a Python class of its name in a
+source that holds both. Partial declarations count as one type. On Django 5.2 the
 ambiguous `inherits` edges fell from 2,085 of 3,300 (63%) to 6 of 1,622,
 and the classes linked to several namesake bases from 377 to 2. On a
 private C# library of 1.4 million lines they fell from 9,251 of 11,952
@@ -123,11 +130,25 @@ are resolved first, so a call to an inherited member finds it.
 
 The watcher catches up when the system drops file events. Landing a batch
 of commits at once overflows the buffer Windows keeps for a watched folder
-(the queue of inotify on Linux), and the files changed meanwhile were never
-re-indexed: on a 1.4-million-line library a shared server lost events three
-times in a morning. Now the watcher checks every file's hash, as at
-startup, once the burst is over. It needs watchdog 7.1, so Python 3.11 or
-later.
+(the queue of inotify on Linux), and the files changed meanwhile were
+never re-indexed: on a 1.4-million-line library a shared server lost
+events three times in a morning. Now the watcher checks every file's hash,
+as at startup, once the burst is over. It needs watchdog 7.1, so Python
+3.11 or later. Builds of one source now run one at a time, and a file the
+watcher sees change during one goes in after it: a build removes a changed
+file's chunks and puts the new ones in later, with a group of others, and
+a watcher write in between left the file in the index twice. The hash
+cache is saved from a copy, through a temporary file of the writer's own,
+and compact: two writers could mix their temporary files, and a cache that
+does not load means the source is embedded again.
+
+A change of a source's extensions keeps its index. The hash cache was
+thrown away, so adding one extension embedded the whole source again; now
+the files of an added extension are indexed, those of a dropped one leave
+the index, and the others keep their vectors, as a change of the ignored
+folders already did. This matters on upgrade: `lynx serve PATH` picks the
+extensions at every start, and this release reads `.ps1`, `.slang`,
+`.xaml` and `.axaml` too.
 
 `lynx graph query` and `lynx graph status` read the graph alone. With a
 `lynx serve` running they answered "no source has the graph layer
