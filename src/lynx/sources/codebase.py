@@ -248,8 +248,11 @@ class CodebaseBackend(SourceBackend):
         if not self.is_owner:
             from ..errors import StoreNotOwnedError
             raise StoreNotOwnedError(self.name, str(self.storage_dir))
-        self.rag.reset_index()
-        self.rag.update(force=True)
+        # The wipe and the rebuild under one build lock: a watcher write in
+        # between would go into the emptied index ahead of the rebuild.
+        with self.rag._build_lock:
+            self.rag.reset_index()
+            self.rag.update(force=True)
         self._rebuild_graph(from_scratch=True)
 
     def stop_watcher(self) -> None:

@@ -298,8 +298,10 @@ def test_only_a_reset_starts_the_graph_over(tmp_path: Path):
     calls = []
     backend = CodebaseBackend.__new__(CodebaseBackend)
     backend.name, backend.is_owner, backend.storage_dir = "src", True, tmp_path
+    import threading
     backend.rag = types.SimpleNamespace(update=lambda force=False: None,
-                                        reset_index=lambda: None)
+                                        reset_index=lambda: None,
+                                        _build_lock=threading.RLock())
     backend.graph = types.SimpleNamespace(
         rebuild=lambda force=False: calls.append(force))
 

@@ -952,7 +952,9 @@ class CodebaseRAG:
         if self.follower:
             from .errors import StoreNotOwnedError
             raise StoreNotOwnedError(self.collection_name, str(self.storage_path))
-        with self._write_lock:
+        # Not in the middle of a build: it would go on writing into the
+        # emptied collection and record its groups in the emptied cache.
+        with self._build_lock, self._write_lock:
             self._reset_collection()
             self._file_hashes = {}
             self._save_file_hashes()

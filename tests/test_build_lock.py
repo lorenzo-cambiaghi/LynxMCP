@@ -100,3 +100,47 @@ def test_the_hash_cache_is_saved_from_a_copy_and_a_temporary_file_of_its_own(tmp
     assert not list(tmp_path.glob("*.tmp"))
     assert len(temporaries) == 1 and temporaries[0] != "file_hashes.json.tmp", temporaries
     assert str(threading.get_ident()) in temporaries[0]
+
+
+def test_a_reset_waits_for_the_build_on(tmp_path):
+    rag = _rag(tmp_path)
+    order = []
+    rag._reset_collection = lambda: order.append("reset")
+    rag._save_file_hashes = lambda: None
+    rag._invalidate_bm25 = lambda: None
+    building = threading.Event()
+    rag._build_index = lambda: (building.set(), time.sleep(0.3), order.append("build over"))
+    rag._record_build_metadata = lambda: None
+    builder = threading.Thread(target=rag.update, kwargs={"force": True})
+    builder.start()
+    assert building.wait(5)
+    rag.reset_index()
+    builder.join(5)
+    assert order == ["build over", "reset"]
+
+
+def test_nothing_gets_in_between_a_resets_wipe_and_its_rebuild(tmp_path):
+    import types
+    from lynx.sources.codebase import CodebaseBackend
+    order, wiped = [], threading.Event()
+    rag = types.SimpleNamespace(_build_lock=threading.RLock())
+
+    def reset_index():
+        order.append("wipe")
+        wiped.set()
+        time.sleep(0.2)
+
+    def update(force=False):
+        time.sleep(0.2)
+        order.append("rebuild")
+
+    rag.reset_index, rag.update = reset_index, update
+    backend = CodebaseBackend.__new__(CodebaseBackend)
+    backend.name, backend.is_owner, backend.rag, backend.graph = "src", True, rag, None
+    resetting = threading.Thread(target=backend.reset)
+    resetting.start()
+    assert wiped.wait(5)
+    with rag._build_lock:                      # a watcher write
+        order.append("watcher write")
+    resetting.join(5)
+    assert order == ["wipe", "rebuild", "watcher write"]
